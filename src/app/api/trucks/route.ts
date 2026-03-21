@@ -18,6 +18,7 @@ export async function POST(req: Request) {
       year: body.year ? parseInt(body.year) : null,
       make: body.make || null,
       model: body.model || null,
+      status: body.status || 'ACTIVE',
       companyId: body.companyId,
       isOwnerOp: body.isOwnerOp === true,
       ownerName: body.ownerName || null,

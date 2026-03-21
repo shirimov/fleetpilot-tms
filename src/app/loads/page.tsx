@@ -9,42 +9,74 @@ const statusColor: Record<string, string> = {
   CANCELLED: 'bg-red-900/50 text-red-300',
 }
 
+const defaultForm = {
+  loadNumber: '', referenceNum: '', status: 'PENDING',
+  origin: '', destination: '', pickupDate: '', deliveryDate: '',
+  miles: '', rate: '', fuelSurcharge: '',
+  truckId: '', driverId: '', companyId: ''
+}
+
 export default function LoadsPage() {
   const [loads, setLoads] = useState<any[]>([])
   const [trucks, setTrucks] = useState<any[]>([])
   const [drivers, setDrivers] = useState<any[]>([])
   const [companies, setCompanies] = useState<any[]>([])
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({
-    loadNumber: '', referenceNum: '', status: 'PENDING',
-    origin: '', destination: '', pickupDate: '', deliveryDate: '',
-    miles: '', rate: '', fuelSurcharge: '',
-    truckId: '', driverId: '', companyId: ''
-  })
+  const [editId, setEditId] = useState<string | null>(null)
+  const [form, setForm] = useState(defaultForm)
 
-  const load = () => fetch('/api/loads').then(r => r.json()).then(setLoads)
+  const loadData = () => fetch('/api/loads').then(r => r.json()).then(setLoads)
   useEffect(() => {
-    load()
+    loadData()
     fetch('/api/trucks').then(r => r.json()).then(setTrucks)
     fetch('/api/drivers').then(r => r.json()).then(setDrivers)
     fetch('/api/companies').then(r => r.json()).then(setCompanies)
   }, [])
 
+  const openAdd = () => {
+    setEditId(null)
+    setForm(defaultForm)
+    setShowForm(true)
+  }
+
+  const openEdit = (l: any) => {
+    setEditId(l.id)
+    setForm({
+      loadNumber: l.loadNumber || '',
+      referenceNum: l.referenceNum || '',
+      status: l.status || 'PENDING',
+      origin: l.origin || '',
+      destination: l.destination || '',
+      pickupDate: l.pickupDate ? l.pickupDate.slice(0, 10) : '',
+      deliveryDate: l.deliveryDate ? l.deliveryDate.slice(0, 10) : '',
+      miles: l.miles != null ? String(l.miles) : '',
+      rate: l.rate != null ? String(l.rate) : '',
+      fuelSurcharge: l.fuelSurcharge != null ? String(l.fuelSurcharge) : '',
+      truckId: l.truckId || '',
+      driverId: l.driverId || '',
+      companyId: l.companyId || '',
+    })
+    setShowForm(true)
+  }
+
   const submit = async (e: any) => {
     e.preventDefault()
-    await fetch('/api/loads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
-    setForm({ loadNumber: '', referenceNum: '', status: 'PENDING', origin: '', destination: '', pickupDate: '', deliveryDate: '', miles: '', rate: '', fuelSurcharge: '', truckId: '', driverId: '', companyId: '' })
+    const url = editId ? `/api/loads/${editId}` : '/api/loads'
+    const method = editId ? 'PATCH' : 'POST'
+    await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
     setShowForm(false)
-    load()
+    setForm(defaultForm)
+    setEditId(null)
+    loadData()
   }
 
   const del = async (id: string) => {
     if (!confirm('Delete this load?')) return
     await fetch(`/api/loads/${id}`, { method: 'DELETE' })
-    load()
+    loadData()
   }
 
-  const totalRevenue = loads.reduce((sum, l) => sum + l.rate, 0)
+  const totalRevenue = loads.reduce((sum, l) => sum + (l.rate || 0) + (l.fuelSurcharge || 0), 0)
 
   return (
     <div className="flex h-screen bg-gray-950 text-white">
@@ -53,17 +85,22 @@ export default function LoadsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-2xl font-bold">Loads</h2>
-            <p className="text-gray-400 text-sm mt-1">{loads.length} total · <span className="text-green-400">${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })} gross</span></p>
+            <p className="text-gray-400 text-sm mt-1">
+              {loads.length} total · <span className="text-green-400">${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} gross</span>
+            </p>
           </div>
-          <button onClick={() => setShowForm(true)} className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium">
+          <button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
             + New Load
           </button>
         </div>
 
         {showForm && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={e => { if (e.target === e.currentTarget) setShowForm(false) }}>
             <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-lg space-y-4 max-h-[90vh] overflow-y-auto">
-              <h3 className="font-bold text-lg">New Load</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-lg">{editId ? 'Edit Load' : 'New Load'}</h3>
+                <button type="button" onClick={() => setShowForm(false)} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Load # *</label>
@@ -72,7 +109,7 @@ export default function LoadsPage() {
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400 uppercase">Amazon Ref #</label>
+                  <label className="text-xs text-gray-400 uppercase">Ref # / BOL</label>
                   <input value={form.referenceNum} onChange={e => setForm({ ...form, referenceNum: e.target.value })}
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
@@ -94,19 +131,19 @@ export default function LoadsPage() {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Rate ($) *</label>
-                  <input required type="number" step="0.01" value={form.rate} onChange={e => setForm({ ...form, rate: e.target.value })}
+                  <input required type="number" step="0.01" min="0" value={form.rate} onChange={e => setForm({ ...form, rate: e.target.value })}
                     placeholder="2500"
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Fuel Surcharge</label>
-                  <input type="number" step="0.01" value={form.fuelSurcharge} onChange={e => setForm({ ...form, fuelSurcharge: e.target.value })}
+                  <input type="number" step="0.01" min="0" value={form.fuelSurcharge} onChange={e => setForm({ ...form, fuelSurcharge: e.target.value })}
                     placeholder="0"
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Miles</label>
-                  <input type="number" value={form.miles} onChange={e => setForm({ ...form, miles: e.target.value })}
+                  <input type="number" min="0" value={form.miles} onChange={e => setForm({ ...form, miles: e.target.value })}
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
               </div>
@@ -135,7 +172,7 @@ export default function LoadsPage() {
                 <select required value={form.truckId} onChange={e => setForm({ ...form, truckId: e.target.value })}
                   className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
                   <option value="">Select truck...</option>
-                  {trucks.map(t => <option key={t.id} value={t.id}>{t.unitNumber} {t.make ? `— ${t.make}` : ''}</option>)}
+                  {trucks.map(t => <option key={t.id} value={t.id}>{t.unitNumber}{t.make ? ` — ${t.make}` : ''}</option>)}
                 </select>
               </div>
               <div>
@@ -157,8 +194,10 @@ export default function LoadsPage() {
                 </select>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded-lg text-sm font-medium">Save</button>
-                <button type="button" onClick={() => setShowForm(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 py-2 rounded-lg text-sm">Cancel</button>
+                <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded-lg text-sm font-medium transition-colors">
+                  {editId ? 'Save Changes' : 'Create Load'}
+                </button>
+                <button type="button" onClick={() => setShowForm(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 py-2 rounded-lg text-sm transition-colors">Cancel</button>
               </div>
             </form>
           </div>
@@ -173,9 +212,10 @@ export default function LoadsPage() {
           ) : (
             <table className="w-full text-sm">
               <thead className="border-b border-gray-800">
-                <tr className="text-gray-400 text-xs uppercase">
+                <tr className="text-gray-400 text-xs uppercase tracking-wide">
                   <th className="text-left px-6 py-3">Load #</th>
                   <th className="text-left px-6 py-3">Route</th>
+                  <th className="text-left px-6 py-3">Pickup → Delivery</th>
                   <th className="text-left px-6 py-3">Truck</th>
                   <th className="text-left px-6 py-3">Driver</th>
                   <th className="text-left px-6 py-3">Rate</th>
@@ -188,14 +228,19 @@ export default function LoadsPage() {
                   <tr key={l.id} className={`border-b border-gray-800/50 hover:bg-gray-800/30 ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}>
                     <td className="px-6 py-4 font-mono font-bold text-blue-400">{l.loadNumber}</td>
                     <td className="px-6 py-4 text-gray-300 text-xs">{l.origin} → {l.destination}</td>
+                    <td className="px-6 py-4 text-gray-500 text-xs">
+                      {l.pickupDate ? new Date(l.pickupDate).toLocaleDateString() : '—'}
+                      {l.deliveryDate ? ` → ${new Date(l.deliveryDate).toLocaleDateString()}` : ''}
+                    </td>
                     <td className="px-6 py-4 text-gray-400">{l.truck?.unitNumber || '—'}</td>
                     <td className="px-6 py-4 text-gray-400">{l.driver ? `${l.driver.firstName} ${l.driver.lastName}` : '—'}</td>
-                    <td className="px-6 py-4 text-green-400 font-medium">${l.rate.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-green-400 font-medium">${(l.rate + (l.fuelSurcharge || 0)).toLocaleString()}</td>
                     <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[l.status]}`}>{l.status}</span>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[l.status]}`}>{l.status.replace('_', ' ')}</span>
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <button onClick={() => del(l.id)} className="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    <td className="px-6 py-4 text-right space-x-4">
+                      <button onClick={() => openEdit(l)} className="text-blue-400 hover:text-blue-300 text-xs font-medium">Edit</button>
+                      <button onClick={() => del(l.id)} className="text-red-400 hover:text-red-300 text-xs font-medium">Delete</button>
                     </td>
                   </tr>
                 ))}
