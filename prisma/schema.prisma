@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TruckStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum DriverPayType {
+  PERCENTAGE
+  PER_MILE
+  FLAT
+}
+
+enum LoadStatus {
+  PENDING
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  dotNumber String?
+  mcNumber  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  trucks    Truck[]
+  loads     Load[]
+}
+
+model Truck {
+  id          String      @id @default(cuid())
+  unitNumber  String      @unique
+  vin         String?
+  year        Int?
+  make        String?
+  model       String?
+  status      TruckStatus @default(ACTIVE)
+  companyId   String
+  company     Company     @relation(fields: [companyId], references: [id])
+  isOwnerOp   Boolean     @default(false)
+  ownerName   String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  drivers     Driver[]
+  loads       Load[]
+  settlements Settlement[]
+}
+
+model Driver {
+  id         String        @id @default(cuid())
+  firstName  String
+  lastName   String
+  phone      String?
+  email      String?
+  licenseNum String?
+  payType    DriverPayType @default(PERCENTAGE)
+  payRate    Float
+  truckId    String?
+  truck      Truck?        @relation(fields: [truckId], references: [id])
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  loads      Load[]
+  settlements Settlement[]
+}
+
+model Load {
+  id           String     @id @default(cuid())
+  loadNumber   String     @unique
+  referenceNum String?
+  status       LoadStatus @default(PENDING)
+  origin       String
+  destination  String
+  pickupDate   DateTime?
+  deliveryDate DateTime?
+  miles        Float?
+  rate         Float
+  fuelSurcharge Float?    @default(0)
+  truckId      String
+  truck        Truck      @relation(fields: [truckId], references: [id])
+  driverId     String?
+  driver       Driver?    @relation(fields: [driverId], references: [id])
+  companyId    String
+  company      Company    @relation(fields: [companyId], references: [id])
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  settlement   Settlement?
+}
+
+model Settlement {
+  id              String    @id @default(cuid())
+  weekEnding      DateTime
+  truckId         String
+  truck           Truck     @relation(fields: [truckId], references: [id])
+  driverId        String?
+  driver          Driver?   @relation(fields: [driverId], references: [id])
+  loadId          String?   @unique
+  load            Load?     @relation(fields: [loadId], references: [id])
+  grossRevenue    Float
+  driverPay       Float
+  fuelDeduction   Float     @default(0)
+  otherDeductions Float     @default(0)
+  netPay          Float
+  isPaid          Boolean   @default(false)
+  paidAt          DateTime?
+  notes           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
