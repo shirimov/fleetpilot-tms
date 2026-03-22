@@ -9,6 +9,7 @@ const nav = [
   { href: '/drivers', label: '👤 Drivers' },
   { href: '/settlements', label: '💰 Settlements' },
   { href: '/companies', label: '🏢 Companies' },
+  { href: '/inspections', label: '📋 Inspections' },
 ]
 
 export default function Sidebar() {

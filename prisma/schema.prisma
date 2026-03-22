@@ -50,9 +50,10 @@ model Truck {
   ownerName   String?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
-  drivers     Driver[]
-  loads       Load[]
-  settlements Settlement[]
+  drivers          Driver[]
+  loads            Load[]
+  settlements      Settlement[]
+  truckInspections TruckInspection[]
 }
 
 model Driver {
@@ -68,8 +69,9 @@ model Driver {
   truck      Truck?        @relation(fields: [truckId], references: [id])
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
-  loads      Load[]
-  settlements Settlement[]
+  loads               Load[]
+  settlements         Settlement[]
+  driverOrientations  DriverOrientation[]
 }
 
 model Load {
@@ -114,4 +116,30 @@ model Settlement {
   notes           String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+}
+
+model TruckInspection {
+  id          String   @id @default(cuid())
+  truckId     String
+  truck       Truck    @relation(fields: [truckId], references: [id])
+  inspectedBy String
+  inspectedAt DateTime @default(now())
+  phase1      Json
+  phase2      Json
+  phase3      Json
+  notes       String?
+  passed      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model DriverOrientation {
+  id          String   @id @default(cuid())
+  driverId    String
+  driver      Driver   @relation(fields: [driverId], references: [id])
+  completedBy String
+  completedAt DateTime @default(now())
+  checklist   Json
+  signature   String
+  notes       String?
+  createdAt   DateTime @default(now())
 }
