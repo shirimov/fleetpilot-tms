@@ -2,7 +2,19 @@
 import { useEffect, useState } from 'react'
 import Sidebar from '@/components/Sidebar'
 
-const defaultForm = { unitNumber: '', vin: '', year: '', make: '', model: '', status: 'ACTIVE', companyId: '', isOwnerOp: false, ownerName: '' }
+const defaultForm = { unitNumber: '', vin: '', year: '', make: '', model: '', status: 'ACTIVE', companyId: '', cabType: 'SLEEPER', isOwnerOp: false, ownerName: '' }
+
+const cabTypeLabels: Record<string, string> = {
+  SLEEPER: '🛏 Sleeper',
+  DAYCAB: '☀️ Day Cab',
+  OWNER_OP: '👤 Owner\'s Truck',
+}
+
+const cabTypeColors: Record<string, string> = {
+  SLEEPER: 'bg-indigo-900/50 text-indigo-300',
+  DAYCAB: 'bg-cyan-900/50 text-cyan-300',
+  OWNER_OP: 'bg-purple-900/50 text-purple-300',
+}
 
 const statusColor: Record<string, string> = {
   ACTIVE: 'bg-green-900/50 text-green-300',
@@ -16,6 +28,9 @@ export default function TrucksPage() {
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(defaultForm)
+  const [vinLooking, setVinLooking] = useState(false)
+  const [vinError, setVinError] = useState('')
+  const [vinSuccess, setVinSuccess] = useState('')
 
   const loadData = () => fetch('/api/trucks').then(r => r.json()).then(setTrucks)
   useEffect(() => {
@@ -26,10 +41,43 @@ export default function TrucksPage() {
   const openAdd = () => {
     setEditId(null)
     setForm(defaultForm)
+    setVinError('')
+    setVinSuccess('')
     setShowForm(true)
   }
 
+  const lookupVin = async () => {
+    if (form.vin.length < 17) return
+    setVinLooking(true)
+    setVinError('')
+    setVinSuccess('')
+    try {
+      const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/${form.vin.trim()}?format=json`)
+      const data = await res.json()
+      const get = (name: string) => data.Results?.find((r: any) => r.Variable === name)?.Value || ''
+      const make  = get('Make')
+      const model = get('Model')
+      const year  = get('Model Year')
+      if (!make && !model) {
+        setVinError('Could not decode VIN — check that it\'s 17 characters and correct.')
+      } else {
+        setForm(f => ({
+          ...f,
+          make:  make  || f.make,
+          model: model || f.model,
+          year:  year  || f.year,
+        }))
+        setVinSuccess(`Found: ${year} ${make} ${model}`)
+      }
+    } catch {
+      setVinError('Lookup failed. Check your connection and try again.')
+    }
+    setVinLooking(false)
+  }
+
   const openEdit = (t: any) => {
+    setVinError('')
+    setVinSuccess('')
     setEditId(t.id)
     setForm({
       unitNumber: t.unitNumber || '',
@@ -39,6 +87,7 @@ export default function TrucksPage() {
       model: t.model || '',
       status: t.status || 'ACTIVE',
       companyId: t.companyId || '',
+      cabType: t.cabType || 'SLEEPER',
       isOwnerOp: t.isOwnerOp || false,
       ownerName: t.ownerName || '',
     })
@@ -83,6 +132,24 @@ export default function TrucksPage() {
                 <h3 className="font-bold text-lg">{editId ? 'Edit Truck' : 'Add Truck'}</h3>
                 <button type="button" onClick={() => setShowForm(false)} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
               </div>
+              <div>
+                <label className="text-xs text-gray-400 uppercase">VIN</label>
+                <div className="flex gap-2 mt-1">
+                  <input value={form.vin} onChange={e => setForm({ ...form, vin: e.target.value })}
+                    placeholder="1FUJGBDV..."
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
+                  <button
+                    type="button"
+                    onClick={lookupVin}
+                    disabled={vinLooking || form.vin.length < 17}
+                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    {vinLooking ? '...' : '🔍 Lookup'}
+                  </button>
+                </div>
+                {vinError && <div className="text-red-400 text-xs mt-1">{vinError}</div>}
+                {vinSuccess && <div className="text-green-400 text-xs mt-1">✅ {vinSuccess}</div>}
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Unit # *</label>
@@ -112,10 +179,19 @@ export default function TrucksPage() {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-gray-400 uppercase">VIN</label>
-                <input value={form.vin} onChange={e => setForm({ ...form, vin: e.target.value })}
-                  placeholder="1FUJGBDV..."
-                  className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
+                <label className="text-xs text-gray-400 uppercase">Cab Type *</label>
+                <div className="grid grid-cols-3 gap-2 mt-1">
+                  {(['SLEEPER', 'DAYCAB', 'OWNER_OP'] as const).map(ct => (
+                    <button
+                      key={ct}
+                      type="button"
+                      onClick={() => setForm({ ...form, cabType: ct, isOwnerOp: ct === 'OWNER_OP' })}
+                      className={`py-2 px-1 rounded-lg text-xs font-semibold border transition-all ${form.cabType === ct ? 'border-blue-500 bg-blue-600/30 text-white' : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-500'}`}
+                    >
+                      {cabTypeLabels[ct]}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <label className="text-xs text-gray-400 uppercase">Status</label>
@@ -134,15 +210,11 @@ export default function TrucksPage() {
                   {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
-              <div className="flex items-center gap-3">
-                <input type="checkbox" id="ownerOp" checked={form.isOwnerOp} onChange={e => setForm({ ...form, isOwnerOp: e.target.checked })}
-                  className="w-4 h-4 rounded accent-blue-600" />
-                <label htmlFor="ownerOp" className="text-sm text-gray-300">Owner-Operator</label>
-              </div>
-              {form.isOwnerOp && (
+              {form.cabType === 'OWNER_OP' && (
                 <div>
                   <label className="text-xs text-gray-400 uppercase">Owner Name</label>
                   <input value={form.ownerName} onChange={e => setForm({ ...form, ownerName: e.target.value })}
+                    placeholder="Owner's full name"
                     className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
                 </div>
               )}
@@ -181,9 +253,9 @@ export default function TrucksPage() {
                     <td className="px-6 py-4 text-gray-300">{[t.year, t.make, t.model].filter(Boolean).join(' ') || '—'}</td>
                     <td className="px-6 py-4 text-gray-400">{t.company?.name || '—'}</td>
                     <td className="px-6 py-4">
-                      {t.isOwnerOp
-                        ? <span className="bg-purple-900/50 text-purple-300 px-2 py-1 rounded-full text-xs font-medium">Owner-Op</span>
-                        : <span className="bg-blue-900/50 text-blue-300 px-2 py-1 rounded-full text-xs font-medium">Company</span>}
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${cabTypeColors[t.cabType] || 'bg-gray-700 text-gray-400'}`}>
+                        {cabTypeLabels[t.cabType] || t.cabType || '—'}
+                      </span>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[t.status]}`}>{t.status}</span>

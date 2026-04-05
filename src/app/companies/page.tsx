@@ -9,6 +9,9 @@ export default function CompaniesPage() {
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(defaultForm)
+  const [dotLooking, setDotLooking] = useState(false)
+  const [dotError, setDotError] = useState('')
+  const [dotSuccess, setDotSuccess] = useState('')
 
   const loadData = () => fetch('/api/companies').then(r => r.json()).then(setCompanies)
   useEffect(() => { loadData() }, [])
@@ -16,13 +19,43 @@ export default function CompaniesPage() {
   const openAdd = () => {
     setEditId(null)
     setForm(defaultForm)
+    setDotError('')
+    setDotSuccess('')
     setShowForm(true)
   }
 
   const openEdit = (c: any) => {
     setEditId(c.id)
+    setDotError('')
+    setDotSuccess('')
     setForm({ name: c.name, dotNumber: c.dotNumber || '', mcNumber: c.mcNumber || '' })
     setShowForm(true)
+  }
+
+  const lookupCarrier = async (type: 'dot' | 'mc') => {
+    const value = type === 'dot' ? form.dotNumber.trim() : form.mcNumber.trim()
+    if (!value) return
+    setDotLooking(true)
+    setDotError('')
+    setDotSuccess('')
+    try {
+      const res = await fetch(`/api/lookup/dot?${type}=${value}`)
+      const data = await res.json()
+      if (!res.ok) {
+        setDotError(data.error || 'Lookup failed')
+      } else {
+        setForm(f => ({
+          ...f,
+          name:      data.name      || f.name,
+          dotNumber: data.dotNumber || f.dotNumber,
+          mcNumber:  data.mcNumber  || f.mcNumber,
+        }))
+        setDotSuccess(`✅ Found: ${data.name}${data.status ? ` · ${data.status}` : ''}${data.address ? ` · ${data.address}` : ''}`)
+      }
+    } catch {
+      setDotError('Lookup failed. Check your connection.')
+    }
+    setDotLooking(false)
   }
 
   const submit = async (e: any) => {
@@ -81,16 +114,44 @@ export default function CompaniesPage() {
               </div>
               <div>
                 <label className="text-xs text-gray-400 uppercase tracking-wide">DOT Number</label>
-                <input value={form.dotNumber} onChange={e => setForm({ ...form, dotNumber: e.target.value })}
-                  placeholder="e.g. 3456789"
-                  className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors" />
+                <div className="flex gap-2 mt-1">
+                  <input
+                    value={form.dotNumber}
+                    onChange={e => { setForm({ ...form, dotNumber: e.target.value }); setDotSuccess(''); setDotError('') }}
+                    placeholder="e.g. 3456789"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => lookupCarrier('dot')}
+                    disabled={dotLooking || !form.dotNumber.trim()}
+                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    {dotLooking ? '...' : '🔍 Lookup'}
+                  </button>
+                </div>
               </div>
               <div>
                 <label className="text-xs text-gray-400 uppercase tracking-wide">MC Number</label>
-                <input value={form.mcNumber} onChange={e => setForm({ ...form, mcNumber: e.target.value })}
-                  placeholder="e.g. 1234567"
-                  className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors" />
+                <div className="flex gap-2 mt-1">
+                  <input
+                    value={form.mcNumber}
+                    onChange={e => { setForm({ ...form, mcNumber: e.target.value }); setDotSuccess(''); setDotError('') }}
+                    placeholder="e.g. 1234567"
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => lookupCarrier('mc')}
+                    disabled={dotLooking || !form.mcNumber.trim()}
+                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    {dotLooking ? '...' : '🔍 Lookup'}
+                  </button>
+                </div>
               </div>
+              {dotError   && <div className="text-red-400 text-xs -mt-2">{dotError}</div>}
+              {dotSuccess && <div className="text-green-400 text-xs -mt-2 leading-snug">{dotSuccess}</div>}
               <div className="flex gap-3 pt-2">
                 <button type="submit" className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded-lg text-sm font-medium transition-colors">
                   {editId ? 'Save Changes' : 'Add Company'}

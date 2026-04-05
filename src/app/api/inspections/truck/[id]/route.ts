@@ -6,7 +6,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const { id } = await params
     const inspection = await prisma.truckInspection.findUnique({
       where: { id },
-      include: { truck: { select: { unitNumber: true, make: true, model: true, year: true } } },
+      include: { truck: { select: { unitNumber: true, make: true, model: true, year: true, cabType: true } } },
     })
     if (!inspection) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     return NextResponse.json(inspection)

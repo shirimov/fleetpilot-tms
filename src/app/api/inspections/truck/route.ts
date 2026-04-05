@@ -18,12 +18,12 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { truckId, inspectedBy, phase1, phase2, phase3, notes, passed } = body
+    const { truckId, inspectedBy, currentMileage, phase1, phase2, phase3, notes, passed } = body
     if (!truckId || !inspectedBy || !phase1 || !phase2 || !phase3) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
     const inspection = await prisma.truckInspection.create({
-      data: { truckId, inspectedBy, phase1, phase2, phase3, notes, passed: passed ?? true },
+      data: { truckId, inspectedBy, currentMileage: currentMileage ?? null, phase1, phase2, phase3, notes, passed: passed ?? true },
       include: { truck: { select: { unitNumber: true } } },
     })
     return NextResponse.json(inspection, { status: 201 })

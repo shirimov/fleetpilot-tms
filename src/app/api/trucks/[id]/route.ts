@@ -14,7 +14,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       model: body.model || null,
       status: body.status || 'ACTIVE',
       companyId: body.companyId,
-      isOwnerOp: body.isOwnerOp === true,
+      cabType: body.cabType || 'SLEEPER',
+      isOwnerOp: body.cabType === 'OWNER_OP',
       ownerName: body.ownerName || null,
     },
   })

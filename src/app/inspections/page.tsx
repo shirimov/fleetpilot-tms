@@ -4,6 +4,7 @@ import TruckInspectionForm from './TruckInspectionForm'
 import DriverOrientationForm from './DriverOrientationForm'
 import TruckInspectionDetail from './TruckInspectionDetail'
 import DriverOrientationDetail from './DriverOrientationDetail'
+import Sidebar from '@/components/Sidebar'
 
 type Tab = 'truck' | 'driver'
 
@@ -68,17 +69,28 @@ export default function InspectionsPage() {
     fetchDriver()
   }
 
+  const withSidebar = (content: React.ReactNode) => (
+    <div className="min-h-screen bg-gray-950 text-white">
+      <div className="flex h-screen">
+        <Sidebar />
+        <main className="flex-1 overflow-auto">
+          {content}
+        </main>
+      </div>
+    </div>
+  )
+
   if (showTruckForm) {
-    return <TruckInspectionForm onSaved={handleTruckSaved} onCancel={() => setShowTruckForm(false)} />
+    return withSidebar(<TruckInspectionForm onSaved={handleTruckSaved} onCancel={() => setShowTruckForm(false)} />)
   }
   if (showDriverForm) {
-    return <DriverOrientationForm onSaved={handleDriverSaved} onCancel={() => setShowDriverForm(false)} />
+    return withSidebar(<DriverOrientationForm onSaved={handleDriverSaved} onCancel={() => setShowDriverForm(false)} />)
   }
   if (selectedTruckId) {
-    return <TruckInspectionDetail id={selectedTruckId} onBack={() => setSelectedTruckId(null)} />
+    return withSidebar(<TruckInspectionDetail id={selectedTruckId} onBack={() => setSelectedTruckId(null)} />)
   }
   if (selectedDriverId) {
-    return <DriverOrientationDetail id={selectedDriverId} onBack={() => setSelectedDriverId(null)} />
+    return withSidebar(<DriverOrientationDetail id={selectedDriverId} onBack={() => setSelectedDriverId(null)} />)
   }
 
   return (

@@ -12,6 +12,12 @@ enum TruckStatus {
   MAINTENANCE
 }
 
+enum CabType {
+  DAYCAB
+  SLEEPER
+  OWNER_OP
+}
+
 enum DriverPayType {
   PERCENTAGE
   PER_MILE
@@ -34,6 +40,7 @@ model Company {
   updatedAt DateTime @updatedAt
   trucks    Truck[]
   loads     Load[]
+  bankAccounts BankAccount[]
 }
 
 model Truck {
@@ -46,6 +53,7 @@ model Truck {
   status      TruckStatus @default(ACTIVE)
   companyId   String
   company     Company     @relation(fields: [companyId], references: [id])
+  cabType     CabType     @default(SLEEPER)
   isOwnerOp   Boolean     @default(false)
   ownerName   String?
   createdAt   DateTime    @default(now())
@@ -127,9 +135,62 @@ model TruckInspection {
   phase1      Json
   phase2      Json
   phase3      Json
+  currentMileage Int?
   notes       String?
   passed      Boolean  @default(true)
+  photos      Json?
   createdAt   DateTime @default(now())
+}
+
+model BankAccount {
+  id              String        @id @default(cuid())
+  companyId       String?
+  company         Company?      @relation(fields: [companyId], references: [id])
+  plaidItemId     String        @unique
+  plaidAccessToken String
+  institutionId   String?
+  institutionName String?
+  accounts        BankSubAccount[]
+  transactions    BankTransaction[]
+  lastSync        DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model BankSubAccount {
+  id              String      @id @default(cuid())
+  bankAccountId   String
+  bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id])
+  plaidAccountId  String      @unique
+  name            String
+  officialName    String?
+  type            String
+  subtype         String?
+  mask            String?
+  currentBalance  Float?
+  availableBalance Float?
+  transactions    BankTransaction[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model BankTransaction {
+  id              String       @id @default(cuid())
+  bankAccountId   String
+  bankAccount     BankAccount  @relation(fields: [bankAccountId], references: [id])
+  subAccountId    String?
+  subAccount      BankSubAccount? @relation(fields: [subAccountId], references: [id])
+  plaidTransactionId String    @unique
+  date            DateTime
+  amount          Float
+  name            String
+  merchantName    String?
+  category        String?
+  subCategory     String?
+  pending         Boolean      @default(false)
+  notes           String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 }
 
 model DriverOrientation {

@@ -20,7 +20,8 @@ export async function POST(req: Request) {
       model: body.model || null,
       status: body.status || 'ACTIVE',
       companyId: body.companyId,
-      isOwnerOp: body.isOwnerOp === true,
+      cabType: body.cabType || 'SLEEPER',
+      isOwnerOp: body.cabType === 'OWNER_OP',
       ownerName: body.ownerName || null,
     },
   })
