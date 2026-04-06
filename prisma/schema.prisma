@@ -193,6 +193,35 @@ model BankTransaction {
   updatedAt       DateTime     @updatedAt
 }
 
+model EmailAccount {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  label       String
+  password    String
+  imapHost    String   @default("imap.gmail.com")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  emails      Email[]
+}
+
+model Email {
+  id            String       @id @default(cuid())
+  accountId     String
+  account       EmailAccount @relation(fields: [accountId], references: [id])
+  messageId     String
+  from          String
+  subject       String
+  date          DateTime
+  body          String       @db.Text
+  isRead        Boolean      @default(false)
+  isHandled     Boolean      @default(false)
+  priority      String       @default("normal")
+  category      String?
+  createdAt     DateTime     @default(now())
+
+  @@unique([accountId, messageId])
+}
+
 model DriverOrientation {
   id          String   @id @default(cuid())
   driverId    String

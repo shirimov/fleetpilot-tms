@@ -11,6 +11,7 @@ const nav = [
   { href: '/companies', label: '🏢 Companies' },
   { href: '/inspections', label: '📋 Inspections' },
   { href: '/finance', label: '💳 Finance' },
+  { href: '/inbox', label: '📬 Inbox' },
 ]
 
 export default function Sidebar() {

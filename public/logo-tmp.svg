@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Background -->
+  <rect width="512" height="512" rx="80" fill="#1e3a5f"/>
+  
+  <!-- Truck body -->
+  <rect x="80" y="200" width="240" height="140" rx="12" fill="#2563eb"/>
+  
+  <!-- Cab -->
+  <rect x="320" y="230" width="110" height="110" rx="12" fill="#2563eb"/>
+  
+  <!-- Cab window -->
+  <rect x="335" y="245" width="75" height="55" rx="8" fill="#93c5fd"/>
+  
+  <!-- Wheels -->
+  <circle cx="155" cy="355" r="38" fill="#1e293b"/>
+  <circle cx="155" cy="355" r="20" fill="#94a3b8"/>
+  <circle cx="290" cy="355" r="38" fill="#1e293b"/>
+  <circle cx="290" cy="355" r="20" fill="#94a3b8"/>
+  <circle cx="400" cy="355" r="38" fill="#1e293b"/>
+  <circle cx="400" cy="355" r="20" fill="#94a3b8"/>
+  
+  <!-- Ground line -->
+  <rect x="60" y="388" width="400" height="6" rx="3" fill="#334155"/>
+  
+  <!-- Text -->
+  <text x="256" y="460" font-family="Arial, sans-serif" font-size="48" font-weight="bold" fill="white" text-anchor="middle">FleetPilot</text>
+</svg>
