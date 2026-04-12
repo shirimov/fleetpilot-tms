@@ -18,6 +18,7 @@ const hrNav = [
   { href: '/hr/employees', label: '👥 Employees' },
   { href: '/drivers', label: '🚛 Drivers' },
   { href: '/hr/payroll', label: '💵 Payroll' },
+  { href: '/hr/tmfund', label: '🇹🇲 TM Fund' },
 ]
 
 export default function Sidebar() {

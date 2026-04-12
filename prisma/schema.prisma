@@ -247,7 +247,7 @@ model Employee {
   email         String?
   country       String       @default("Turkmenistan")
   city          String?
-  salary        Float
+  salary        Float?
   currency      String       @default("USD")
   paymentMethod String       @default("Bank Transfer")
   startDate     DateTime?
@@ -271,6 +271,38 @@ model EmployeePayment {
   notes       String?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+}
+
+enum TmFundTxType {
+  DEPOSIT
+  PAYMENT
+  EXPENSE
+  ADJUSTMENT
+}
+
+model TmFund {
+  id           String         @id @default(cuid())
+  name         String         @default("Turkmenistan Fund")
+  balance      Float          @default(0)
+  currency     String         @default("USD")
+  notes        String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  transactions TmFundTx[]
+}
+
+model TmFundTx {
+  id          String       @id @default(cuid())
+  fundId      String
+  fund        TmFund       @relation(fields: [fundId], references: [id])
+  type        TmFundTxType
+  amount      Float
+  description String
+  employeeId  String?
+  paymentRef  String?
+  date        DateTime     @default(now())
+  notes       String?
+  createdAt   DateTime     @default(now())
 }
 
 model DriverOrientation {

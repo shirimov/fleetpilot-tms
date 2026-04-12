@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
       email: data.email || null,
       country: data.country || 'Turkmenistan',
       city: data.city || null,
-      salary: parseFloat(data.salary),
+      salary: data.salary ? parseFloat(data.salary) : null,
       currency: data.currency || 'USD',
       paymentMethod: data.paymentMethod || 'Bank Transfer',
       startDate: data.startDate ? new Date(data.startDate) : null,

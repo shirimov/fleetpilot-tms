@@ -4,20 +4,13 @@ import Sidebar from '@/components/Sidebar'
 
 const ROLES = ['DISPATCHER', 'ACCOUNTANT', 'MANAGER', 'ADMIN', 'SAFETY', 'OTHER']
 const ROLE_LABELS: Record<string, string> = {
-  DISPATCHER: 'Dispatcher',
-  ACCOUNTANT: 'Accountant',
-  MANAGER: 'Manager',
-  ADMIN: 'Admin',
-  SAFETY: 'Safety',
-  OTHER: 'Other',
+  DISPATCHER: 'Dispatcher', ACCOUNTANT: 'Accountant', MANAGER: 'Manager',
+  ADMIN: 'Admin', SAFETY: 'Safety', OTHER: 'Other',
 }
 const ROLE_COLORS: Record<string, string> = {
-  DISPATCHER: 'bg-blue-900/50 text-blue-300',
-  ACCOUNTANT: 'bg-green-900/50 text-green-300',
-  MANAGER: 'bg-purple-900/50 text-purple-300',
-  ADMIN: 'bg-yellow-900/50 text-yellow-300',
-  SAFETY: 'bg-orange-900/50 text-orange-300',
-  OTHER: 'bg-gray-800 text-gray-300',
+  DISPATCHER: 'bg-blue-900/50 text-blue-300', ACCOUNTANT: 'bg-green-900/50 text-green-300',
+  MANAGER: 'bg-purple-900/50 text-purple-300', ADMIN: 'bg-yellow-900/50 text-yellow-300',
+  SAFETY: 'bg-orange-900/50 text-orange-300', OTHER: 'bg-gray-800 text-gray-300',
 }
 
 const empty = {
@@ -36,12 +29,14 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false)
   const [showPayModal, setShowPayModal] = useState(false)
   const [payTarget, setPayTarget] = useState<any>(null)
-  const [payForm, setPayForm] = useState({ amount: '', currency: 'USD', period: '', method: 'Bank Transfer', notes: '', status: 'PAID', paidAt: '' })
+  const [payForm, setPayForm] = useState({ amount: '', currency: 'USD', period: '', method: 'Bank Transfer', notes: '', status: 'PAID', paidAt: '', deductFromFund: false })
   const [payHistory, setPayHistory] = useState<any[]>([])
   const [historyEmp, setHistoryEmp] = useState<any>(null)
+  const [fundBalance, setFundBalance] = useState<number | null>(null)
 
   const load = () => {
     fetch('/api/employees').then(r => r.json()).then(d => { setEmployees(d); setLoading(false) })
+    fetch('/api/tmfund').then(r => r.json()).then(d => setFundBalance(d.balance))
   }
 
   useEffect(() => { load() }, [])
@@ -50,9 +45,9 @@ export default function EmployeesPage() {
   const openEdit = (e: any) => {
     setEditing(e)
     setForm({
-      firstName: e.firstName, lastName: e.lastName, role: e.role, roleCustom: e.roleCustom || '',
+      firstName: e.firstName, lastName: e.lastName || '', role: e.role, roleCustom: e.roleCustom || '',
       phone: e.phone || '', email: e.email || '', country: e.country, city: e.city || '',
-      salary: e.salary, currency: e.currency, paymentMethod: e.paymentMethod,
+      salary: e.salary ?? '', currency: e.currency, paymentMethod: e.paymentMethod,
       startDate: e.startDate ? e.startDate.substring(0, 10) : '', notes: e.notes || '', isActive: e.isActive,
     })
     setShowModal(true)
@@ -63,24 +58,43 @@ export default function EmployeesPage() {
     const url = editing ? `/api/employees/${editing.id}` : '/api/employees'
     const method = editing ? 'PUT' : 'POST'
     await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
-    setSaving(false)
-    setShowModal(false)
-    load()
+    setSaving(false); setShowModal(false); load()
   }
 
   const openPayModal = (e: any) => {
     setPayTarget(e)
     const now = new Date()
-    setPayForm({ amount: String(e.salary), currency: e.currency, period: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`, method: e.paymentMethod, notes: '', status: 'PAID', paidAt: now.toISOString().substring(0, 10) })
+    setPayForm({
+      amount: e.salary ? String(e.salary) : '',
+      currency: e.currency, period: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+      method: e.paymentMethod, notes: '', status: 'PAID',
+      paidAt: now.toISOString().substring(0, 10), deductFromFund: false,
+    })
     setShowPayModal(true)
   }
 
   const savePay = async () => {
     setSaving(true)
-    await fetch(`/api/employees/${payTarget.id}/payments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payForm) })
-    setSaving(false)
-    setShowPayModal(false)
-    load()
+    // Log employee payment
+    await fetch(`/api/employees/${payTarget.id}/payments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payForm),
+    })
+    // Optionally deduct from TM Fund
+    if (payForm.deductFromFund) {
+      await fetch('/api/tmfund', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'PAYMENT',
+          amount: payForm.amount,
+          description: `Salary — ${payTarget.firstName} ${payTarget.lastName || ''} (${payForm.period})`,
+          employeeId: payTarget.id,
+          date: payForm.paidAt,
+          notes: payForm.notes,
+        }),
+      })
+    }
+    setSaving(false); setShowPayModal(false); load()
   }
 
   const openHistory = async (e: any) => {
@@ -90,7 +104,7 @@ export default function EmployeesPage() {
   }
 
   const activeEmployees = employees.filter(e => e.isActive)
-  const totalMonthly = activeEmployees.reduce((s, e) => s + e.salary, 0)
+  const totalMonthly = activeEmployees.reduce((s, e) => s + (e.salary || 0), 0)
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -109,7 +123,7 @@ export default function EmployeesPage() {
             </div>
 
             {/* Summary cards */}
-            <div className="grid grid-cols-3 gap-4 mb-8">
+            <div className="grid grid-cols-4 gap-4 mb-8">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Active Employees</p>
                 <p className="text-3xl font-bold mt-2">{activeEmployees.length}</p>
@@ -117,11 +131,20 @@ export default function EmployeesPage() {
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Monthly Payroll</p>
                 <p className="text-3xl font-bold mt-2 text-green-400">${totalMonthly.toLocaleString()}</p>
-                <p className="text-gray-500 text-xs mt-1">USD equivalent</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Countries</p>
                 <p className="text-3xl font-bold mt-2">{new Set(activeEmployees.map(e => e.country)).size}</p>
+              </div>
+              <div
+                className="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-blue-600 transition-colors"
+                onClick={() => window.location.href = '/hr/tmfund'}
+              >
+                <p className="text-gray-400 text-xs uppercase tracking-wide">🇹🇲 TM Fund</p>
+                <p className={`text-3xl font-bold mt-2 ${fundBalance !== null && fundBalance < 0 ? 'text-red-400' : 'text-blue-400'}`}>
+                  {fundBalance !== null ? `$${fundBalance.toLocaleString()}` : '...'}
+                </p>
+                <p className="text-gray-500 text-xs mt-1">click to manage →</p>
               </div>
             </div>
 
@@ -151,7 +174,7 @@ export default function EmployeesPage() {
                     {employees.map(e => (
                       <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/30">
                         <td className="px-6 py-4">
-                          <div className="font-medium">{e.firstName} {e.lastName}</div>
+                          <div className="font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</div>
                           {e.email && <div className="text-gray-500 text-xs">{e.email}</div>}
                           {e.phone && <div className="text-gray-500 text-xs">{e.phone}</div>}
                         </td>
@@ -160,11 +183,9 @@ export default function EmployeesPage() {
                             {e.role === 'OTHER' && e.roleCustom ? e.roleCustom : ROLE_LABELS[e.role]}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-gray-300">
-                          {e.city ? `${e.city}, ` : ''}{e.country}
-                        </td>
+                        <td className="px-6 py-4 text-gray-300">{e.city ? `${e.city}, ` : ''}{e.country}</td>
                         <td className="px-6 py-4 text-green-400 font-medium">
-                          ${e.salary.toLocaleString()} <span className="text-gray-500 text-xs">{e.currency}</span>
+                          {e.salary ? <>${e.salary.toLocaleString()} <span className="text-gray-500 text-xs">{e.currency}</span></> : <span className="text-gray-500">—</span>}
                         </td>
                         <td className="px-6 py-4 text-gray-300">{e.paymentMethod}</td>
                         <td className="px-6 py-4">
@@ -204,7 +225,7 @@ export default function EmployeesPage() {
                   <input value={form.firstName} onChange={e => setForm((f: any) => ({ ...f, firstName: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1">Last Name *</label>
+                  <label className="text-xs text-gray-400 block mb-1">Last Name</label>
                   <input value={form.lastName} onChange={e => setForm((f: any) => ({ ...f, lastName: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
                 </div>
               </div>
@@ -244,29 +265,20 @@ export default function EmployeesPage() {
               </div>
               <div className="grid grid-cols-3 gap-4">
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Monthly Salary *</label>
-                  <input type="number" value={form.salary} onChange={e => setForm((f: any) => ({ ...f, salary: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="0" />
+                  <label className="text-xs text-gray-400 block mb-1">Monthly Salary <span className="text-gray-600">(optional)</span></label>
+                  <input type="number" value={form.salary} onChange={e => setForm((f: any) => ({ ...f, salary: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Leave blank if variable" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Currency</label>
                   <select value={form.currency} onChange={e => setForm((f: any) => ({ ...f, currency: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
-                    <option>USD</option>
-                    <option>TMT</option>
-                    <option>EUR</option>
-                    <option>RUB</option>
+                    <option>USD</option><option>TMT</option><option>EUR</option><option>RUB</option>
                   </select>
                 </div>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Payment Method</label>
                 <select value={form.paymentMethod} onChange={e => setForm((f: any) => ({ ...f, paymentMethod: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
-                  <option>Bank Transfer</option>
-                  <option>Western Union</option>
-                  <option>MoneyGram</option>
-                  <option>Cash</option>
-                  <option>Wise</option>
-                  <option>Crypto</option>
-                  <option>Other</option>
+                  <option>Bank Transfer</option><option>Western Union</option><option>MoneyGram</option><option>Cash</option><option>Wise</option><option>Crypto</option><option>Other</option>
                 </select>
               </div>
               <div>
@@ -286,7 +298,7 @@ export default function EmployeesPage() {
             </div>
             <div className="p-6 border-t border-gray-800 flex gap-3 justify-end">
               <button onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
-              <button onClick={save} disabled={saving || !form.firstName || !form.salary} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              <button onClick={save} disabled={saving || !form.firstName} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
                 {saving ? 'Saving...' : editing ? 'Save Changes' : 'Add Employee'}
               </button>
             </div>
@@ -299,14 +311,14 @@ export default function EmployeesPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md">
             <div className="p-6 border-b border-gray-800 flex items-center justify-between">
-              <h3 className="font-semibold text-lg">Log Payment — {payTarget.firstName} {payTarget.lastName}</h3>
+              <h3 className="font-semibold text-lg">Log Payment — {payTarget.firstName} {payTarget.lastName || ''}</h3>
               <button onClick={() => setShowPayModal(false)} className="text-gray-500 hover:text-white text-xl">✕</button>
             </div>
             <div className="p-6 space-y-4">
               <div className="grid grid-cols-3 gap-4">
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Amount</label>
-                  <input type="number" value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+                  <label className="text-xs text-gray-400 block mb-1">Amount *</label>
+                  <input type="number" value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="0" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Currency</label>
@@ -335,10 +347,23 @@ export default function EmployeesPage() {
                 <label className="text-xs text-gray-400 block mb-1">Notes</label>
                 <input value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
               </div>
+              {/* TM Fund deduction */}
+              <div className={`rounded-lg p-3 border ${payForm.deductFromFund ? 'border-blue-600 bg-blue-900/20' : 'border-gray-700 bg-gray-800/50'}`}>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" id="deductFund" checked={payForm.deductFromFund} onChange={e => setPayForm(f => ({ ...f, deductFromFund: e.target.checked }))} className="w-4 h-4" />
+                  <label htmlFor="deductFund" className="text-sm text-gray-300 cursor-pointer">
+                    Deduct from TM Fund
+                    {fundBalance !== null && <span className="text-gray-500 ml-2">(balance: ${fundBalance.toLocaleString()})</span>}
+                  </label>
+                </div>
+                {payForm.deductFromFund && (
+                  <p className="text-xs text-blue-400 mt-2">This payment will be recorded and deducted from the Turkmenistan Fund balance.</p>
+                )}
+              </div>
             </div>
             <div className="p-6 border-t border-gray-800 flex gap-3 justify-end">
               <button onClick={() => setShowPayModal(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
-              <button onClick={savePay} disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
+              <button onClick={savePay} disabled={saving || !payForm.amount} className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm rounded-lg font-medium">
                 {saving ? 'Saving...' : 'Log Payment'}
               </button>
             </div>
@@ -351,7 +376,7 @@ export default function EmployeesPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col">
             <div className="p-6 border-b border-gray-800 flex items-center justify-between">
-              <h3 className="font-semibold text-lg">Payment History — {historyEmp.firstName} {historyEmp.lastName}</h3>
+              <h3 className="font-semibold text-lg">Payment History — {historyEmp.firstName} {historyEmp.lastName || ''}</h3>
               <button onClick={() => setHistoryEmp(null)} className="text-gray-500 hover:text-white text-xl">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
