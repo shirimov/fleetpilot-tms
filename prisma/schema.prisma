@@ -222,6 +222,57 @@ model Email {
   @@unique([accountId, messageId])
 }
 
+enum EmployeeRole {
+  DISPATCHER
+  ACCOUNTANT
+  MANAGER
+  ADMIN
+  SAFETY
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  CANCELLED
+}
+
+model Employee {
+  id            String       @id @default(cuid())
+  firstName     String
+  lastName      String
+  role          EmployeeRole @default(DISPATCHER)
+  roleCustom    String?
+  phone         String?
+  email         String?
+  country       String       @default("Turkmenistan")
+  city          String?
+  salary        Float
+  currency      String       @default("USD")
+  paymentMethod String       @default("Bank Transfer")
+  startDate     DateTime?
+  isActive      Boolean      @default(true)
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  payments      EmployeePayment[]
+}
+
+model EmployeePayment {
+  id          String        @id @default(cuid())
+  employeeId  String
+  employee    Employee      @relation(fields: [employeeId], references: [id])
+  amount      Float
+  currency    String        @default("USD")
+  period      String        // e.g. "2026-04"
+  method      String        @default("Bank Transfer")
+  status      PaymentStatus @default(PENDING)
+  paidAt      DateTime?
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
 model DriverOrientation {
   id          String   @id @default(cuid())
   driverId    String

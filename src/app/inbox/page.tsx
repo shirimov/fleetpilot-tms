@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
+import Sidebar from '@/components/Sidebar'
 
 interface EmailAccount {
   id: string
@@ -36,6 +37,7 @@ export default function InboxPage() {
   const [filter, setFilter] = useState<'all' | 'urgent' | 'important'>('all')
   const [showHandled, setShowHandled] = useState(false)
   const [showAddAccount, setShowAddAccount] = useState(false)
+  const [lastSync, setLastSync] = useState<Date | null>(new Date())
   const [newAccount, setNewAccount] = useState({ email: '', label: '', password: '' })
   const [stats, setStats] = useState<{ priority: string; _count: number }[]>([])
 
@@ -44,7 +46,7 @@ export default function InboxPage() {
     try {
       const [accRes, emailRes] = await Promise.all([
         fetch('/api/inbox/accounts'),
-        fetch(`/api/inbox?${showHandled ? '' : 'unhandled=true'}${filter !== 'all' ? `&priority=${filter}` : ''}`),
+        fetch(`/api/inbox?${filter !== 'all' ? `priority=${filter}` : ''}`),
       ])
       const accData = await accRes.json()
       const emailData = await emailRes.json()
@@ -58,6 +60,26 @@ export default function InboxPage() {
 
   useEffect(() => { loadData() }, [loadData])
 
+  // Auto-sync all accounts every 5 minutes
+  useEffect(() => {
+    const autoSync = async () => {
+      const accRes = await fetch('/api/inbox/accounts')
+      const accounts = await accRes.json()
+      if (!Array.isArray(accounts)) return
+      for (const acc of accounts) {
+        await fetch('/api/inbox/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId: acc.id }),
+        })
+      }
+      await loadData()
+      setLastSync(new Date())
+    }
+    const interval = setInterval(autoSync, 5 * 60 * 1000) // every 5 minutes
+    return () => clearInterval(interval)
+  }, [loadData])
+
   const syncAccount = async (accountId: string) => {
     setSyncing(accountId)
     try {
@@ -68,7 +90,7 @@ export default function InboxPage() {
       })
       const data = await res.json()
       if (data.error) alert('Sync failed: ' + data.error)
-      else await loadData()
+      else { await loadData(); setLastSync(new Date()); }
     } finally {
       setSyncing(null)
     }
@@ -86,6 +108,16 @@ export default function InboxPage() {
     await loadData()
   }
 
+  const markAsRead = async (email: Email) => {
+    if (email.isRead) return
+    await fetch('/api/inbox', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: email.id, isRead: true }),
+    })
+    setEmails(prev => prev.map(e => e.id === email.id ? { ...e, isRead: true } : e))
+  }
+
   const markHandled = async (id: string) => {
     await fetch('/api/inbox', {
       method: 'PATCH',
@@ -100,13 +132,18 @@ export default function InboxPage() {
   const importantCount = stats.find(s => s.priority === 'important')?._count || 0
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-screen overflow-hidden bg-gray-950 text-white">
+      <Sidebar />
+      <div className="flex flex-1 overflow-hidden">
       {/* Left panel */}
       <div className="w-80 shrink-0 bg-gray-900 border-r border-gray-800 flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-gray-800">
           <div className="flex items-center justify-between mb-3">
-            <h1 className="text-lg font-bold text-white">📬 Inbox</h1>
+            <div>
+              <h1 className="text-lg font-bold text-white">📬 Inbox</h1>
+              {lastSync && <p className="text-gray-600 text-xs">Synced {lastSync.toLocaleTimeString()}</p>}
+            </div>
             <button
               onClick={() => setShowAddAccount(true)}
               className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded"
@@ -188,7 +225,7 @@ export default function InboxPage() {
             emails.map(email => (
               <div
                 key={email.id}
-                onClick={() => setSelected(email)}
+                onClick={() => { setSelected(email); markAsRead(email); }}
                 className={`p-3 border-b border-gray-800 cursor-pointer hover:bg-gray-800 transition-colors ${
                   selected?.id === email.id ? 'bg-gray-800' : ''
                 } ${email.isHandled ? 'opacity-50' : ''}`}
@@ -201,7 +238,7 @@ export default function InboxPage() {
                     <span className="text-xs text-gray-500">{email.category}</span>
                   )}
                 </div>
-                <p className="text-white text-sm font-medium truncate">{email.subject}</p>
+                <p className={`text-sm truncate ${email.isRead ? 'text-gray-400 font-normal' : 'text-white font-bold'}`}>{email.subject}</p>
                 <p className="text-gray-400 text-xs truncate mt-0.5">{email.from.split('<')[0].trim()}</p>
                 <p className="text-gray-600 text-xs mt-0.5">{new Date(email.date).toLocaleDateString()}</p>
               </div>
@@ -211,10 +248,10 @@ export default function InboxPage() {
       </div>
 
       {/* Right panel - email body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex flex-col overflow-hidden">
         {selected ? (
-          <div className="p-6">
-            <div className="flex items-start justify-between mb-4">
+          <div className="flex flex-col h-full overflow-hidden">
+            <div className="flex items-start justify-between p-6 pb-4 shrink-0">
               <div className="flex-1">
                 <h2 className="text-xl font-bold text-white mb-1">{selected.subject}</h2>
                 <p className="text-gray-400 text-sm">From: {selected.from}</p>
@@ -236,10 +273,21 @@ export default function InboxPage() {
                 )}
               </div>
             </div>
-            <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
-              <pre className="text-gray-300 text-sm whitespace-pre-wrap font-sans leading-relaxed">
-                {selected.body}
-              </pre>
+            <div className="flex-1 mx-6 mb-6 bg-white rounded-xl border border-gray-700 overflow-hidden">
+              {selected.body.trim().startsWith('<') ? (
+                <iframe
+                  srcDoc={selected.body}
+                  className="w-full h-full border-0"
+                  style={{ width: '100%', height: '100%' }}
+                  referrerPolicy="no-referrer"
+                  title="Email content"
+                  onLoad={() => {}}
+                />
+              ) : (
+                <div className="p-6 text-gray-800 text-sm whitespace-pre-wrap leading-relaxed font-sans">
+                  {selected.body}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -292,6 +340,7 @@ export default function InboxPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

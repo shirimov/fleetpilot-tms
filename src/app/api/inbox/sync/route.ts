@@ -63,13 +63,33 @@ async function syncAccount(accountId: string): Promise<number> {
       imap.openBox('INBOX', false, (err) => {
         if (err) { imap.end(); reject(err); return; }
 
-        // Fetch last 7 days
+        // Fetch last 30 days, exclude promotions and social
         const since = new Date();
-        since.setDate(since.getDate() - 7);
+        since.setDate(since.getDate() - 30);
         const sinceStr = since.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' }).replace(',', '');
 
-        imap.search([['SINCE', sinceStr]], (err, uids) => {
-          if (err || !uids?.length) { imap.end(); resolve(0); return; }
+        // Only pull primary inbox — exclude Promotions, Social, Updates, Forums
+        imap.search([
+          ['SINCE', sinceStr],
+          ['NOT', 'X-GM-LABELS', 'Promotions'],
+          ['NOT', 'X-GM-LABELS', 'Social'],
+          ['NOT', 'X-GM-LABELS', 'Updates'],
+          ['NOT', 'X-GM-LABELS', 'Forums'],
+          ['NOT', 'X-GM-LABELS', 'Spam'],
+        ], (err, uids) => {
+          // Fallback to basic INBOX search if Gmail labels not supported
+          if (err) {
+            imap.search([['SINCE', sinceStr]], (err2, uids2) => {
+              if (err2 || !uids2?.length) { imap.end(); resolve(0); return; }
+              processFetch(uids2);
+            });
+            return;
+          }
+          if (!uids?.length) { imap.end(); resolve(0); return; }
+          processFetch(uids);
+        });
+
+        function processFetch(uids: number[]) {
 
           const fetch = imap.fetch(uids, { bodies: '', markSeen: false });
           const promises: Promise<void>[] = [];
@@ -85,24 +105,21 @@ async function syncAccount(accountId: string): Promise<number> {
                     const from = parsed.from?.text || '';
                     const subject = parsed.subject || '';
                     const date = parsed.date || new Date();
-                    const body = parsed.text || parsed.html || '';
+                    const body = parsed.html || parsed.text || '';
                     const messageId = parsed.messageId || `${date.getTime()}-${from}`;
                     const priority = getPriority(from, subject);
                     const category = getCategory(from, subject);
 
-                    // Only save important/urgent or recent from known senders
-                    if (priority !== 'normal') {
-                      await prisma.email.upsert({
-                        where: { accountId_messageId: { accountId, messageId } },
-                        create: {
-                          accountId, messageId, from, subject,
-                          date, body: body.substring(0, 5000),
-                          priority, category,
-                        },
-                        update: { priority, category },
-                      });
-                      synced++;
-                    }
+                    await prisma.email.upsert({
+                      where: { accountId_messageId: { accountId, messageId } },
+                      create: {
+                        accountId, messageId, from, subject,
+                        date, body: body.substring(0, 100000),
+                        priority, category,
+                      },
+                      update: { priority, category },
+                    });
+                    synced++;
                   } catch (e) { /* skip */ }
                   res();
                 });
@@ -118,7 +135,7 @@ async function syncAccount(accountId: string): Promise<number> {
           });
 
           fetch.once('error', (e) => { imap.end(); reject(e); });
-        });
+        }
       });
     });
 

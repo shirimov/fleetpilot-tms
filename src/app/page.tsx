@@ -13,11 +13,18 @@ const statusColor: Record<string, string> = {
 export default function Home() {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [qmStats, setQmStats] = useState<any>(null)
+  const [qmLoading, setQmLoading] = useState(true)
 
   useEffect(() => {
     fetch('/api/dashboard')
       .then(r => r.json())
       .then(d => { setStats(d); setLoading(false) })
+
+    fetch('/api/qm-stats')
+      .then(r => r.json())
+      .then(d => { setQmStats(d); setQmLoading(false) })
+      .catch(() => setQmLoading(false))
   }, [])
 
   return (
@@ -55,6 +62,72 @@ export default function Home() {
                 <p className="text-3xl font-bold mt-2 text-yellow-400">{loading ? '...' : stats?.pendingSettlements ?? 0}</p>
                 <p className="text-gray-500 text-xs mt-1">drivers unpaid</p>
               </div>
+            </div>
+
+            {/* QuickManage Live Gross */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-8">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-white">📊 QuickManage — Live Gross</h3>
+                <div className="flex items-center gap-3">
+                  {qmStats?.stale && <span className="text-xs text-yellow-500">⚠ stale data</span>}
+                  {qmStats?.updatedAt && <span className="text-xs text-gray-500">Updated {new Date(qmStats.updatedAt).toLocaleTimeString()}</span>}
+                  <button
+                    onClick={() => { setQmLoading(true); fetch('/api/qm-stats?refresh=1').then(r => r.json()).then(d => { setQmStats(d); setQmLoading(false) }) }}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded"
+                  >
+                    {qmLoading ? '⏳ Loading...' : '🔄 Refresh'}
+                  </button>
+                </div>
+              </div>
+              {qmLoading ? (
+                <p className="text-gray-500 text-sm">Pulling data from QuickManage...</p>
+              ) : qmStats?.error ? (
+                <p className="text-red-400 text-sm">Error: {qmStats.error}</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Totals */}
+                  <div className="col-span-2 grid grid-cols-3 gap-4 pb-4 border-b border-gray-800">
+                    <div>
+                      <p className="text-gray-400 text-xs uppercase tracking-wide">This Week (All Companies)</p>
+                      <p className="text-3xl font-bold text-green-400 mt-1">
+                        ${(qmStats?.totals?.currentWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400 text-xs uppercase tracking-wide">Last Week</p>
+                      <p className="text-3xl font-bold text-blue-400 mt-1">
+                        ${(qmStats?.totals?.lastWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400 text-xs uppercase tracking-wide">Active Trips</p>
+                      <p className="text-3xl font-bold text-yellow-400 mt-1">
+                        {qmStats?.totals?.activeTrips || 0}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Per company */}
+                  {(qmStats?.companies || []).map((c: any) => (
+                    <div key={c.name} className="bg-gray-800 rounded-lg p-4">
+                      <p className="text-white font-medium text-sm mb-2">{c.name}</p>
+                      <div className="flex gap-6">
+                        <div>
+                          <p className="text-gray-500 text-xs">This Week</p>
+                          <p className="text-green-400 font-bold">${(c.currentWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 text-xs">Last Week</p>
+                          <p className="text-blue-400 font-bold">${(c.lastWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 text-xs">Active</p>
+                          <p className="text-yellow-400 font-bold">{c.activeTrips || 0} trips</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Quick actions */}
