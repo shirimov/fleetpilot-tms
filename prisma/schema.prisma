@@ -247,6 +247,7 @@ model Employee {
   email         String?
   country       String       @default("Turkmenistan")
   city          String?
+  region        String?      // Mary, Ashgabat, Balkan, Dashoguz, Lebap
   salary        Float?
   currency      String       @default("USD")
   paymentMethod String       @default("Bank Transfer")
@@ -298,6 +299,7 @@ model TmFundTx {
   type        TmFundTxType
   amount      Float
   description String
+  region      String?      // Mary, Ashgabat, Balkan, Dashoguz, Lebap
   employeeId  String?
   paymentRef  String?
   date        DateTime     @default(now())

@@ -25,6 +25,7 @@ export async function PUT(req: NextRequest, props: { params: Promise<{ id: strin
       email: data.email || null,
       country: data.country || 'Turkmenistan',
       city: data.city || null,
+      region: data.region || null,
       salary: data.salary ? parseFloat(data.salary) : null,
       currency: data.currency || 'USD',
       paymentMethod: data.paymentMethod || 'Bank Transfer',

@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
         description: data.description,
         employeeId: data.employeeId || null,
         paymentRef: data.paymentRef || null,
+        region: data.region || null,
         date: data.date ? new Date(data.date) : new Date(),
         notes: data.notes || null,
       },

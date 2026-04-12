@@ -2,6 +2,15 @@
 import { useEffect, useState } from 'react'
 import Sidebar from '@/components/Sidebar'
 
+const REGIONS = ['Mary', 'Ashgabat', 'Balkan', 'Dashoguz', 'Lebap']
+const REGION_COLORS: Record<string, string> = {
+  Mary: 'bg-purple-900/50 text-purple-300',
+  Ashgabat: 'bg-blue-900/50 text-blue-300',
+  Balkan: 'bg-cyan-900/50 text-cyan-300',
+  Dashoguz: 'bg-orange-900/50 text-orange-300',
+  Lebap: 'bg-green-900/50 text-green-300',
+}
+
 const ROLES = ['DISPATCHER', 'ACCOUNTANT', 'MANAGER', 'ADMIN', 'SAFETY', 'OTHER']
 const ROLE_LABELS: Record<string, string> = {
   DISPATCHER: 'Dispatcher', ACCOUNTANT: 'Accountant', MANAGER: 'Manager',
@@ -17,7 +26,7 @@ const empty = {
   firstName: '', lastName: '', role: 'DISPATCHER', roleCustom: '',
   phone: '', email: '', country: 'Turkmenistan', city: '',
   salary: '', currency: 'USD', paymentMethod: 'Bank Transfer',
-  startDate: '', notes: '', isActive: true,
+  startDate: '', notes: '', isActive: true, region: '',
 }
 
 export default function EmployeesPage() {
@@ -29,7 +38,7 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false)
   const [showPayModal, setShowPayModal] = useState(false)
   const [payTarget, setPayTarget] = useState<any>(null)
-  const [payForm, setPayForm] = useState({ amount: '', currency: 'USD', period: '', method: 'Bank Transfer', notes: '', status: 'PAID', paidAt: '', deductFromFund: false })
+  const [payForm, setPayForm] = useState({ amount: '', currency: 'USD', period: '', method: 'Bank Transfer', notes: '', status: 'PAID', paidAt: '', deductFromFund: false, region: '' })
   const [payHistory, setPayHistory] = useState<any[]>([])
   const [historyEmp, setHistoryEmp] = useState<any>(null)
   const [fundBalance, setFundBalance] = useState<number | null>(null)
@@ -48,7 +57,7 @@ export default function EmployeesPage() {
       firstName: e.firstName, lastName: e.lastName || '', role: e.role, roleCustom: e.roleCustom || '',
       phone: e.phone || '', email: e.email || '', country: e.country, city: e.city || '',
       salary: e.salary ?? '', currency: e.currency, paymentMethod: e.paymentMethod,
-      startDate: e.startDate ? e.startDate.substring(0, 10) : '', notes: e.notes || '', isActive: e.isActive,
+      startDate: e.startDate ? e.startDate.substring(0, 10) : '', notes: e.notes || '', isActive: e.isActive, region: e.region || '',
     })
     setShowModal(true)
   }
@@ -68,7 +77,7 @@ export default function EmployeesPage() {
       amount: e.salary ? String(e.salary) : '',
       currency: e.currency, period: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
       method: e.paymentMethod, notes: '', status: 'PAID',
-      paidAt: now.toISOString().substring(0, 10), deductFromFund: false,
+      paidAt: now.toISOString().substring(0, 10), deductFromFund: false, region: e.region || '',
     })
     setShowPayModal(true)
   }
@@ -89,6 +98,7 @@ export default function EmployeesPage() {
           amount: payForm.amount,
           description: `Salary — ${payTarget.firstName} ${payTarget.lastName || ''} (${payForm.period})`,
           employeeId: payTarget.id,
+          region: payForm.region || null,
           date: payForm.paidAt,
           notes: payForm.notes,
         }),
@@ -183,7 +193,10 @@ export default function EmployeesPage() {
                             {e.role === 'OTHER' && e.roleCustom ? e.roleCustom : ROLE_LABELS[e.role]}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-gray-300">{e.city ? `${e.city}, ` : ''}{e.country}</td>
+                        <td className="px-6 py-4 text-gray-300">
+                          {e.region && <span className={`text-xs px-2 py-0.5 rounded-full mr-1 ${REGION_COLORS[e.region] || 'bg-gray-800 text-gray-300'}`}>{e.region}</span>}
+                          {e.city ? `${e.city}, ` : ''}{e.country}
+                        </td>
                         <td className="px-6 py-4 text-green-400 font-medium">
                           {e.salary ? <>${e.salary.toLocaleString()} <span className="text-gray-500 text-xs">{e.currency}</span></> : <span className="text-gray-500">—</span>}
                         </td>
@@ -261,6 +274,20 @@ export default function EmployeesPage() {
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">City</label>
                   <input value={form.city} onChange={e => setForm((f: any) => ({ ...f, city: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-2">Region (Turkmenistan)</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {REGIONS.map(r => (
+                    <button key={r} type="button"
+                      onClick={() => setForm((f: any) => ({ ...f, region: f.region === r ? '' : r }))}
+                      className={`py-2 rounded-lg text-xs font-medium transition-colors border ${
+                        form.region === r ? REGION_COLORS[r] + ' border-current' : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'
+                      }`}>
+                      {r}
+                    </button>
+                  ))}
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
@@ -346,6 +373,21 @@ export default function EmployeesPage() {
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Notes</label>
                 <input value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" />
+              </div>
+              {/* Region */}
+              <div>
+                <label className="text-xs text-gray-400 block mb-2">Region</label>
+                <div className="grid grid-cols-5 gap-2">
+                  {REGIONS.map(r => (
+                    <button key={r} type="button"
+                      onClick={() => setPayForm(f => ({ ...f, region: f.region === r ? '' : r }))}
+                      className={`py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                        payForm.region === r ? REGION_COLORS[r] + ' border-current' : 'bg-gray-800 text-gray-400 border-gray-700 hover:text-white'
+                      }`}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
               </div>
               {/* TM Fund deduction */}
               <div className={`rounded-lg p-3 border ${payForm.deductFromFund ? 'border-blue-600 bg-blue-900/20' : 'border-gray-700 bg-gray-800/50'}`}>
