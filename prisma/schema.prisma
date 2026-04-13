@@ -224,6 +224,8 @@ model Email {
 
 enum EmployeeRole {
   DISPATCHER
+  LEAD_DISPATCH
+  UPDATER
   ACCOUNTANT
   MANAGER
   ADMIN

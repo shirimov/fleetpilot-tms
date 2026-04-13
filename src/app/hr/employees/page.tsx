@@ -11,13 +11,14 @@ const REGION_COLORS: Record<string, string> = {
   Lebap: 'bg-green-900/50 text-green-300',
 }
 
-const ROLES = ['DISPATCHER', 'ACCOUNTANT', 'MANAGER', 'ADMIN', 'SAFETY', 'OTHER']
+const ROLES = ['DISPATCHER', 'LEAD_DISPATCH', 'UPDATER', 'ACCOUNTANT', 'MANAGER', 'ADMIN', 'SAFETY', 'OTHER']
 const ROLE_LABELS: Record<string, string> = {
-  DISPATCHER: 'Dispatcher', ACCOUNTANT: 'Accountant', MANAGER: 'Manager',
-  ADMIN: 'Admin', SAFETY: 'Safety', OTHER: 'Other',
+  DISPATCHER: 'Dispatcher', LEAD_DISPATCH: 'Lead Dispatch', UPDATER: 'Updater',
+  ACCOUNTANT: 'Accountant', MANAGER: 'Manager', ADMIN: 'Admin', SAFETY: 'Safety', OTHER: 'Other',
 }
 const ROLE_COLORS: Record<string, string> = {
-  DISPATCHER: 'bg-blue-900/50 text-blue-300', ACCOUNTANT: 'bg-green-900/50 text-green-300',
+  DISPATCHER: 'bg-blue-900/50 text-blue-300', LEAD_DISPATCH: 'bg-indigo-900/50 text-indigo-300',
+  UPDATER: 'bg-teal-900/50 text-teal-300', ACCOUNTANT: 'bg-green-900/50 text-green-300',
   MANAGER: 'bg-purple-900/50 text-purple-300', ADMIN: 'bg-yellow-900/50 text-yellow-300',
   SAFETY: 'bg-orange-900/50 text-orange-300', OTHER: 'bg-gray-800 text-gray-300',
 }
