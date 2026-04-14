@@ -17,6 +17,7 @@ const nav = [
 const hrNav = [
   { href: '/hr/employees', label: '👥 Employees' },
   { href: '/drivers', label: '🚛 Drivers' },
+  { href: '/hr/dispatch-payroll', label: '📊 Dispatch Pay' },
   { href: '/hr/payroll', label: '💵 Payroll' },
   { href: '/hr/tmfund', label: '🇹🇲 TM Fund' },
 ]
