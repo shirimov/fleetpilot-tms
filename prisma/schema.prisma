@@ -309,6 +309,35 @@ model TmFundTx {
   createdAt   DateTime     @default(now())
 }
 
+model DispatchReserve {
+  id           String   @id @default(cuid())
+  amount       Float
+  description  String
+  period       String
+  createdAt    DateTime @default(now())
+}
+
+model EmployeeEscrow {
+  id          String          @id @default(cuid())
+  employeeId  String          @unique
+  balance     Float           @default(0)
+  target      Float           @default(0)  // should equal salary/weight pay
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  transactions EscrowTx[]
+}
+
+model EscrowTx {
+  id          String        @id @default(cuid())
+  escrowId    String
+  escrow      EmployeeEscrow @relation(fields: [escrowId], references: [id])
+  amount      Float
+  type        String        // DEPOSIT, DEDUCTION
+  description String
+  date        DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+}
+
 model DriverOrientation {
   id          String   @id @default(cuid())
   driverId    String
