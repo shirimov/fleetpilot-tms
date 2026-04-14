@@ -34,6 +34,7 @@ export default function PayrollPage() {
   const [dispatchPool, setDispatchPool] = useState('')
   const [fundBalance, setFundBalance] = useState<number | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [approvingAll, setApprovingAll] = useState(false)
   const [shareModal, setShareModal] = useState(false)
   const [copied, setCopied] = useState(false)
 
@@ -50,7 +51,7 @@ export default function PayrollPage() {
   const getWeight = (e: any) => WEIGHT_OVERRIDES[e.firstName] ?? (WEIGHTS[e.role] || 0)
 
   const activeEmployees = employees.filter(e => e.isActive)
-  const dispatchTeam = activeEmployees.filter(e => DISPATCH_ROLES.includes(e.role))
+  const dispatchTeam = activeEmployees.filter(e => DISPATCH_ROLES.includes(e.role)).sort((a, b) => getWeight(b) - getWeight(a))
   const fixedTeam = activeEmployees.filter(e => FIXED_ROLES.includes(e.role))
 
   const totalWeight = dispatchTeam.reduce((s, e) => s + getWeight(e), 0)
@@ -63,42 +64,75 @@ export default function PayrollPage() {
   const totalDispatchPay = poolAmt > 0 ? dispatchTeam.reduce((s, e) => s + (calcDispatchPay(e) || 0), 0) : 0
   const grandTotal = totalFixedSalary + totalDispatchPay
 
-  const paidThisPeriod = (e: any) =>
-    (e.payments || []).some((p: any) => p.period === period && p.status === 'PAID')
+  // Payment lookup for current period
+  const getPayment = (e: any) => (e.payments || []).find((p: any) => p.period === period)
+  const isPaid = (e: any) => getPayment(e)?.status === 'PAID'
+  const isApproved = (e: any) => !!getPayment(e) // has a payment record = approved
 
-  const markPaid = async (emp: any, amount: number) => {
-    setSavingId(emp.id)
+  // For dispatch: approved amount comes from payment record if exists, else from calc
+  const getApprovedAmount = (e: any) => getPayment(e)?.amount ?? calcDispatchPay(e)
+
+  const logPayment = async (emp: any, amount: number, status: 'PENDING' | 'PAID') => {
     await fetch(`/api/employees/${emp.id}/payments`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         amount, currency: emp.currency || 'USD', period,
-        method: 'Bank Transfer', status: 'PAID',
-        paidAt: new Date().toISOString().substring(0, 10),
+        method: 'Bank Transfer', status,
+        paidAt: status === 'PAID' ? new Date().toISOString().substring(0, 10) : null,
         notes: DISPATCH_ROLES.includes(emp.role) ? `Dispatch payroll | weight ${getWeight(emp)}` : 'Fixed salary',
       }),
     })
+  }
+
+  const approveAll = async () => {
+    if (!poolAmt && dispatchTeam.length > 0) return alert('Enter dispatch pool amount first')
+    setApprovingAll(true)
+    // Approve fixed
+    for (const emp of fixedTeam) {
+      if (!isApproved(emp) && emp.salary) await logPayment(emp, emp.salary, 'PENDING')
+    }
+    // Approve dispatch
+    for (const emp of dispatchTeam) {
+      const pay = calcDispatchPay(emp)
+      if (!isApproved(emp) && pay) await logPayment(emp, pay, 'PENDING')
+    }
+    setApprovingAll(false)
+    load()
+  }
+
+  const markPaid = async (emp: any) => {
+    setSavingId(emp.id)
+    const existing = getPayment(emp)
+    if (existing) {
+      // Update existing payment to PAID
+      await fetch(`/api/employees/${emp.id}/payments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: existing.amount, currency: emp.currency || 'USD', period,
+          method: 'Bank Transfer', status: 'PAID',
+          paidAt: new Date().toISOString().substring(0, 10),
+          notes: existing.notes,
+        }),
+      })
+    } else {
+      const amount = DISPATCH_ROLES.includes(emp.role) ? calcDispatchPay(emp) : emp.salary
+      if (amount) await logPayment(emp, amount, 'PAID')
+    }
     setSavingId(null)
     load()
   }
 
-  // Share list — all active with amount and city
+  // Build share list
   const buildShareList = () => {
-    const allWithPay = [
-      ...fixedTeam.map(e => ({ name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: e.salary || 0, city: e.city || e.region || e.country || '—' })),
-      ...dispatchTeam.sort((a, b) => getWeight(b) - getWeight(a)).map(e => {
-        const pay = calcDispatchPay(e)
-        return { name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: pay || 0, city: e.city || e.region || e.country || '—' }
-      }),
+    const all = [
+      ...fixedTeam.map(e => ({ name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: getApprovedAmount(e) ?? e.salary ?? 0, city: e.city || e.region || '—' })),
+      ...dispatchTeam.map(e => ({ name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: getApprovedAmount(e) ?? 0, city: e.city || e.region || '—' })),
     ].filter(e => e.amount > 0)
-
-    const lines = [
-      `📋 Salary List — ${period}`,
-      ``,
-      ...allWithPay.map((e, i) => `${i + 1}. ${e.name}  |  $${e.amount.toLocaleString()}  |  ${e.city}`),
-      ``,
-      `Total: $${allWithPay.reduce((s, e) => s + e.amount, 0).toLocaleString()}`,
-    ]
-    return lines.join('\n')
+    return [
+      `📋 Salary List — ${period}`, '',
+      ...all.map((e, i) => `${i + 1}. ${e.name}  |  $${e.amount.toLocaleString()}  |  ${e.city}`),
+      '', `Total: $${all.reduce((s, e) => s + e.amount, 0).toLocaleString()}`,
+    ].join('\n')
   }
 
   const copyToClipboard = () => {
@@ -107,16 +141,61 @@ export default function PayrollPage() {
     setTimeout(() => setCopied(false), 2000)
   }
 
+  const allApproved = [...fixedTeam, ...dispatchTeam].every(e => isApproved(e))
+  const anyApproved = [...fixedTeam, ...dispatchTeam].some(e => isApproved(e))
+
+  const EmployeeRow = ({ e, amount }: { e: any; amount: number | null }) => {
+    const paid = isPaid(e)
+    const approved = isApproved(e)
+    const approvedAmt = getApprovedAmount(e) ?? amount
+    return (
+      <tr className="border-b border-gray-800/40 hover:bg-gray-800/20">
+        <td className="px-6 py-4 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
+        <td className="px-6 py-4">
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
+        </td>
+        <td className="px-6 py-4 text-gray-400 text-sm">{e.city || e.region || '—'}</td>
+        <td className="px-6 py-4 text-right">
+          {approvedAmt
+            ? <span className="text-green-400 font-bold">${(approvedAmt as number).toLocaleString()}</span>
+            : <span className="text-gray-600">{poolAmt === 0 && DISPATCH_ROLES.includes(e.role) ? 'Enter pool →' : 'Not set'}</span>}
+        </td>
+        <td className="px-6 py-4 text-right">
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+            paid ? 'bg-green-900/50 text-green-300' :
+            approved ? 'bg-yellow-900/50 text-yellow-300' :
+            'bg-gray-800 text-gray-500'
+          }`}>
+            {paid ? '✓ Paid' : approved ? 'Pending' : '—'}
+          </span>
+        </td>
+        <td className="px-6 py-4 text-right">
+          {paid ? (
+            <span className="text-gray-600 text-xs">✓ done</span>
+          ) : approved ? (
+            <button onClick={() => markPaid(e)} disabled={savingId === e.id}
+              className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg font-medium">
+              {savingId === e.id ? '...' : 'Mark Paid'}
+            </button>
+          ) : (
+            <span className="text-gray-600 text-xs">—</span>
+          )}
+        </td>
+      </tr>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       <div className="flex h-screen">
         <Sidebar />
         <main className="flex-1 overflow-auto">
           <div className="p-8">
+            {/* Header */}
             <div className="flex items-center justify-between mb-8">
               <div>
-                <h2 className="text-2xl font-bold">💰 Payroll Overview</h2>
-                <p className="text-gray-400 text-sm mt-1">All staff — fixed salary + dispatch team</p>
+                <h2 className="text-2xl font-bold">💰 Payroll</h2>
+                <p className="text-gray-400 text-sm mt-1">All staff — fixed + dispatch</p>
               </div>
               <div className="flex items-center gap-4">
                 <div>
@@ -125,209 +204,118 @@ export default function PayrollPage() {
                     className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white w-28" />
                 </div>
                 <div>
+                  <label className="text-xs text-gray-500 block mb-1">Dispatch Pool</label>
+                  <input type="number" value={dispatchPool} onChange={e => setDispatchPool(e.target.value)}
+                    placeholder="e.g. 11500"
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white w-32 font-bold" />
+                </div>
+                <div>
                   <label className="text-xs text-gray-500 block mb-1">TM Fund</label>
                   <div className={`text-lg font-bold ${fundBalance !== null && fundBalance < 0 ? 'text-red-400' : 'text-blue-400'}`}>
                     {fundBalance !== null ? `$${fundBalance.toLocaleString()}` : '...'}
                   </div>
                 </div>
-                <button
-                  onClick={() => setShareModal(true)}
+                <button onClick={() => setShareModal(true)}
                   className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium self-end">
-                  📤 Share List
+                  📤 Share
                 </button>
               </div>
             </div>
 
             {/* Summary cards */}
-            <div className="grid grid-cols-4 gap-4 mb-8">
+            <div className="grid grid-cols-4 gap-4 mb-6">
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Total Staff</p>
+                <p className="text-gray-400 text-xs uppercase">Total Staff</p>
                 <p className="text-3xl font-bold mt-2">{activeEmployees.length}</p>
                 <p className="text-gray-500 text-xs mt-1">{fixedTeam.length} fixed · {dispatchTeam.length} dispatch</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Fixed Salaries</p>
+                <p className="text-gray-400 text-xs uppercase">Fixed Salaries</p>
                 <p className="text-3xl font-bold mt-2 text-green-400">${totalFixedSalary.toLocaleString()}</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Dispatch Pool</p>
-                {poolAmt > 0
-                  ? <p className="text-3xl font-bold mt-2 text-blue-400">${totalDispatchPay.toLocaleString()}</p>
-                  : <p className="text-3xl font-bold mt-2 text-gray-600">—</p>}
+                <p className="text-gray-400 text-xs uppercase">Dispatch Pool</p>
+                <p className={`text-3xl font-bold mt-2 ${poolAmt > 0 ? 'text-blue-400' : 'text-gray-600'}`}>
+                  {poolAmt > 0 ? `$${totalDispatchPay.toLocaleString()}` : '—'}
+                </p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Grand Total</p>
-                <p className="text-3xl font-bold mt-2 text-yellow-400">{grandTotal > 0 ? `$${grandTotal.toLocaleString()}` : '—'}</p>
+                <p className="text-gray-400 text-xs uppercase">Grand Total</p>
+                <p className={`text-3xl font-bold mt-2 ${grandTotal > 0 ? 'text-yellow-400' : 'text-gray-600'}`}>
+                  {grandTotal > 0 ? `$${grandTotal.toLocaleString()}` : '—'}
+                </p>
               </div>
             </div>
 
-            {/* FIXED SALARY */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
-              <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-                <h3 className="font-semibold">Fixed Salary Staff</h3>
-                <span className="text-gray-500 text-sm">${totalFixedSalary.toLocaleString()}/month</span>
-              </div>
-              {loading ? <div className="p-8 text-center text-gray-500">Loading...</div> : (
-                <table className="w-full text-sm">
-                  <thead className="border-b border-gray-800">
-                    <tr className="text-gray-400 text-xs uppercase">
-                      <th className="text-left px-6 py-3">Name</th>
-                      <th className="text-left px-6 py-3">Role</th>
-                      <th className="text-left px-6 py-3">City</th>
-                      <th className="text-right px-6 py-3">Salary</th>
-                      <th className="text-right px-6 py-3">Status</th>
-                      <th className="text-right px-6 py-3">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fixedTeam.map(e => {
-                      const paid = paidThisPeriod(e)
-                      return (
-                        <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
-                          <td className="px-6 py-4 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
-                          <td className="px-6 py-4">
-                            <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
-                          </td>
-                          <td className="px-6 py-4 text-gray-400 text-xs">{e.city || e.region || '—'}</td>
-                          <td className="px-6 py-4 text-right">
-                            {e.salary
-                              ? <span className="text-green-400 font-bold">${e.salary.toLocaleString()}</span>
-                              : <span className="text-gray-600">Not set</span>}
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <span className={`text-xs px-2 py-1 rounded-full font-medium ${paid ? 'bg-green-900/50 text-green-300' : 'bg-yellow-900/50 text-yellow-300'}`}>
-                              {paid ? '✓ Paid' : 'Pending'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            {!paid && e.salary ? (
-                              <button onClick={() => markPaid(e, e.salary)} disabled={savingId === e.id}
-                                className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg">
-                                {savingId === e.id ? '...' : 'Mark Paid'}
-                              </button>
-                            ) : paid ? (
-                              <span className="text-gray-600 text-xs">✓</span>
-                            ) : null}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* DISPATCH TEAM */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
-              <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+            {/* Approve All banner */}
+            {!allApproved && (
+              <div className="bg-gray-900 border border-blue-800/50 rounded-xl p-4 mb-6 flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold">Dispatch Team</h3>
-                  <p className="text-gray-500 text-xs mt-0.5">Weight-based — enter pool to calculate individual amounts</p>
+                  <p className="font-medium text-sm">Ready to approve payroll for <span className="text-blue-400">{period}</span>?</p>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    This locks in all amounts. After approval, mark each person paid individually as you send money.
+                    {poolAmt === 0 && <span className="text-yellow-400"> Enter dispatch pool amount above first.</span>}
+                  </p>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div>
-                    <label className="text-xs text-gray-500 block mb-1">Dispatch Pool (USD)</label>
-                    <input type="number" value={dispatchPool} onChange={e => setDispatchPool(e.target.value)}
-                      placeholder="e.g. 11500"
-                      className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white w-36 font-bold" />
-                  </div>
-                  <Link href="/hr/dispatch-payroll"
-                    className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-2 rounded-lg self-end whitespace-nowrap">
-                    Run Payroll →
-                  </Link>
-                </div>
-              </div>
-              {loading ? <div className="p-8 text-center text-gray-500">Loading...</div> : (
-                <table className="w-full text-sm">
-                  <thead className="border-b border-gray-800">
-                    <tr className="text-gray-400 text-xs uppercase">
-                      <th className="text-left px-6 py-3">Name</th>
-                      <th className="text-left px-6 py-3">Role</th>
-                      <th className="text-left px-6 py-3">City</th>
-                      <th className="text-center px-4 py-3">Weight</th>
-                      <th className="text-right px-6 py-3">Est. Pay</th>
-                      <th className="text-right px-6 py-3">Status</th>
-                      <th className="text-right px-6 py-3">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dispatchTeam.sort((a, b) => getWeight(b) - getWeight(a)).map(e => {
-                      const pay = calcDispatchPay(e)
-                      const paid = paidThisPeriod(e)
-                      return (
-                        <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
-                          <td className="px-6 py-4 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
-                          <td className="px-6 py-4">
-                            <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
-                          </td>
-                          <td className="px-6 py-4 text-gray-400 text-xs">{e.city || e.region || '—'}</td>
-                          <td className="px-4 py-4 text-center text-gray-400 font-mono text-xs">{getWeight(e)}</td>
-                          <td className="px-6 py-4 text-right font-bold">
-                            {pay !== null
-                              ? <span className="text-blue-400">${pay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                              : <span className="text-gray-600 text-xs">enter pool →</span>}
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <span className={`text-xs px-2 py-1 rounded-full font-medium ${paid ? 'bg-green-900/50 text-green-300' : 'bg-gray-800 text-gray-500'}`}>
-                              {paid ? '✓ Paid' : '—'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            {!paid && pay !== null ? (
-                              <button onClick={() => markPaid(e, pay)} disabled={savingId === e.id}
-                                className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg">
-                                {savingId === e.id ? '...' : 'Mark Paid'}
-                              </button>
-                            ) : paid ? (
-                              <span className="text-gray-600 text-xs">✓</span>
-                            ) : null}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                  {poolAmt > 0 && (
-                    <tfoot className="border-t border-gray-700 bg-gray-800/20">
-                      <tr>
-                        <td colSpan={4} className="px-6 py-3 text-gray-400 text-sm">Total Dispatch</td>
-                        <td className="px-6 py-3 text-right font-bold text-blue-400">${totalDispatchPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                        <td colSpan={2}></td>
-                      </tr>
-                    </tfoot>
-                  )}
-                </table>
-              )}
-            </div>
-
-            {/* Grand total */}
-            {grandTotal > 0 && (
-              <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 flex items-center justify-between">
-                <div className="flex gap-8">
-                  <div>
-                    <p className="text-gray-500 text-xs uppercase">Fixed</p>
-                    <p className="text-xl font-bold text-green-400">${totalFixedSalary.toLocaleString()}</p>
-                  </div>
-                  <div className="text-gray-600 text-2xl self-center">+</div>
-                  <div>
-                    <p className="text-gray-500 text-xs uppercase">Dispatch</p>
-                    <p className="text-xl font-bold text-blue-400">${totalDispatchPay.toLocaleString()}</p>
-                  </div>
-                  <div className="text-gray-600 text-2xl self-center">=</div>
-                  <div>
-                    <p className="text-gray-500 text-xs uppercase">Total This Month</p>
-                    <p className="text-2xl font-bold text-yellow-400">${grandTotal.toLocaleString()}</p>
-                  </div>
-                </div>
-                {fundBalance !== null && (
-                  <div className="text-right">
-                    <p className="text-gray-500 text-xs uppercase">TM Fund After Payroll</p>
-                    <p className={`text-xl font-bold ${(fundBalance - grandTotal) < 0 ? 'text-red-400' : 'text-blue-400'}`}>
-                      ${(fundBalance - grandTotal).toLocaleString()}
-                    </p>
-                  </div>
-                )}
+                <button onClick={approveAll} disabled={approvingAll || (poolAmt === 0 && dispatchTeam.length > 0)}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-6 py-2.5 rounded-lg text-sm font-bold whitespace-nowrap ml-6">
+                  {approvingAll ? 'Approving...' : '✓ Approve All'}
+                </button>
               </div>
             )}
+
+            {/* Combined table */}
+            <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-800">
+                  <tr className="text-gray-400 text-xs uppercase">
+                    <th className="text-left px-6 py-3">Name</th>
+                    <th className="text-left px-6 py-3">Role</th>
+                    <th className="text-left px-6 py-3">City</th>
+                    <th className="text-right px-6 py-3">Amount</th>
+                    <th className="text-right px-6 py-3">Status</th>
+                    <th className="text-right px-6 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Fixed salary group header */}
+                  <tr className="bg-gray-800/40">
+                    <td colSpan={6} className="px-6 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                      Fixed Salary — ${totalFixedSalary.toLocaleString()}/month
+                    </td>
+                  </tr>
+                  {loading ? (
+                    <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-500">Loading...</td></tr>
+                  ) : fixedTeam.map(e => (
+                    <EmployeeRow key={e.id} e={e} amount={e.salary} />
+                  ))}
+
+                  {/* Dispatch group header */}
+                  <tr className="bg-gray-800/40">
+                    <td colSpan={6} className="px-6 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                      Dispatch Team — {poolAmt > 0 ? `$${totalDispatchPay.toLocaleString()} pool` : 'Enter pool amount above'}
+                      <Link href="/hr/dispatch-payroll" className="ml-3 text-blue-500 hover:text-blue-400 normal-case font-normal">
+                        Advanced payroll →
+                      </Link>
+                    </td>
+                  </tr>
+                  {loading ? null : dispatchTeam.map(e => (
+                    <EmployeeRow key={e.id} e={e} amount={calcDispatchPay(e)} />
+                  ))}
+                </tbody>
+                {grandTotal > 0 && (
+                  <tfoot className="border-t-2 border-gray-700 bg-gray-800/30">
+                    <tr>
+                      <td colSpan={3} className="px-6 py-4 font-semibold text-gray-300">Total This Month</td>
+                      <td className="px-6 py-4 text-right font-bold text-yellow-400 text-lg">${grandTotal.toLocaleString()}</td>
+                      <td colSpan={2} className="px-6 py-4 text-right text-gray-500 text-xs">
+                        {fundBalance !== null && `TM Fund after: $${(fundBalance - grandTotal).toLocaleString()}`}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
           </div>
         </main>
       </div>
@@ -337,16 +325,16 @@ export default function PayrollPage() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg">
             <div className="p-6 border-b border-gray-800 flex items-center justify-between">
-              <h3 className="font-semibold">📤 Share Salary List — {period}</h3>
+              <h3 className="font-semibold">📤 Salary List — {period}</h3>
               <button onClick={() => setShareModal(false)} className="text-gray-500 hover:text-white text-xl">✕</button>
             </div>
             <div className="p-6">
-              <pre className="bg-gray-800 rounded-lg p-4 text-sm text-gray-200 whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto max-h-80">
+              <pre className="bg-gray-800 rounded-lg p-4 text-sm text-gray-200 whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto max-h-96">
                 {buildShareList()}
               </pre>
               <div className="flex gap-3 mt-4">
                 <button onClick={copyToClipboard}
-                  className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${copied ? 'bg-green-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                  className={`flex-1 py-2.5 rounded-lg text-sm font-medium ${copied ? 'bg-green-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
                   {copied ? '✓ Copied!' : '📋 Copy to Clipboard'}
                 </button>
                 <button onClick={() => setShareModal(false)}
@@ -354,7 +342,7 @@ export default function PayrollPage() {
                   Close
                 </button>
               </div>
-              <p className="text-gray-600 text-xs mt-3 text-center">Paste directly into WhatsApp, Telegram, or any messaging app</p>
+              <p className="text-gray-600 text-xs mt-3 text-center">Paste into WhatsApp, Telegram, or any messaging app</p>
             </div>
           </div>
         </div>
