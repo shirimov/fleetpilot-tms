@@ -79,7 +79,7 @@ export default function Sidebar() {
           { href: '/', emoji: '📊', short: 'Dash' },
           { href: '/loads', emoji: '📦', short: 'Loads' },
           { href: '/trucks', emoji: '🚛', short: 'Trucks' },
-          { href: '/drivers', emoji: '👤', short: 'Drivers' },
+          { href: '/inspections', emoji: '📋', short: 'Inspect' },
           { href: '/hr/employees', emoji: '👥', short: 'HR' },
           { href: '/settlements', emoji: '💰', short: 'Pay' },
         ].map(({ href, emoji, short }) => (
