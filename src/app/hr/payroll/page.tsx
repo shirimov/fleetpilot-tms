@@ -61,7 +61,13 @@ export default function PayrollPage() {
     poolAmt > 0 ? Math.round(valuePerWeight * getWeight(e) * 100) / 100 : null
 
   const totalFixedSalary = fixedTeam.reduce((s, e) => s + (e.salary || 0), 0)
-  const totalDispatchPay = poolAmt > 0 ? dispatchTeam.reduce((s, e) => s + (calcDispatchPay(e) || 0), 0) : 0
+  // Use approved amounts from DB if available, otherwise use pool calculation
+  const getDispatchAmount = (e: any): number => {
+    const approved = getPayment(e)?.amount
+    if (approved) return approved
+    return calcDispatchPay(e) || 0
+  }
+  const totalDispatchPay = dispatchTeam.reduce((s, e) => s + getDispatchAmount(e), 0)
   const grandTotal = totalFixedSalary + totalDispatchPay
 
   // Payment lookup for current period
@@ -245,8 +251,8 @@ export default function PayrollPage() {
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase">Dispatch Pool</p>
-                <p className={`text-3xl font-bold mt-2 ${poolAmt > 0 ? 'text-blue-400' : 'text-gray-600'}`}>
-                  {poolAmt > 0 ? `$${totalDispatchPay.toLocaleString()}` : '—'}
+                <p className="text-3xl font-bold mt-2 text-blue-400">
+                  {totalDispatchPay > 0 ? `$${totalDispatchPay.toLocaleString()}` : '—'}
                 </p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -310,7 +316,7 @@ export default function PayrollPage() {
                     </td>
                   </tr>
                   {loading ? null : dispatchTeam.map(e => (
-                    <EmployeeRow key={e.id} e={e} amount={calcDispatchPay(e)} />
+                    <EmployeeRow key={e.id} e={e} amount={getDispatchAmount(e) || calcDispatchPay(e)} />
                   ))}
                 </tbody>
                 {grandTotal > 0 && (
