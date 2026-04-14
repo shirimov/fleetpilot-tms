@@ -118,8 +118,8 @@ export default function DispatchPayrollPage() {
       await fetch(`/api/employees/${emp.id}/payments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount: net, currency: 'USD', period, method: 'Bank Transfer', status: 'PAID',
-          paidAt: new Date().toISOString().substring(0, 10),
+          amount: net, currency: 'USD', period, method: 'Bank Transfer', status: 'PENDING',
+          paidAt: null,
           notes: `Gross: $${gross.toFixed(2)}${dedTotal > 0 ? ` | Deducted: $${dedTotal.toFixed(2)}` : ''} | Net: $${net.toFixed(2)} | weight ${getWeight(emp)}`,
         }),
       })

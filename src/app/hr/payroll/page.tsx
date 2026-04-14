@@ -87,11 +87,9 @@ export default function PayrollPage() {
   const approveAll = async () => {
     if (!poolAmt && dispatchTeam.length > 0) return alert('Enter dispatch pool amount first')
     setApprovingAll(true)
-    // Approve fixed
     for (const emp of fixedTeam) {
       if (!isApproved(emp) && emp.salary) await logPayment(emp, emp.salary, 'PENDING')
     }
-    // Approve dispatch
     for (const emp of dispatchTeam) {
       const pay = calcDispatchPay(emp)
       if (!isApproved(emp) && pay) await logPayment(emp, pay, 'PENDING')
@@ -104,15 +102,10 @@ export default function PayrollPage() {
     setSavingId(emp.id)
     const existing = getPayment(emp)
     if (existing) {
-      // Update existing payment to PAID
-      await fetch(`/api/employees/${emp.id}/payments`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: existing.amount, currency: emp.currency || 'USD', period,
-          method: 'Bank Transfer', status: 'PAID',
-          paidAt: new Date().toISOString().substring(0, 10),
-          notes: existing.notes,
-        }),
+      // PATCH existing payment to PAID
+      await fetch(`/api/employees/${emp.id}/payments/${existing.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'PAID', paidAt: new Date().toISOString().substring(0, 10) }),
       })
     } else {
       const amount = DISPATCH_ROLES.includes(emp.role) ? calcDispatchPay(emp) : emp.salary
