@@ -85,14 +85,15 @@ export default function PayrollPage() {
   }
 
   const approveAll = async () => {
-    if (!poolAmt && dispatchTeam.length > 0) return alert('Enter dispatch pool amount first')
     setApprovingAll(true)
     for (const emp of fixedTeam) {
       if (!isApproved(emp) && emp.salary) await logPayment(emp, emp.salary, 'PENDING')
     }
-    for (const emp of dispatchTeam) {
-      const pay = calcDispatchPay(emp)
-      if (!isApproved(emp) && pay) await logPayment(emp, pay, 'PENDING')
+    if (poolAmt > 0) {
+      for (const emp of dispatchTeam) {
+        const pay = calcDispatchPay(emp)
+        if (!isApproved(emp) && pay) await logPayment(emp, pay, 'PENDING')
+      }
     }
     setApprovingAll(false)
     load()
@@ -263,10 +264,10 @@ export default function PayrollPage() {
                   <p className="font-medium text-sm">Ready to approve payroll for <span className="text-blue-400">{period}</span>?</p>
                   <p className="text-gray-500 text-xs mt-0.5">
                     This locks in all amounts. After approval, mark each person paid individually as you send money.
-                    {poolAmt === 0 && <span className="text-yellow-400"> Enter dispatch pool amount above first.</span>}
+                    {poolAmt === 0 && dispatchTeam.some(e => !isApproved(e)) && <span className="text-yellow-400"> Add dispatch pool above to also approve dispatch team.</span>}
                   </p>
                 </div>
-                <button onClick={approveAll} disabled={approvingAll || (poolAmt === 0 && dispatchTeam.length > 0)}
+                <button onClick={approveAll} disabled={approvingAll}
                   className="bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-6 py-2.5 rounded-lg text-sm font-bold whitespace-nowrap ml-6">
                   {approvingAll ? 'Approving...' : '✓ Approve All'}
                 </button>
