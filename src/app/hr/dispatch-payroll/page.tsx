@@ -4,8 +4,14 @@ import Sidebar from '@/components/Sidebar'
 
 const WEIGHTS: Record<string, number> = {
   LEAD_DISPATCH: 18,
-  DISPATCHER: 13,
-  UPDATER: 5,
+  DISPATCHER: 11,
+  UPDATER: 7,
+}
+
+// Individual overrides by firstName (exact match)
+const WEIGHT_OVERRIDES: Record<string, number> = {
+  'Begenchmuhammet': 20,
+  'BEGENCH': 16,
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -57,11 +63,12 @@ export default function DispatchPayrollPage() {
   const poolAmt = parseFloat(pool) || 0
 
   // Calculate weights
-  const totalWeight = employees.reduce((s, e) => s + (WEIGHTS[e.role] || 0), 0)
+  const getWeight = (e: any) => WEIGHT_OVERRIDES[e.firstName] ?? (WEIGHTS[e.role] || 0)
+  const totalWeight = employees.reduce((s, e) => s + getWeight(e), 0)
   const valuePerWeight = totalWeight > 0 ? poolAmt / totalWeight : 0
 
   const calcPay = (e: any) => {
-    const w = WEIGHTS[e.role] || 0
+    const w = getWeight(e)
     return Math.round(valuePerWeight * w * 100) / 100
   }
 
@@ -225,7 +232,10 @@ export default function DispatchPayrollPage() {
                               ? <span className={`text-xs px-2 py-0.5 rounded-full ${REGION_COLORS[e.region] || 'bg-gray-800 text-gray-300'}`}>{e.region}</span>
                               : <span className="text-gray-600">—</span>}
                           </td>
-                          <td className="px-6 py-4 text-center text-gray-400 font-mono">{WEIGHTS[e.role] || 0}</td>
+                          <td className="px-6 py-4 text-center text-gray-400 font-mono">
+                            {getWeight(e)}
+                            {WEIGHT_OVERRIDES[e.firstName] !== undefined && <span className="text-xs text-yellow-500 ml-1">(custom)</span>}
+                          </td>
                           <td className="px-6 py-4 text-right font-bold text-green-400 text-base">
                             {poolAmt > 0
                               ? `$${calcPay(e).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
