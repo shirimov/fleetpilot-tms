@@ -194,6 +194,15 @@ export default function DispatchPayrollPage() {
   }
   const getEscrow = (empId: string) => escrows.find(es => es.employeeId === empId)
 
+  // Top-off suggestion: target = their weight value, shortfall = target - current balance
+  const getTopOff = (e: any) => {
+    const escrow = getEscrow(e.id)
+    const target = getWeight(e)
+    const balance = escrow?.balance || 0
+    const shortfall = Math.max(0, target - balance)
+    return { target, balance, shortfall }
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       <div className="flex h-screen">
@@ -354,13 +363,15 @@ export default function DispatchPayrollPage() {
                           <th className="text-center px-4 py-3">Weight</th>
                           <th className="text-right px-4 py-3">Gross</th>
                           <th className="text-right px-4 py-3">Deductions</th>
-                          <th className="text-right px-6 py-3">Net Pay</th>
+                          <th className="text-right px-4 py-3">Net Pay</th>
+                          <th className="text-right px-6 py-3">🔒 Escrow Top-off</th>
                         </tr>
                       </thead>
                       <tbody>
                         {employees.sort((a, b) => getWeight(b) - getWeight(a)).map(e => {
                           const empDeds = getPersonDeds(e.id)
                           const dedTotal = getPersonDedTotal(e.id)
+                          const topOff = getTopOff(e)
                           return (
                             <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
                               <td className="px-6 py-3 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
@@ -386,8 +397,31 @@ export default function DispatchPayrollPage() {
                                   </div>
                                 ) : <span className="text-gray-600 text-xs">—</span>}
                               </td>
-                              <td className="px-6 py-3 text-right font-bold text-green-400 text-base">
+                              <td className="px-4 py-3 text-right font-bold text-green-400 text-base">
                                 {poolAmt > 0 ? `$${calcNetPay(e).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                              </td>
+                              <td className="px-6 py-3 text-right">
+                                {topOff.shortfall > 0 ? (
+                                  <div>
+                                    <span className="text-yellow-400 font-bold text-sm">${topOff.shortfall.toLocaleString()}</span>
+                                    <div className="text-gray-500 text-xs">${topOff.balance.toLocaleString()} / ${topOff.target.toLocaleString()}</div>
+                                    <button
+                                      onClick={() => {
+                                        setDeductions(prev => [...prev, {
+                                          id: Math.random().toString(36).slice(2),
+                                          employeeId: e.id,
+                                          type: 'ESCROW',
+                                          amount: String(topOff.shortfall),
+                                          description: 'Escrow top-off',
+                                        }])
+                                      }}
+                                      className="text-xs text-blue-400 hover:text-blue-300 mt-0.5">
+                                      + add to deductions
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span className="text-green-400 text-xs">✓ Full</span>
+                                )}
                               </td>
                             </tr>
                           )
@@ -399,7 +433,8 @@ export default function DispatchPayrollPage() {
                             <td colSpan={4} className="px-6 py-4 text-gray-400 font-medium">Totals</td>
                             <td className="px-4 py-4 text-right text-gray-400">${totalGross.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-4 text-right text-red-400">{totalPersonDeductions > 0 ? `−$${totalPersonDeductions.toLocaleString()}` : '—'}</td>
-                            <td className="px-6 py-4 text-right font-bold text-green-400 text-lg">${totalNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-4 text-right font-bold text-green-400 text-lg">${totalNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className="px-6 py-4"></td>
                           </tr>
                           {reserveAmt > 0 && (
                             <tr className="bg-yellow-900/10">
