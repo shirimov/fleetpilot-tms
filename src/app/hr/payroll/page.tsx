@@ -43,7 +43,17 @@ export default function PayrollPage() {
   const [period, setPeriod] = useState(currentPeriod)
 
   const load = () => {
-    fetch('/api/employees').then(r => r.json()).then(d => { setEmployees(d); setLoading(false) })
+    fetch('/api/employees').then(r => r.json()).then(d => {
+      setEmployees(d)
+      setLoading(false)
+      // Auto-fill dispatch pool from approved payments for current period
+      const dispatch = d.filter((e: any) => DISPATCH_ROLES.includes(e.role) && e.isActive)
+      const approved = dispatch.reduce((s: number, e: any) => {
+        const p = (e.payments || []).find((p: any) => p.period === period)
+        return s + (p?.amount || 0)
+      }, 0)
+      if (approved > 0) setDispatchPool(String(approved))
+    })
     fetch('/api/tmfund').then(r => r.json()).then(d => setFundBalance(d.balance))
   }
   useEffect(() => { load() }, [])
@@ -60,13 +70,7 @@ export default function PayrollPage() {
   const calcDispatchPay = (e: any): number | null =>
     poolAmt > 0 ? Math.round(valuePerWeight * getWeight(e) * 100) / 100 : null
 
-  // Auto-fill dispatch pool from approved payments in DB for this period
-  const approvedDispatchTotal = dispatchTeam.reduce((s, e) => s + (getPayment(e)?.amount || 0), 0)
-  useEffect(() => {
-    if (approvedDispatchTotal > 0 && !dispatchPool) {
-      setDispatchPool(String(approvedDispatchTotal))
-    }
-  }, [approvedDispatchTotal])
+
 
   const totalFixedSalary = fixedTeam.reduce((s, e) => s + (e.salary || 0), 0)
   // Use approved amounts from DB if available, otherwise use pool calculation
