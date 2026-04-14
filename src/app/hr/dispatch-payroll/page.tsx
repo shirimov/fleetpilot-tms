@@ -2,16 +2,26 @@
 import { useEffect, useState } from 'react'
 import Sidebar from '@/components/Sidebar'
 
+// Base weights by role (fallback)
 const WEIGHTS: Record<string, number> = {
-  LEAD_DISPATCH: 18,
-  DISPATCHER: 11,
-  UPDATER: 7,
+  LEAD_DISPATCH: 1700,
+  DISPATCHER: 900,
+  UPDATER: 600,
 }
 
-// Individual overrides by firstName (exact match)
+// Individual weights by firstName — defines each person's share ratio
 const WEIGHT_OVERRIDES: Record<string, number> = {
-  'Begenchmuhammet': 20,
-  'BEGENCH': 16,
+  'Begenchmuhammet': 1800,
+  'ISKENDER': 1800,
+  'SULEYMAN': 1700,
+  'KAKAJAN': 1300,
+  'BEGENCH': 1300,
+  'VEPA': 900,
+  'AYJEREN': 900,
+  'BERDIMYRAT': 600,
+  'HAJY': 600,
+  'MUHAMMET': 600,
+  'SELBI': 600,
 }
 
 const ROLE_LABELS: Record<string, string> = {
