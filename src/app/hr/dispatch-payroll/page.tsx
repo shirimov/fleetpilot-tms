@@ -28,7 +28,7 @@ const BASE_POOL = 11500
 
 type Deduction = {
   id: string
-  employeeId: string | 'ALL'  // ALL = applies to whole pool before split
+  employeeId: string   // 'ALL' or employee id
   type: 'ESCROW' | 'PENALTY' | 'OTHER'
   amount: string
   description: string
@@ -52,7 +52,7 @@ export default function DispatchPayrollPage() {
   const [tab, setTab] = useState<'payroll' | 'escrow'>('payroll')
   const [deductions, setDeductions] = useState<Deduction[]>([])
 
-  // Escrow modal
+  // Escrow manual modal
   const [escrowModal, setEscrowModal] = useState<any>(null)
   const [escrowForm, setEscrowForm] = useState({ type: 'DEPOSIT', amount: '', description: '', date: '' })
   const [escrowSaving, setEscrowSaving] = useState(false)
@@ -70,83 +70,72 @@ export default function DispatchPayrollPage() {
 
   const getWeight = (e: any) => WEIGHT_OVERRIDES[e.firstName] ?? (WEIGHTS[e.role] || 0)
   const totalWeight = employees.reduce((s, e) => s + getWeight(e), 0)
-
   const poolAmt = parseFloat(pool) || 0
   const basePoolAmt = parseFloat(basePool) || BASE_POOL
 
-  // Global deductions (apply to whole pool before split)
-  const globalDeductions = deductions.filter(d => d.employeeId === 'ALL')
-  const totalGlobalDeductions = globalDeductions.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
-
-  // Per-person deductions
-  const getPersonDeductions = (empId: string) =>
-    deductions.filter(d => d.employeeId === empId)
-  const getPersonDeductionTotal = (empId: string) =>
-    getPersonDeductions(empId).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
-
-  // After global deductions, what's available to split
-  const availableForSplit = Math.max(0, poolAmt - totalGlobalDeductions)
+  // All deductions combined (both general and per-person reduce the split pool)
+  const totalDeductionsAmt = deductions.reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
+  const availableForSplit = Math.max(0, poolAmt - totalDeductionsAmt)
   const reserveAmt = availableForSplit > basePoolAmt ? availableForSplit - basePoolAmt : 0
   const splitPool = availableForSplit - reserveAmt
-
   const valuePerWeight = totalWeight > 0 ? splitPool / totalWeight : 0
 
   const calcGrossPay = (e: any) => Math.round(valuePerWeight * getWeight(e) * 100) / 100
-  const calcNetPay = (e: any) => Math.max(0, calcGrossPay(e) - getPersonDeductionTotal(e.id))
 
+  // Per-person deduction total (for display)
+  const getPersonDeds = (empId: string) => deductions.filter(d => d.employeeId === empId)
+  const getPersonDedTotal = (empId: string) => getPersonDeds(empId).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
+
+  // Net pay = gross (deductions already came off the pool, so net = gross, but we show deduction info per person)
+  // The deduction reduces the split pool, so everyone's gross is already lower.
+  // Per-person deductions are informational for escrow tracking.
   const totalGross = employees.reduce((s, e) => s + calcGrossPay(e), 0)
-  const totalPersonDeductions = employees.reduce((s, e) => s + getPersonDeductionTotal(e.id), 0)
-  const totalNet = employees.reduce((s, e) => s + calcNetPay(e), 0)
-  const totalDeductions = totalGlobalDeductions + totalPersonDeductions
 
-  // Add deduction row
-  const addDeduction = (empId = 'ALL') => {
-    setDeductions(prev => [...prev, {
-      id: Math.random().toString(36).slice(2),
-      employeeId: empId,
-      type: 'ESCROW',
-      amount: '',
-      description: '',
-    }])
+  // Escrow deductions stay in TM fund (not paid out) — shown as savings
+  const totalEscrowHeld = deductions.filter(d => d.type === 'ESCROW').reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
+  const totalPenalties = deductions.filter(d => d.type !== 'ESCROW').reduce((s, d) => s + (parseFloat(d.amount) || 0), 0)
+
+  const addDeduction = () => {
+    setDeductions(prev => [...prev, { id: Math.random().toString(36).slice(2), employeeId: 'ALL', type: 'ESCROW', amount: '', description: '' }])
   }
-  const updateDeduction = (id: string, field: keyof Deduction, value: string) => {
+  const updateDeduction = (id: string, field: keyof Deduction, value: string) =>
     setDeductions(prev => prev.map(d => d.id === id ? { ...d, [field]: value } : d))
-  }
   const removeDeduction = (id: string) => setDeductions(prev => prev.filter(d => d.id !== id))
 
   const handleRun = async () => {
     if (!poolAmt || !period) return
     setSaving(true)
 
+    // Log payment per person (gross — deductions already reduced split pool)
     for (const emp of employees) {
       const gross = calcGrossPay(emp)
-      const net = calcNetPay(emp)
-      const empDeductions = getPersonDeductions(emp.id)
-
-      // Log payment (net amount)
       await fetch(`/api/employees/${emp.id}/payments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount: net, currency: 'USD', period, method: 'Bank Transfer', status: 'PAID',
+          amount: gross, currency: 'USD', period, method: 'Bank Transfer', status: 'PAID',
           paidAt: new Date().toISOString().substring(0, 10),
-          notes: `Gross: $${gross.toFixed(2)} | Deductions: $${getPersonDeductionTotal(emp.id).toFixed(2)} | Net: $${net.toFixed(2)}`,
+          notes: `Dispatch payroll | pool $${poolAmt} | deductions $${totalDeductionsAmt} | reserve $${reserveAmt} | weight ${getWeight(emp)}`,
         }),
       })
+    }
 
-      // Handle per-person escrow deductions
-      for (const ded of empDeductions) {
-        if (ded.type === 'ESCROW' && parseFloat(ded.amount) > 0) {
-          let escrow = escrows.find(es => es.employeeId === emp.id)
+    // Handle escrow deductions — deposit to each person's escrow
+    for (const ded of deductions) {
+      if (ded.type === 'ESCROW' && parseFloat(ded.amount) > 0) {
+        // If assigned to a person, deposit to their escrow
+        if (ded.employeeId !== 'ALL') {
+          let escrow = escrows.find(es => es.employeeId === ded.employeeId)
           if (!escrow) {
+            const emp = employees.find(e => e.id === ded.employeeId)
             const res = await fetch('/api/escrow', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ employeeId: emp.id, target: getWeight(emp) }),
+              body: JSON.stringify({ employeeId: ded.employeeId, target: emp ? getWeight(emp) : 0 }),
             })
             escrow = await res.json()
           }
           await fetch(`/api/escrow/${escrow.id}`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'DEPOSIT', amount: ded.amount, description: ded.description || 'Escrow from payroll', date: new Date().toISOString().substring(0, 10) }),
+            body: JSON.stringify({ type: 'DEPOSIT', amount: ded.amount, description: ded.description || `Escrow from ${period} payroll`, date: new Date().toISOString().substring(0, 10) }),
           })
         }
       }
@@ -156,19 +145,20 @@ export default function DispatchPayrollPage() {
     if (reserveAmt > 0) {
       await fetch('/api/reserve', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: reserveAmt, description: `Reserve from ${period} (pool $${poolAmt} − base $${basePoolAmt})`, period }),
+        body: JSON.stringify({ amount: reserveAmt, description: `Reserve — ${period} (pool $${poolAmt} − deductions $${totalDeductionsAmt} − base $${basePoolAmt})`, period }),
       })
     }
 
-    // TM Fund deduction
+    // TM Fund — only deduct what's actually paid out to people
+    // Escrow amounts stay in TM fund (already held there), penalties/other also stay
     if (deductFund) {
       await fetch('/api/tmfund', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'PAYMENT', amount: totalNet,
-          description: `Dispatch payroll net — ${period} (${employees.length} people)`,
+          type: 'PAYMENT', amount: totalGross,
+          description: `Dispatch payroll — ${period} (${employees.length} people)`,
           date: new Date().toISOString().substring(0, 10),
-          notes: `Pool: $${poolAmt} | Deductions: $${totalDeductions} | Reserve: $${reserveAmt} | Net paid: $${totalNet}`,
+          notes: `Pool: $${poolAmt} | Deductions: $${totalDeductionsAmt} (escrow held: $${totalEscrowHeld}) | Reserve: $${reserveAmt} | Paid: $${totalGross}`,
         }),
       })
     }
@@ -180,7 +170,6 @@ export default function DispatchPayrollPage() {
     setEscrowModal(emp)
     setEscrowForm({ type: 'DEPOSIT', amount: '', description: '', date: new Date().toISOString().substring(0, 10) })
   }
-
   const saveEscrowTx = async () => {
     setEscrowSaving(true)
     let escrow = escrows.find(es => es.employeeId === escrowModal.id)
@@ -197,7 +186,6 @@ export default function DispatchPayrollPage() {
     })
     setEscrowSaving(false); setEscrowModal(null); loadAll()
   }
-
   const getEscrow = (empId: string) => escrows.find(es => es.employeeId === empId)
 
   return (
@@ -220,7 +208,6 @@ export default function DispatchPayrollPage() {
               ))}
             </div>
 
-            {/* ── PAYROLL TAB ── */}
             {tab === 'payroll' && (
               <>
                 {/* Pool inputs */}
@@ -237,19 +224,18 @@ export default function DispatchPayrollPage() {
                         className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-3 text-lg text-white font-bold" placeholder="e.g. 12645" />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-400 uppercase tracking-wide block mb-2">Base Pay Pool <span className="text-gray-600 normal-case">(reserve threshold)</span></label>
+                      <label className="text-xs text-gray-400 uppercase tracking-wide block mb-2">Base Pool <span className="text-gray-600 normal-case">(reserve threshold)</span></label>
                       <input type="number" value={basePool} onChange={e => setBasePool(e.target.value)}
                         className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-3 text-lg text-white font-bold" />
                     </div>
                     <div>
-                      <label className="text-xs text-gray-400 uppercase tracking-wide block mb-2">TM Fund</label>
+                      <label className="text-xs text-gray-400 uppercase tracking-wide block mb-2">TM Fund Balance</label>
                       <div className={`text-xl font-bold ${fundBalance !== null && fundBalance < 0 ? 'text-red-400' : 'text-blue-400'}`}>
                         {fundBalance !== null ? `$${fundBalance.toLocaleString()}` : '...'}
                       </div>
                     </div>
                   </div>
 
-                  {/* Summary bar */}
                   {poolAmt > 0 && (
                     <div className="mt-6 pt-5 border-t border-gray-800 grid grid-cols-5 gap-4">
                       <div>
@@ -257,19 +243,20 @@ export default function DispatchPayrollPage() {
                         <p className="text-xl font-bold mt-1">${poolAmt.toLocaleString()}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs uppercase">All Deductions</p>
-                        <p className="text-xl font-bold mt-1 text-red-400">−${totalDeductions.toLocaleString()}</p>
+                        <p className="text-gray-500 text-xs uppercase">Deductions</p>
+                        <p className="text-xl font-bold mt-1 text-red-400">−${totalDeductionsAmt.toLocaleString()}</p>
+                        {totalEscrowHeld > 0 && <p className="text-xs text-gray-500 mt-0.5">escrow held: ${totalEscrowHeld.toLocaleString()}</p>}
                       </div>
                       <div>
                         <p className="text-gray-500 text-xs uppercase">→ Reserve</p>
                         <p className={`text-xl font-bold mt-1 ${reserveAmt > 0 ? 'text-yellow-400' : 'text-gray-600'}`}>
                           −${reserveAmt.toLocaleString()}
-                          <span className="text-xs text-gray-500 ml-1">(total: ${(reserve.total + reserveAmt).toLocaleString()})</span>
                         </p>
+                        <p className="text-xs text-gray-500 mt-0.5">total: ${(reserve.total + reserveAmt).toLocaleString()}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500 text-xs uppercase">Net Paid Out</p>
-                        <p className="text-xl font-bold mt-1 text-green-400">${totalNet.toLocaleString()}</p>
+                        <p className="text-gray-500 text-xs uppercase">Paid Out</p>
+                        <p className="text-xl font-bold mt-1 text-green-400">${totalGross.toLocaleString()}</p>
                       </div>
                       <div>
                         <p className="text-gray-500 text-xs uppercase">$/Weight</p>
@@ -279,46 +266,77 @@ export default function DispatchPayrollPage() {
                   )}
                 </div>
 
-                {/* Global deductions */}
+                {/* Deductions section */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
                   <div className="flex items-center justify-between mb-4">
                     <div>
-                      <h3 className="font-semibold">Pool-Level Deductions</h3>
-                      <p className="text-gray-500 text-xs mt-0.5">Deducted from total pool before splitting among staff</p>
+                      <h3 className="font-semibold">Deductions</h3>
+                      <p className="text-gray-500 text-xs mt-0.5">Reduces the split pool. Escrow deductions stay in TM Fund and get credited to the person's escrow account.</p>
                     </div>
-                    <button onClick={() => addDeduction('ALL')} className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg">+ Add</button>
+                    <button onClick={addDeduction} className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg">+ Add Deduction</button>
                   </div>
-                  {globalDeductions.length === 0 ? (
-                    <p className="text-gray-600 text-sm">No pool-level deductions.</p>
+
+                  {deductions.length === 0 ? (
+                    <p className="text-gray-600 text-sm">No deductions this month.</p>
                   ) : (
                     <div className="space-y-2">
-                      {globalDeductions.map(d => (
-                        <div key={d.id} className="flex gap-3 items-center">
-                          <select value={d.type} onChange={e => updateDeduction(d.id, 'type', e.target.value)}
-                            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white w-28">
-                            <option value="ESCROW">Escrow</option>
-                            <option value="PENALTY">Penalty</option>
-                            <option value="OTHER">Other</option>
-                          </select>
-                          <input type="number" placeholder="Amount" value={d.amount} onChange={e => updateDeduction(d.id, 'amount', e.target.value)}
-                            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white w-28" />
-                          <input placeholder="Description" value={d.description} onChange={e => updateDeduction(d.id, 'description', e.target.value)}
-                            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white flex-1" />
-                          <button onClick={() => removeDeduction(d.id)} className="text-red-500 hover:text-red-400 text-lg leading-none px-1">×</button>
+                      {/* Header */}
+                      <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 uppercase px-1 pb-1">
+                        <div className="col-span-2">Type</div>
+                        <div className="col-span-4">Assign to Person</div>
+                        <div className="col-span-2">Amount</div>
+                        <div className="col-span-3">Description</div>
+                        <div className="col-span-1"></div>
+                      </div>
+                      {deductions.map(d => (
+                        <div key={d.id} className="grid grid-cols-12 gap-2 items-center bg-gray-800/50 rounded-lg p-2">
+                          <div className="col-span-2">
+                            <select value={d.type} onChange={e => updateDeduction(d.id, 'type', e.target.value)}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white">
+                              <option value="ESCROW">🔒 Escrow</option>
+                              <option value="PENALTY">⚠️ Penalty</option>
+                              <option value="OTHER">Other</option>
+                            </select>
+                          </div>
+                          <div className="col-span-4">
+                            <select value={d.employeeId} onChange={e => updateDeduction(d.id, 'employeeId', e.target.value)}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white">
+                              <option value="ALL">— General (no person) —</option>
+                              {employees.sort((a, b) => getWeight(b) - getWeight(a)).map(e => (
+                                <option key={e.id} value={e.id}>{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="col-span-2">
+                            <input type="number" placeholder="$0" value={d.amount} onChange={e => updateDeduction(d.id, 'amount', e.target.value)}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white" />
+                          </div>
+                          <div className="col-span-3">
+                            <input placeholder="Reason..." value={d.description} onChange={e => updateDeduction(d.id, 'description', e.target.value)}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white" />
+                          </div>
+                          <div className="col-span-1 text-center">
+                            <button onClick={() => removeDeduction(d.id)} className="text-red-500 hover:text-red-400 text-lg leading-none">×</button>
+                          </div>
                         </div>
                       ))}
-                      <div className="pt-2 border-t border-gray-800 text-right text-red-400 font-bold text-sm">
-                        Total pool deductions: −${totalGlobalDeductions.toLocaleString()}
+
+                      <div className="pt-2 border-t border-gray-800 flex justify-between text-sm">
+                        <span className="text-gray-500">
+                          {totalEscrowHeld > 0 && <span className="text-blue-400">🔒 ${totalEscrowHeld.toLocaleString()} held in escrow </span>}
+                          {totalPenalties > 0 && <span className="text-red-400">⚠️ ${totalPenalties.toLocaleString()} penalties</span>}
+                        </span>
+                        <span className="text-red-400 font-bold">Total deducted: −${totalDeductionsAmt.toLocaleString()}</span>
                       </div>
                     </div>
                   )}
                 </div>
 
-                {/* Per-person breakdown */}
+                {/* Per-person table */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
                   <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
-                    <h3 className="font-semibold">Per-Person Breakdown</h3>
-                    <p className="text-gray-500 text-sm">{employees.length} people · split pool: ${splitPool.toLocaleString()}</p>
+                    <h3 className="font-semibold">Per-Person Pay</h3>
+                    <p className="text-gray-500 text-sm">split pool: ${splitPool.toLocaleString()} across {employees.length} people</p>
                   </div>
                   {loading ? <div className="p-12 text-center text-gray-500">Loading...</div> : (
                     <table className="w-full text-sm">
@@ -326,44 +344,40 @@ export default function DispatchPayrollPage() {
                         <tr className="text-gray-400 text-xs uppercase">
                           <th className="text-left px-6 py-3">Name</th>
                           <th className="text-left px-6 py-3">Role</th>
+                          <th className="text-left px-6 py-3">Region</th>
                           <th className="text-center px-4 py-3">Weight</th>
-                          <th className="text-right px-4 py-3">Gross</th>
                           <th className="text-right px-4 py-3">Deductions</th>
-                          <th className="text-right px-6 py-3">Net Pay</th>
+                          <th className="text-right px-6 py-3">Pay</th>
                         </tr>
                       </thead>
                       <tbody>
                         {employees.sort((a, b) => getWeight(b) - getWeight(a)).map(e => {
-                          const empDeds = getPersonDeductions(e.id)
-                          const dedTotal = getPersonDeductionTotal(e.id)
+                          const empDeds = getPersonDeds(e.id)
+                          const dedTotal = getPersonDedTotal(e.id)
                           return (
                             <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
-                              <td className="px-6 py-3">
-                                <div className="font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</div>
-                                {e.region && <span className={`text-xs px-1.5 py-0.5 rounded-full ${REGION_COLORS[e.region] || ''}`}>{e.region}</span>}
-                              </td>
+                              <td className="px-6 py-3 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
                               <td className="px-6 py-3">
                                 <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
                               </td>
-                              <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{getWeight(e)}</td>
-                              <td className="px-4 py-3 text-right text-gray-300">
-                                {poolAmt > 0 ? `$${calcGrossPay(e).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                              <td className="px-6 py-3">
+                                {e.region ? <span className={`text-xs px-1.5 py-0.5 rounded-full ${REGION_COLORS[e.region] || ''}`}>{e.region}</span> : <span className="text-gray-600">—</span>}
                               </td>
+                              <td className="px-4 py-3 text-center text-gray-400 font-mono text-xs">{getWeight(e)}</td>
                               <td className="px-4 py-3 text-right">
-                                <div className="flex flex-col items-end gap-1">
-                                  {empDeds.map(d => (
-                                    <div key={d.id} className="flex items-center gap-1">
-                                      <span className="text-xs text-gray-500">{d.description || d.type}</span>
-                                      <span className="text-red-400 text-xs font-medium">−${parseFloat(d.amount || '0').toLocaleString()}</span>
-                                      <button onClick={() => removeDeduction(d.id)} className="text-gray-600 hover:text-red-400 text-xs">×</button>
-                                    </div>
-                                  ))}
-                                  <button onClick={() => addDeduction(e.id)}
-                                    className="text-xs text-blue-500 hover:text-blue-400 mt-0.5">+ deduct</button>
-                                </div>
+                                {empDeds.length > 0 ? (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    {empDeds.map(d => (
+                                      <span key={d.id} className="text-xs text-red-400">
+                                        {d.type === 'ESCROW' ? '🔒' : '⚠️'} −${parseFloat(d.amount || '0').toLocaleString()}
+                                        {d.description && <span className="text-gray-500 ml-1">({d.description})</span>}
+                                      </span>
+                                    ))}
+                                  </div>
+                                ) : <span className="text-gray-600 text-xs">—</span>}
                               </td>
                               <td className="px-6 py-3 text-right font-bold text-green-400 text-base">
-                                {poolAmt > 0 ? `$${calcNetPay(e).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                                {poolAmt > 0 ? `$${calcGrossPay(e).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                               </td>
                             </tr>
                           )
@@ -372,15 +386,19 @@ export default function DispatchPayrollPage() {
                       {poolAmt > 0 && (
                         <tfoot className="border-t-2 border-gray-700 bg-gray-800/30">
                           <tr>
-                            <td colSpan={3} className="px-6 py-4 text-gray-400 font-medium">Totals</td>
-                            <td className="px-4 py-4 text-right text-gray-300 font-bold">${totalGross.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-4 text-right text-red-400 font-bold">−${totalPersonDeductions.toLocaleString()}</td>
-                            <td className="px-6 py-4 text-right font-bold text-green-400 text-lg">${totalNet.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td colSpan={5} className="px-6 py-4 text-gray-400 font-medium">Total Paid Out</td>
+                            <td className="px-6 py-4 text-right font-bold text-green-400 text-lg">${totalGross.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                           </tr>
                           {reserveAmt > 0 && (
                             <tr className="bg-yellow-900/10">
-                              <td colSpan={5} className="px-6 py-2 text-yellow-400 text-sm">+ Reserve saved (not paid out)</td>
+                              <td colSpan={5} className="px-6 py-2 text-yellow-400 text-sm">+ Saved to reserve</td>
                               <td className="px-6 py-2 text-right font-bold text-yellow-400">${reserveAmt.toLocaleString()}</td>
+                            </tr>
+                          )}
+                          {totalEscrowHeld > 0 && (
+                            <tr className="bg-blue-900/10">
+                              <td colSpan={5} className="px-6 py-2 text-blue-400 text-sm">🔒 Held in escrow (stays in TM Fund)</td>
+                              <td className="px-6 py-2 text-right font-bold text-blue-400">${totalEscrowHeld.toLocaleString()}</td>
                             </tr>
                           )}
                         </tfoot>
@@ -395,20 +413,21 @@ export default function DispatchPayrollPage() {
                     <div className="flex items-center justify-between">
                       <div>
                         <h3 className="font-semibold">Run Payroll for {period}</h3>
-                        <div className="text-sm text-gray-400 mt-1 space-y-0.5">
-                          <p>Pool: <span className="text-white">${poolAmt.toLocaleString()}</span> → Deductions: <span className="text-red-400">−${totalDeductions.toLocaleString()}</span> → Reserve: <span className="text-yellow-400">−${reserveAmt.toLocaleString()}</span> → <span className="text-green-400 font-bold">Net ${totalNet.toLocaleString()}</span></p>
-                        </div>
+                        <p className="text-gray-400 text-sm mt-1">
+                          Pool ${poolAmt.toLocaleString()} → deductions −${totalDeductionsAmt.toLocaleString()} → reserve −${reserveAmt.toLocaleString()} → <span className="text-green-400 font-bold">paid ${totalGross.toLocaleString()}</span>
+                          {totalEscrowHeld > 0 && <span className="text-blue-400"> · escrow +${totalEscrowHeld.toLocaleString()}</span>}
+                        </p>
                         <div className="flex items-center gap-3 mt-3">
                           <input type="checkbox" id="deductFund" checked={deductFund} onChange={e => setDeductFund(e.target.checked)} className="w-4 h-4" />
                           <label htmlFor="deductFund" className="text-sm text-gray-300 cursor-pointer">
-                            Deduct $<b>{totalNet.toLocaleString()}</b> from TM Fund
-                            {fundBalance !== null && <span className="text-gray-500 ml-2">(→ ${(fundBalance - totalNet).toLocaleString()})</span>}
+                            Deduct <b>${totalGross.toLocaleString()}</b> from TM Fund
+                            {fundBalance !== null && <span className="text-gray-500 ml-2">(→ ${(fundBalance - totalGross).toLocaleString()})</span>}
                           </label>
                         </div>
                       </div>
                       <button onClick={handleRun} disabled={saving}
                         className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-8 py-3 rounded-xl font-bold text-base whitespace-nowrap">
-                        {saving ? 'Processing...' : `✓ Run — $${totalNet.toLocaleString()}`}
+                        {saving ? 'Processing...' : `✓ Run — $${totalGross.toLocaleString()}`}
                       </button>
                     </div>
                   </div>
@@ -418,8 +437,9 @@ export default function DispatchPayrollPage() {
                   <div className="bg-green-900/30 border border-green-700 rounded-xl p-6 text-center">
                     <p className="text-green-400 text-xl font-bold">✅ Payroll Complete!</p>
                     <p className="text-gray-400 text-sm mt-2">
-                      {employees.length} payments logged · Net paid: ${totalNet.toLocaleString()}
-                      {reserveAmt > 0 && ` · $${reserveAmt.toLocaleString()} added to reserve`}
+                      {employees.length} payments logged · Paid: ${totalGross.toLocaleString()}
+                      {reserveAmt > 0 && ` · Reserve: +$${reserveAmt.toLocaleString()}`}
+                      {totalEscrowHeld > 0 && ` · Escrow: +$${totalEscrowHeld.toLocaleString()}`}
                     </p>
                     <button onClick={() => { setSaved(false); setDeductions([]) }} className="mt-4 text-sm text-blue-400 hover:underline">Run another month</button>
                   </div>
@@ -440,7 +460,6 @@ export default function DispatchPayrollPage() {
                     <p className="text-2xl font-bold text-blue-400">${escrows.reduce((s, e) => s + e.balance, 0).toLocaleString()}</p>
                   </div>
                 </div>
-
                 <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
                   <table className="w-full text-sm">
                     <thead className="border-b border-gray-800">
@@ -463,9 +482,7 @@ export default function DispatchPayrollPage() {
                         return (
                           <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/30">
                             <td className="px-6 py-4 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
-                            <td className="px-6 py-4">
-                              <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
-                            </td>
+                            <td className="px-6 py-4"><span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span></td>
                             <td className="px-6 py-4 text-right text-gray-400">${target.toLocaleString()}</td>
                             <td className="px-6 py-4 text-right font-bold">${balance.toLocaleString()}</td>
                             <td className="px-6 py-4 text-right">
