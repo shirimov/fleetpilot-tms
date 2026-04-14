@@ -200,8 +200,28 @@ export default function PayrollPage() {
               <div className="flex items-center gap-4">
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Period</label>
-                  <input value={period} onChange={e => setPeriod(e.target.value)}
-                    className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white w-28" />
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        const [y, m] = period.split('-').map(Number)
+                        const d = new Date(y, m - 2, 1)
+                        setPeriod(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+                      }}
+                      className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white px-2 py-1.5 rounded-lg text-sm">
+                      ‹
+                    </button>
+                    <input value={period} onChange={e => setPeriod(e.target.value)}
+                      className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-white w-24 text-center" />
+                    <button
+                      onClick={() => {
+                        const [y, m] = period.split('-').map(Number)
+                        const d = new Date(y, m, 1)
+                        setPeriod(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+                      }}
+                      className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white px-2 py-1.5 rounded-lg text-sm">
+                      ›
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Dispatch Pool</label>
