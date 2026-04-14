@@ -156,12 +156,11 @@ export default function PayrollPage() {
   const allApproved = [...fixedTeam, ...dispatchTeam].every(e => isApproved(e))
   const anyApproved = [...fixedTeam, ...dispatchTeam].some(e => isApproved(e))
 
-  const EmployeeRow = ({ e, amount }: { e: any; amount: number | null }) => {
+  const renderRow = (e: any, amount: number | null) => {
     const paid = isPaid(e)
-    const approved = isApproved(e)
     const approvedAmt = getApprovedAmount(e) ?? amount
     return (
-      <tr className="border-b border-gray-800/40 hover:bg-gray-800/20">
+      <tr key={e.id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
         <td className="px-6 py-4 font-medium">{e.firstName}{e.lastName ? ` ${e.lastName}` : ''}</td>
         <td className="px-6 py-4">
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
@@ -170,7 +169,7 @@ export default function PayrollPage() {
         <td className="px-6 py-4 text-right">
           {approvedAmt
             ? <span className="text-green-400 font-bold">${(approvedAmt as number).toLocaleString()}</span>
-            : <span className="text-gray-600">{poolAmt === 0 && DISPATCH_ROLES.includes(e.role) ? 'Enter pool →' : 'Not set'}</span>}
+            : <span className="text-gray-600">Not set</span>}
         </td>
         <td className="px-6 py-4 text-right">
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${
@@ -314,9 +313,7 @@ export default function PayrollPage() {
                   </tr>
                   {loading ? (
                     <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-500">Loading...</td></tr>
-                  ) : fixedTeam.map(e => (
-                    <EmployeeRow key={e.id} e={e} amount={e.salary} />
-                  ))}
+                  ) : fixedTeam.map(e => renderRow(e, e.salary))}
 
                   {/* Dispatch group header */}
                   <tr className="bg-gray-800/40">
@@ -327,9 +324,7 @@ export default function PayrollPage() {
                       </Link>
                     </td>
                   </tr>
-                  {loading ? null : dispatchTeam.map(e => (
-                    <EmployeeRow key={e.id} e={e} amount={getDispatchAmount(e) || calcDispatchPay(e)} />
-                  ))}
+                  {loading ? null : dispatchTeam.map(e => renderRow(e, getDispatchAmount(e) || calcDispatchPay(e)))}
                 </tbody>
                 {grandTotal > 0 && (
                   <tfoot className="border-t-2 border-gray-700 bg-gray-800/30">
