@@ -60,6 +60,14 @@ export default function PayrollPage() {
   const calcDispatchPay = (e: any): number | null =>
     poolAmt > 0 ? Math.round(valuePerWeight * getWeight(e) * 100) / 100 : null
 
+  // Auto-fill dispatch pool from approved payments in DB for this period
+  const approvedDispatchTotal = dispatchTeam.reduce((s, e) => s + (getPayment(e)?.amount || 0), 0)
+  useEffect(() => {
+    if (approvedDispatchTotal > 0 && !dispatchPool) {
+      setDispatchPool(String(approvedDispatchTotal))
+    }
+  }, [approvedDispatchTotal])
+
   const totalFixedSalary = fixedTeam.reduce((s, e) => s + (e.salary || 0), 0)
   // Use approved amounts from DB if available, otherwise use pool calculation
   const getDispatchAmount = (e: any): number => {
