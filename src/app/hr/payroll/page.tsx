@@ -155,23 +155,19 @@ export default function PayrollPage() {
         </td>
         <td className="px-6 py-4 text-right">
           <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-            paid ? 'bg-green-900/50 text-green-300' :
-            approved ? 'bg-yellow-900/50 text-yellow-300' :
-            'bg-gray-800 text-gray-500'
+            paid ? 'bg-green-900/50 text-green-300' : 'bg-yellow-900/50 text-yellow-300'
           }`}>
-            {paid ? '✓ Paid' : approved ? 'Pending' : '—'}
+            {paid ? '✓ Paid' : 'Pending'}
           </span>
         </td>
         <td className="px-6 py-4 text-right">
           {paid ? (
             <span className="text-gray-600 text-xs">✓ done</span>
-          ) : approved ? (
+          ) : (
             <button onClick={() => markPaid(e)} disabled={savingId === e.id}
               className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg font-medium">
               {savingId === e.id ? '...' : 'Mark Paid'}
             </button>
-          ) : (
-            <span className="text-gray-600 text-xs">—</span>
           )}
         </td>
       </tr>
