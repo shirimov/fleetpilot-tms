@@ -33,7 +33,9 @@ export default function PayrollPage() {
   const [loading, setLoading] = useState(true)
   const [dispatchPool, setDispatchPool] = useState('')
   const [fundBalance, setFundBalance] = useState<number | null>(null)
-  const [savingFixed, setSavingFixed] = useState<string | null>(null)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [shareModal, setShareModal] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const now = new Date()
   const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -51,34 +53,58 @@ export default function PayrollPage() {
   const dispatchTeam = activeEmployees.filter(e => DISPATCH_ROLES.includes(e.role))
   const fixedTeam = activeEmployees.filter(e => FIXED_ROLES.includes(e.role))
 
-  // Dispatch pay calculation
   const totalWeight = dispatchTeam.reduce((s, e) => s + getWeight(e), 0)
   const poolAmt = parseFloat(dispatchPool) || 0
   const valuePerWeight = totalWeight > 0 && poolAmt > 0 ? poolAmt / totalWeight : 0
-  const calcDispatchPay = (e: any) => poolAmt > 0 ? Math.round(valuePerWeight * getWeight(e) * 100) / 100 : null
+  const calcDispatchPay = (e: any): number | null =>
+    poolAmt > 0 ? Math.round(valuePerWeight * getWeight(e) * 100) / 100 : null
 
-  // Fixed salary totals
   const totalFixedSalary = fixedTeam.reduce((s, e) => s + (e.salary || 0), 0)
   const totalDispatchPay = poolAmt > 0 ? dispatchTeam.reduce((s, e) => s + (calcDispatchPay(e) || 0), 0) : 0
   const grandTotal = totalFixedSalary + totalDispatchPay
 
-  // Payment status this period
   const paidThisPeriod = (e: any) =>
     (e.payments || []).some((p: any) => p.period === period && p.status === 'PAID')
 
-  const markFixedPaid = async (emp: any) => {
-    setSavingFixed(emp.id)
+  const markPaid = async (emp: any, amount: number) => {
+    setSavingId(emp.id)
     await fetch(`/api/employees/${emp.id}/payments`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        amount: emp.salary, currency: emp.currency || 'USD',
-        period, method: 'Bank Transfer', status: 'PAID',
+        amount, currency: emp.currency || 'USD', period,
+        method: 'Bank Transfer', status: 'PAID',
         paidAt: new Date().toISOString().substring(0, 10),
-        notes: 'Fixed salary payment',
+        notes: DISPATCH_ROLES.includes(emp.role) ? `Dispatch payroll | weight ${getWeight(emp)}` : 'Fixed salary',
       }),
     })
-    setSavingFixed(null)
+    setSavingId(null)
     load()
+  }
+
+  // Share list — all active with amount and city
+  const buildShareList = () => {
+    const allWithPay = [
+      ...fixedTeam.map(e => ({ name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: e.salary || 0, city: e.city || e.region || e.country || '—' })),
+      ...dispatchTeam.sort((a, b) => getWeight(b) - getWeight(a)).map(e => {
+        const pay = calcDispatchPay(e)
+        return { name: `${e.firstName}${e.lastName ? ' ' + e.lastName : ''}`, amount: pay || 0, city: e.city || e.region || e.country || '—' }
+      }),
+    ].filter(e => e.amount > 0)
+
+    const lines = [
+      `📋 Salary List — ${period}`,
+      ``,
+      ...allWithPay.map((e, i) => `${i + 1}. ${e.name}  |  $${e.amount.toLocaleString()}  |  ${e.city}`),
+      ``,
+      `Total: $${allWithPay.reduce((s, e) => s + e.amount, 0).toLocaleString()}`,
+    ]
+    return lines.join('\n')
+  }
+
+  const copyToClipboard = () => {
+    navigator.clipboard.writeText(buildShareList())
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -104,6 +130,11 @@ export default function PayrollPage() {
                     {fundBalance !== null ? `$${fundBalance.toLocaleString()}` : '...'}
                   </div>
                 </div>
+                <button
+                  onClick={() => setShareModal(true)}
+                  className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium self-end">
+                  📤 Share List
+                </button>
               </div>
             </div>
 
@@ -117,23 +148,20 @@ export default function PayrollPage() {
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Fixed Salaries</p>
                 <p className="text-3xl font-bold mt-2 text-green-400">${totalFixedSalary.toLocaleString()}</p>
-                <p className="text-gray-500 text-xs mt-1">{fixedTeam.length} people</p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Dispatch Pool</p>
                 {poolAmt > 0
                   ? <p className="text-3xl font-bold mt-2 text-blue-400">${totalDispatchPay.toLocaleString()}</p>
                   : <p className="text-3xl font-bold mt-2 text-gray-600">—</p>}
-                <p className="text-gray-500 text-xs mt-1">{dispatchTeam.length} people</p>
               </div>
-              <div className={`rounded-xl p-5 border ${grandTotal > 0 ? 'bg-gray-900 border-gray-800' : 'bg-gray-900 border-gray-800'}`}>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <p className="text-gray-400 text-xs uppercase tracking-wide">Grand Total</p>
                 <p className="text-3xl font-bold mt-2 text-yellow-400">{grandTotal > 0 ? `$${grandTotal.toLocaleString()}` : '—'}</p>
-                <p className="text-gray-500 text-xs mt-1">this month</p>
               </div>
             </div>
 
-            {/* ── FIXED SALARY TEAM ── */}
+            {/* FIXED SALARY */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
               <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
                 <h3 className="font-semibold">Fixed Salary Staff</h3>
@@ -145,6 +173,7 @@ export default function PayrollPage() {
                     <tr className="text-gray-400 text-xs uppercase">
                       <th className="text-left px-6 py-3">Name</th>
                       <th className="text-left px-6 py-3">Role</th>
+                      <th className="text-left px-6 py-3">City</th>
                       <th className="text-right px-6 py-3">Salary</th>
                       <th className="text-right px-6 py-3">Status</th>
                       <th className="text-right px-6 py-3">Action</th>
@@ -159,6 +188,7 @@ export default function PayrollPage() {
                           <td className="px-6 py-4">
                             <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
                           </td>
+                          <td className="px-6 py-4 text-gray-400 text-xs">{e.city || e.region || '—'}</td>
                           <td className="px-6 py-4 text-right">
                             {e.salary
                               ? <span className="text-green-400 font-bold">${e.salary.toLocaleString()}</span>
@@ -171,39 +201,28 @@ export default function PayrollPage() {
                           </td>
                           <td className="px-6 py-4 text-right">
                             {!paid && e.salary ? (
-                              <button
-                                onClick={() => markFixedPaid(e)}
-                                disabled={savingFixed === e.id}
-                                className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg font-medium">
-                                {savingFixed === e.id ? 'Saving...' : `Mark Paid $${e.salary.toLocaleString()}`}
+                              <button onClick={() => markPaid(e, e.salary)} disabled={savingId === e.id}
+                                className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg">
+                                {savingId === e.id ? '...' : 'Mark Paid'}
                               </button>
                             ) : paid ? (
-                              <span className="text-gray-600 text-xs">✓ done</span>
-                            ) : (
-                              <span className="text-gray-600 text-xs">No salary set</span>
-                            )}
+                              <span className="text-gray-600 text-xs">✓</span>
+                            ) : null}
                           </td>
                         </tr>
                       )
                     })}
                   </tbody>
-                  <tfoot className="border-t border-gray-700 bg-gray-800/20">
-                    <tr>
-                      <td colSpan={2} className="px-6 py-3 text-gray-400 text-sm">Total Fixed</td>
-                      <td className="px-6 py-3 text-right font-bold text-green-400">${totalFixedSalary.toLocaleString()}</td>
-                      <td colSpan={2}></td>
-                    </tr>
-                  </tfoot>
                 </table>
               )}
             </div>
 
-            {/* ── DISPATCH TEAM ── */}
+            {/* DISPATCH TEAM */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
               <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold">Dispatch Team</h3>
-                  <p className="text-gray-500 text-xs mt-0.5">Weight-based — enter pool to see individual amounts</p>
+                  <p className="text-gray-500 text-xs mt-0.5">Weight-based — enter pool to calculate individual amounts</p>
                 </div>
                 <div className="flex items-center gap-3">
                   <div>
@@ -213,8 +232,8 @@ export default function PayrollPage() {
                       className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white w-36 font-bold" />
                   </div>
                   <Link href="/hr/dispatch-payroll"
-                    className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-2 rounded-lg self-end">
-                    Full Payroll →
+                    className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-2 rounded-lg self-end whitespace-nowrap">
+                    Run Payroll →
                   </Link>
                 </div>
               </div>
@@ -224,9 +243,11 @@ export default function PayrollPage() {
                     <tr className="text-gray-400 text-xs uppercase">
                       <th className="text-left px-6 py-3">Name</th>
                       <th className="text-left px-6 py-3">Role</th>
+                      <th className="text-left px-6 py-3">City</th>
                       <th className="text-center px-4 py-3">Weight</th>
                       <th className="text-right px-6 py-3">Est. Pay</th>
                       <th className="text-right px-6 py-3">Status</th>
+                      <th className="text-right px-6 py-3">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -239,16 +260,27 @@ export default function PayrollPage() {
                           <td className="px-6 py-4">
                             <span className={`text-xs px-2 py-1 rounded-full font-medium ${ROLE_COLORS[e.role]}`}>{ROLE_LABELS[e.role]}</span>
                           </td>
+                          <td className="px-6 py-4 text-gray-400 text-xs">{e.city || e.region || '—'}</td>
                           <td className="px-4 py-4 text-center text-gray-400 font-mono text-xs">{getWeight(e)}</td>
                           <td className="px-6 py-4 text-right font-bold">
                             {pay !== null
                               ? <span className="text-blue-400">${pay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                              : <span className="text-gray-600">Enter pool →</span>}
+                              : <span className="text-gray-600 text-xs">enter pool →</span>}
                           </td>
                           <td className="px-6 py-4 text-right">
                             <span className={`text-xs px-2 py-1 rounded-full font-medium ${paid ? 'bg-green-900/50 text-green-300' : 'bg-gray-800 text-gray-500'}`}>
                               {paid ? '✓ Paid' : '—'}
                             </span>
+                          </td>
+                          <td className="px-6 py-4 text-right">
+                            {!paid && pay !== null ? (
+                              <button onClick={() => markPaid(e, pay)} disabled={savingId === e.id}
+                                className="text-xs bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg">
+                                {savingId === e.id ? '...' : 'Mark Paid'}
+                              </button>
+                            ) : paid ? (
+                              <span className="text-gray-600 text-xs">✓</span>
+                            ) : null}
                           </td>
                         </tr>
                       )
@@ -257,9 +289,9 @@ export default function PayrollPage() {
                   {poolAmt > 0 && (
                     <tfoot className="border-t border-gray-700 bg-gray-800/20">
                       <tr>
-                        <td colSpan={3} className="px-6 py-3 text-gray-400 text-sm">Total Dispatch</td>
+                        <td colSpan={4} className="px-6 py-3 text-gray-400 text-sm">Total Dispatch</td>
                         <td className="px-6 py-3 text-right font-bold text-blue-400">${totalDispatchPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                        <td></td>
+                        <td colSpan={2}></td>
                       </tr>
                     </tfoot>
                   )}
@@ -267,17 +299,17 @@ export default function PayrollPage() {
               )}
             </div>
 
-            {/* Grand total bar */}
+            {/* Grand total */}
             {grandTotal > 0 && (
               <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 flex items-center justify-between">
                 <div className="flex gap-8">
                   <div>
-                    <p className="text-gray-500 text-xs uppercase">Fixed Salaries</p>
+                    <p className="text-gray-500 text-xs uppercase">Fixed</p>
                     <p className="text-xl font-bold text-green-400">${totalFixedSalary.toLocaleString()}</p>
                   </div>
                   <div className="text-gray-600 text-2xl self-center">+</div>
                   <div>
-                    <p className="text-gray-500 text-xs uppercase">Dispatch Pool</p>
+                    <p className="text-gray-500 text-xs uppercase">Dispatch</p>
                     <p className="text-xl font-bold text-blue-400">${totalDispatchPay.toLocaleString()}</p>
                   </div>
                   <div className="text-gray-600 text-2xl self-center">=</div>
@@ -296,10 +328,37 @@ export default function PayrollPage() {
                 )}
               </div>
             )}
-
           </div>
         </main>
       </div>
+
+      {/* Share Modal */}
+      {shareModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg">
+            <div className="p-6 border-b border-gray-800 flex items-center justify-between">
+              <h3 className="font-semibold">📤 Share Salary List — {period}</h3>
+              <button onClick={() => setShareModal(false)} className="text-gray-500 hover:text-white text-xl">✕</button>
+            </div>
+            <div className="p-6">
+              <pre className="bg-gray-800 rounded-lg p-4 text-sm text-gray-200 whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto max-h-80">
+                {buildShareList()}
+              </pre>
+              <div className="flex gap-3 mt-4">
+                <button onClick={copyToClipboard}
+                  className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors ${copied ? 'bg-green-600 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}>
+                  {copied ? '✓ Copied!' : '📋 Copy to Clipboard'}
+                </button>
+                <button onClick={() => setShareModal(false)}
+                  className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm">
+                  Close
+                </button>
+              </div>
+              <p className="text-gray-600 text-xs mt-3 text-center">Paste directly into WhatsApp, Telegram, or any messaging app</p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
