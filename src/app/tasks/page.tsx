@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import KanbanBoard from '@/components/KanbanBoard';
+import TaskListView from '@/components/TaskListView';
 
 interface TaskProject {
   id: string;
@@ -17,9 +17,11 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [newProjectName, setNewProjectName] = useState('');
+  const [employees, setEmployees] = useState<any[]>([]);
 
   useEffect(() => {
     fetchProjects();
+    fetchEmployees();
   }, []);
 
   const fetchProjects = async () => {
@@ -34,6 +36,16 @@ export default function TasksPage() {
       console.error('Failed to fetch projects:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchEmployees = async () => {
+    try {
+      const res = await fetch('/api/employees');
+      const data = await res.json();
+      setEmployees(data || []);
+    } catch (error) {
+      console.error('Failed to fetch employees:', error);
     }
   };
 
@@ -62,10 +74,10 @@ export default function TasksPage() {
   const currentProject = projects.find(p => p.id === selectedProject);
 
   return (
-    <div className="p-8 bg-gradient-to-br from-slate-50 to-slate-100 min-h-screen">
-      <div className="max-w-full">
+    <div className="p-8 bg-gray-950 text-white min-h-screen">
+      <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold text-slate-900">📋 Task Manager</h1>
+          <h1 className="text-4xl font-bold">📋 Task Manager</h1>
           <div className="flex gap-2">
             <input
               type="text"
@@ -73,13 +85,13 @@ export default function TasksPage() {
               onChange={(e) => setNewProjectName(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleCreateProject()}
               placeholder="New project name..."
-              className="px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
               onClick={handleCreateProject}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold"
             >
-              + New
+              + New Project
             </button>
           </div>
         </div>
@@ -90,7 +102,11 @@ export default function TasksPage() {
               <button
                 key={project.id}
                 onClick={() => setSelectedProject(project.id)}
-                className={`px-4 py-2 rounded-lg font-semibold transition ${selectedProject === project.id ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 border border-slate-300 hover:border-blue-400'}`}
+                className={`px-4 py-2 rounded-lg font-semibold transition ${
+                  selectedProject === project.id
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-300 border border-gray-700 hover:border-blue-500'
+                }`}
               >
                 {project.icon || '📋'} {project.name}
               </button>
@@ -99,12 +115,12 @@ export default function TasksPage() {
         )}
 
         {currentProject && (
-          <KanbanBoard project={currentProject} onUpdate={fetchProjects} />
+          <TaskListView project={currentProject} employees={employees} onUpdate={fetchProjects} />
         )}
 
         {projects.length === 0 && !loading && (
-          <div className="text-center py-12 bg-white rounded-lg border border-slate-200">
-            <p className="text-slate-600">No projects yet. Create one to get started!</p>
+          <div className="text-center py-12 bg-gray-800 rounded-lg border border-gray-700">
+            <p className="text-gray-400">No projects yet. Create one to get started!</p>
           </div>
         )}
       </div>
