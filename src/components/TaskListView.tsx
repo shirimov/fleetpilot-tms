@@ -18,6 +18,7 @@ export default function TaskListView({ project, employees, onUpdate }: TaskListV
   const [boards, setBoards] = useState<Board[]>(project.boards || []);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
 
   const allTasks = boards.flatMap(board => 
     board.cards.map(card => ({ ...card, boardId: board.id, boardName: board.name }))
@@ -80,6 +81,17 @@ export default function TaskListView({ project, employees, onUpdate }: TaskListV
       );
     } catch (error) {
       console.error('Failed to delete task:', error);
+    }
+  };
+
+  const startEditTitle = (task: any) => {
+    setEditingTaskId(task.id);
+    setEditTitle(task.title);
+  };
+
+  const saveEditTitle = (taskId: string) => {
+    if (editTitle.trim()) {
+      handleUpdateTask(taskId, { title: editTitle });
     }
   };
 
@@ -169,7 +181,45 @@ export default function TaskListView({ project, employees, onUpdate }: TaskListV
             ) : (
               allTasks.map(task => (
                 <tr key={task.id} className="border-b border-gray-700 hover:bg-gray-700/50 transition">
-                  <td className="px-6 py-4 font-medium">{task.title}</td>
+                  <td className="px-6 py-4 font-medium">
+                    {editingTaskId === task.id ? (
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && saveEditTitle(task.id)}
+                          autoFocus
+                          className="flex-1 px-2 py-1 bg-gray-700 border border-blue-500 rounded text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        />
+                        <button
+                          onClick={() => saveEditTitle(task.id)}
+                          className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-xs font-semibold"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingTaskId(null)}
+                          className="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700 text-xs font-semibold"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <span className="cursor-pointer hover:text-blue-400" onClick={() => startEditTitle(task)}>
+                          {task.title}
+                        </span>
+                        <button
+                          onClick={() => startEditTitle(task)}
+                          className="opacity-0 group-hover:opacity-100 transition text-gray-500 hover:text-blue-400 text-xs"
+                          title="Click to edit"
+                        >
+                          ✏️
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td className="px-6 py-4">
                     <select
                       value={task.status || 'TODO'}
