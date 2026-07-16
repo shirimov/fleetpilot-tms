@@ -8,6 +8,7 @@ const nav = [
   { href: '/loads', label: '📦 Loads' },
   { href: '/trucks', label: '🚛 Trucks' },
   { href: '/settlements', label: '💰 Settlements' },
+  { href: '/tasks', label: '📋 Tasks' },
   { href: '/companies', label: '🏢 Companies' },
   { href: '/inspections', label: '📋 Inspections' },
   { href: '/finance', label: '💳 Finance' },
@@ -80,6 +81,7 @@ export default function Sidebar() {
           { href: '/loads', emoji: '📦', short: 'Loads' },
           { href: '/trucks', emoji: '🚛', short: 'Trucks' },
           { href: '/inspections', emoji: '📋', short: 'Inspect' },
+          { href: '/tasks', emoji: '✅', short: 'Tasks' },
           { href: '/hr/employees', emoji: '👥', short: 'HR' },
           { href: '/settlements', emoji: '💰', short: 'Pay' },
         ].map(({ href, emoji, short }) => (

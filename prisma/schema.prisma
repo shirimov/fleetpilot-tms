@@ -41,6 +41,7 @@ model Company {
   trucks    Truck[]
   loads     Load[]
   bankAccounts BankAccount[]
+  taskProjects TaskProject[]
 }
 
 model Truck {
@@ -348,4 +349,102 @@ model DriverOrientation {
   signature   String
   notes       String?
   createdAt   DateTime @default(now())
+}
+
+
+// ============ TASK MANAGER ============
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+model TaskProject {
+  id String @id @default(cuid())
+  name String
+  description String?
+  color String? @default("#3b82f6")
+  icon String? @default("📋")
+  companyId String?
+  company Company? @relation(fields: [companyId], references: [id])
+  isArchived Boolean @default(false)
+  boards TaskBoard[]
+  cards TaskCard[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaskBoard {
+  id String @id @default(cuid())
+  projectId String
+  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name String
+  order Int @default(0)
+  color String? @default("#e5e7eb")
+  cards TaskCard[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaskCard {
+  id String @id @default(cuid())
+  projectId String
+  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  boardId String
+  board TaskBoard @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title String
+  description String? @db.Text
+  order Int @default(0)
+  priority TaskPriority @default(MEDIUM)
+  status TaskStatus @default(TODO)
+  assignedTo String?
+  dueDate DateTime?
+  labels TaskLabel[]
+  comments TaskComment[]
+  attachments TaskAttachment[]
+  startDate DateTime?
+  completedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaskLabel {
+  id String @id @default(cuid())
+  cardId String
+  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  name String
+  color String @default("#f3f4f6")
+  createdAt DateTime @default(now())
+}
+
+model TaskComment {
+  id String @id @default(cuid())
+  cardId String
+  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  author String
+  content String @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaskAttachment {
+  id String @id @default(cuid())
+  cardId String
+  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  name String
+  url String
+  size Int?
+  mimeType String?
+  uploadedBy String
+  createdAt DateTime @default(now())
 }
