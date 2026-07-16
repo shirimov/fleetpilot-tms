@@ -44,57 +44,62 @@ async function handleTelegramMessage(message: TelegramMessage['message']) {
   if (!message || !message.text) return;
 
   const chatId = message.chat.id;
-  const text = message.text.trim().toLowerCase();
+  const text = message.text.trim();
   const userId = message.from.id;
+  const userName = message.from.first_name || 'User';
+  const lowerText = text.toLowerCase();
 
   try {
-    // /start - Welcome message
+    // Task Management Commands
     if (text === '/start') {
       const welcome = `
-👋 <b>Welcome to FleetPilot TMS!</b>
+👋 <b>Welcome to FleetPilot!</b>
 
-Available commands:
+I'm your personal assistant + task manager. You can:
+
+<b>📋 Task Commands:</b>
 /tasks - Show all tasks
-/create - Create new task
 /today - Tasks due today
 /urgent - Urgent tasks
 /stats - Task statistics
-/help - Show this message
+/help - Show commands
+/create [title] - Create task
 
-💬 You can also just chat for assistance!
+<b>💬 Or just chat with me!</b>
+Ask me anything about your fleet, tasks, or business. I'm here to help.
+
+What would you like to do?
       `;
       await sendTelegramMessage(chatId, welcome);
       return;
     }
 
-    // /help - Show commands
     if (text === '/help') {
       const help = `
-<b>FleetPilot TMS Commands:</b>
-
-📋 <b>Task Management:</b>
+<b>📋 Task Manager:</b>
 /tasks - List all tasks
-/create - Create new task
 /today - Tasks due today
 /urgent - Urgent tasks
-/assigned - Your assigned tasks
+/stats - Statistics
+/create [title] - Create new task
 
-📊 <b>Analytics:</b>
-/stats - Task statistics
-/status - Project status overview
+<b>💬 Personal Assistant:</b>
+Just type your question and I'll help!
 
-<b>Need help?</b> Just type your question!
+Examples:
+• "How many trucks do I have?"
+• "What's my load status?"
+• "Show me today's schedule"
+• "Create a task for maintenance"
       `;
       await sendTelegramMessage(chatId, help);
       return;
     }
 
-    // /tasks - List all tasks
     if (text === '/tasks') {
       const tasks = await prisma.taskCard.findMany({
         take: 10,
         orderBy: { createdAt: 'desc' },
-        include: { labels: true },
       });
 
       if (tasks.length === 0) {
@@ -119,7 +124,6 @@ Available commands:
       return;
     }
 
-    // /today - Tasks due today
     if (text === '/today') {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -154,7 +158,6 @@ Available commands:
       return;
     }
 
-    // /urgent - Urgent tasks
     if (text === '/urgent') {
       const urgentTasks = await prisma.taskCard.findMany({
         where: { priority: 'URGENT' },
@@ -181,7 +184,6 @@ Available commands:
       return;
     }
 
-    // /stats - Task statistics
     if (text === '/stats') {
       const total = await prisma.taskCard.count();
       const done = await prisma.taskCard.count({ where: { status: 'DONE' } });
@@ -203,24 +205,63 @@ Completion Rate: <b>${total > 0 ? Math.round((done / total) * 100) : 0}%</b>
       return;
     }
 
-    // Default: acknowledge and offer help
-    const response = `
-Got it! You said: "${message.text}"
+    if (text.startsWith('/create ')) {
+      const title = text.substring(8).trim();
+      if (!title) {
+        await sendTelegramMessage(chatId, '❌ Please provide a task title.\n\nExample: /create Review maintenance logs');
+        return;
+      }
 
-I'm FleetPilot TMS assistant. Here's what I can do:
+      const board = await prisma.taskBoard.findFirst();
+      if (!board) {
+        await sendTelegramMessage(chatId, '❌ No task boards found. Please create a project in the web app first.');
+        return;
+      }
 
-📋 View tasks: /tasks
-🔴 Urgent tasks: /urgent
-📅 Today's tasks: /today
-📊 Statistics: /stats
+      const task = await prisma.taskCard.create({
+        data: {
+          projectId: board.projectId,
+          boardId: board.id,
+          title: title,
+          priority: 'MEDIUM',
+        },
+      });
 
-Or just ask me anything about your tasks! 💬
-    `;
+      await sendTelegramMessage(chatId, `✅ <b>Task created!</b>\n\n📌 <b>${task.title}</b>\n\nManage it in the web app at /tasks`);
+      return;
+    }
 
-    await sendTelegramMessage(chatId, response);
+    // Personal Assistant - respond to natural questions
+    // For non-task messages
+    if (lowerText.includes('truck') || lowerText.includes('load') || lowerText.includes('driver')) {
+      const response = `🚛 I can help with that! Here are your options:\n\n• Go to <b>/trucks</b> to manage trucks
+• Go to <b>/loads</b> to manage loads
+• Go to <b>/drivers</b> to manage drivers
+• Or ask me specific questions and I'll help!\n\nWhat would you like to know?`;
+      await sendTelegramMessage(chatId, response);
+      return;
+    }
+
+    if (lowerText.includes('help') || lowerText.includes('what can')) {
+      const response = `I can help you with:\n\n<b>📋 Tasks:</b>
+/tasks - View all tasks
+/today - Today's tasks
+/urgent - Urgent tasks
+/stats - Statistics
+/create [name] - Create new task\n\n<b>🚛 Fleet Management:</b>
+View trucks, loads, drivers, and more in the web app\n\n<b>💬 Ask me anything!</b>
+Questions about your fleet, status, or anything else.`;
+      await sendTelegramMessage(chatId, response);
+      return;
+    }
+
+    // Default response for general questions
+    const defaultResponse = `Got it! 📝\n\n"${text}"\n\nFor task management, use:\n/tasks - View tasks\n/create [title] - Create task\n/today - Today's tasks\n/urgent - Urgent tasks\n\nOr ask me specific questions about your fleet!`;
+    await sendTelegramMessage(chatId, defaultResponse);
+
   } catch (error) {
     console.error('Error handling Telegram message:', error);
-    await sendTelegramMessage(chatId, '❌ Error processing your request. Please try again.');
+    await sendTelegramMessage(chatId, '❌ Something went wrong. Please try again.');
   }
 }
 
