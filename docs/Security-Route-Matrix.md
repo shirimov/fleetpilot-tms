@@ -79,6 +79,31 @@ boundaries.
 Drivers without a truck have no company ownership in the current schema and
 must remain hidden until an explicit ownership relation is added and reviewed.
 
+### Fleet and inspection remediation checklist
+
+This phase secures the following handlers without adding artificial ownership
+to child records:
+
+- [ ] `GET /api/trucks` — `MEMBER`, direct `Truck.companyId`
+- [ ] `POST /api/trucks` — `ADMIN`, company derived from active membership
+- [ ] `PATCH /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
+- [ ] `DELETE /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
+- [ ] `GET /api/inspections/truck` — `MEMBER`, through `Truck.companyId`
+- [ ] `POST /api/inspections/truck` — `MEMBER`, verify selected truck
+- [ ] `GET /api/inspections/truck/[id]` — `MEMBER`, through owning truck
+- [ ] `POST /api/inspections/truck/[id]/photos` — `MEMBER`, authorize before
+  writing files
+- [ ] `GET /api/inspections/truck/latest/[truckId]` — `MEMBER`, verify truck
+- [ ] `GET /api/inspections/driver` — `MEMBER`, through driver-assigned truck
+- [ ] `POST /api/inspections/driver` — `MEMBER`, verify driver-assigned truck
+- [ ] `GET /api/inspections/driver/[id]` — `MEMBER`, through driver and truck
+- [ ] `GET /api/inspections/driver/latest-by-truck/[truckId]` — `MEMBER`,
+  verify truck before resolving its driver
+
+No trailer model, relation, or API handler exists in the current repository.
+Trailer authorization cannot be implemented until a separately reviewed data
+model and product scope exists; no truck record will be treated as a trailer.
+
 ## Employees, payroll, escrow, and company funds
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
@@ -134,8 +159,21 @@ verified webhook authenticity and an explicit integration-to-company mapping.
 
 ## Integration and repository findings
 
-- QuickManage refresh executes a fixed local script and reads a global cache;
-  neither is company-addressable today.
+- QuickManage data originates in a fixed local Playwright scraper that queries
+  QuickManage carrier IDs and writes one global JSON cache. The cache payload
+  contains external carrier IDs, but neither the script nor FleetPilot schema
+  has a verified relation from those IDs to `Company.id`.
+- Only `GET /api/qm-stats` reads or refreshes the QuickManage cache; the
+  dashboard page calls that route separately from the database-backed
+  `/api/dashboard`.
+- Safe isolation requires a reviewed unique mapping such as
+  `Company.quickManageCarrierId` (or a dedicated integration mapping model),
+  plus per-company cache entries keyed by the verified mapping. Reads must
+  filter to the active company's entry, and refresh must be role-restricted and
+  unable to populate another company's key.
+- Until that mapping and cache partitioning exist, `/api/qm-stats` remains a
+  production blocker and must not expose its global cached payload in a
+  multi-company authenticated deployment.
 - Plaid and IMAP credentials are high-sensitivity company resources.
 - Local inspection files are retrievable by guessed paths.
 - The Telegram webhook performs global task reads, counts, and creates.
