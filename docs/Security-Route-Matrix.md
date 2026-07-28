@@ -140,6 +140,28 @@ These models require additive company ownership before safe tenant scoping.
 Nullable legacy `BankAccount.companyId` rows must remain hidden until ownership
 is independently reconciled.
 
+### Finance and integration remediation checklist
+
+- [ ] Settlement list/detail/mutations — scope through `Truck.companyId`; verify
+  load, truck, and driver parents before writes; `MEMBER` read, `ADMIN` write.
+- [ ] Reserve and TM Fund — require `ADMIN` and fail closed until additive
+  company ownership is designed; never return the existing global rows.
+- [ ] Plaid link token — authenticated `ADMIN`; no client company selector.
+- [ ] Plaid exchange/sync/accounts — `ADMIN`, derive company from membership,
+  require non-null `BankAccount.companyId`, and scope every child through it.
+- [ ] Upload download — `MEMBER`, allow only inspection paths whose inspection
+  resolves through a truck owned by the active company; reject all unindexed
+  generic paths.
+- [ ] Inbox/IMAP — require `ADMIN` and fail closed until `EmailAccount` has
+  reviewed company ownership; do not expose or sync global legacy accounts.
+- [ ] Telegram — validate webhook authenticity and fail closed until a
+  persistent integration-to-company mapping exists; do not execute global task
+  reads or writes.
+
+No Invoice, Expense, accounting-export, financial-search, or financial-report
+route/model exists in this repository. Pagination exists only in inbox and
+Plaid transaction reads; those selectors must be scoped before use.
+
 ## Inbox, uploads, and external integrations
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
