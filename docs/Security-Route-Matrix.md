@@ -126,6 +126,30 @@ model and product scope exists; no truck record will be treated as a trailer.
 
 These models require additive company ownership before safe tenant scoping.
 
+### Phase 4 remediation checklist
+
+- [ ] Driver list/create/detail/update/delete — `MEMBER` read and `ADMIN`
+  write; direct nullable `Driver.companyId`; verify optional truck belongs to
+  the same company; hide legacy null-company drivers.
+- [ ] Load list/create/update/delete — `MEMBER` read and write; direct
+  `Load.companyId`; verify truck and optional driver share the active company;
+  ignore client company selectors.
+- [ ] Employee list/create/detail/update/delete — `ADMIN`; direct nullable
+  `Employee.companyId`; employee identity remains separate from authenticated
+  `User` and `CompanyMembership`; hide legacy null-company employees.
+- [ ] Employee payment list/create/update — `ADMIN`; scope through
+  `Employee.companyId` and validate both route parent and payment parent.
+- [ ] Escrow list/create/detail/transactions — `ADMIN`; scope the legacy
+  string employee reference through a verified company-owned Employee and
+  write balances atomically.
+- [ ] QuickManage `/api/qm-stats` — require membership and fail closed until a
+  reviewed company/carrier mapping and partitioned cache exist.
+- [ ] Service worker — use network-only behavior for authenticated `/api/**`
+  responses so private tenant data is never stored in shared browser caches.
+
+The additive ownership migration adds nullable `companyId` only to Driver and
+Employee. Existing rows remain null and hidden; no ownership is inferred.
+
 ## Plaid and finance integration
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
@@ -204,6 +228,13 @@ verified webhook authenticity and an explicit integration-to-company mapping.
   the value must never be copied into issues, logs, commits, or tests.
 - Generated service-worker caching of authenticated API responses must be
   reviewed so one browser session cannot receive another user's cached data.
+
+Credential-use audit found multiple standalone QuickManage scripts containing
+interactive login logic. Production secret rotation and deployment are outside
+this PR. Safe removal requires all operational scripts to read `QM_EMAIL` and
+`QM_PASSWORD`, fail when either is absent, remove every literal credential from
+Git history where operationally approved, rotate the provider credential, and
+restart only after the new environment values are installed.
 
 ## Remediation order
 
