@@ -14,6 +14,7 @@ fi
 
 set -a
 # The staging environment file is root/operator-managed and must not contain shell code.
+# shellcheck source=/dev/null
 source "${ENV_FILE}"
 set +a
 APP_COMMIT_SHA="${RELEASE_COMMIT_SHA:-${APP_COMMIT_SHA:-}}"

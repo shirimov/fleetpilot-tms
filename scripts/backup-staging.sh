@@ -7,6 +7,7 @@ ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env.staging}"
 BACKUP_REASON="${1:-scheduled}"
 
 set -a
+# shellcheck source=/dev/null
 source "${ENV_FILE}"
 set +a
 

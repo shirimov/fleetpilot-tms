@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env.staging}"
 
 set -a
+# shellcheck source=/dev/null
 source "${ENV_FILE}"
 set +a
 
@@ -13,7 +14,7 @@ set +a
 EXPECTED_COMMIT="${EXPECTED_COMMIT:-${APP_COMMIT_SHA:-}}"
 health_url="${APP_URL%/}/api/health"
 
-for attempt in {1..30}; do
+for _ in {1..30}; do
   response="$(curl --fail --silent --show-error \
     --connect-timeout 5 --max-time 10 "${health_url}" 2>/dev/null || true)"
   if [[ "${response}" == *'"status":"ok"'* && "${response}" == *'"database":"ok"'* ]]; then

@@ -13,6 +13,7 @@ DATABASE_BACKUP="${1:?Pass the encrypted database backup path}"
 ATTACHMENT_BACKUP="${2:-}"
 
 set -a
+# shellcheck source=/dev/null
 source "${ENV_FILE}"
 set +a
 
