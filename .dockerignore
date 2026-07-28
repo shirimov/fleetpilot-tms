@@ -1,0 +1,14 @@
+.git
+.github
+.next
+.data
+.deployment-state
+node_modules
+test-results
+playwright-report
+coverage
+.env
+.env.*
+!.env.staging.example
+npm-debug.log*
+docs/screenshots
