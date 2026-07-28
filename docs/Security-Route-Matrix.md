@@ -54,9 +54,9 @@ boundaries.
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/trucks` | GET | trucks | no | no | MEMBER | C | U/X | vulnerable |
-| `/api/trucks` | POST | truck | no | client company | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/trucks/[id]` | PATCH, DELETE | truck | no | no/client company | ADMIN | C/M | U/X/I/R | vulnerable |
+| `/api/trucks` | GET | trucks | yes | yes | MEMBER | C | U/X | protected |
+| `/api/trucks` | POST | truck | yes | yes | ADMIN | M | U/X/I/R | protected |
+| `/api/trucks/[id]` | PATCH, DELETE | truck | yes | yes | ADMIN | C/M | U/X/I/R | protected |
 | `/api/drivers` | GET | drivers | no | indirect/unscoped | MEMBER | C | U/X | vulnerable |
 | `/api/drivers` | POST | driver/truck | no | client truck | ADMIN | M | U/X/I/R | vulnerable |
 | `/api/drivers/[id]` | PATCH, DELETE | driver | no | indirect/unscoped | ADMIN | C/M | U/X/I/R | vulnerable |
@@ -66,15 +66,15 @@ boundaries.
 | `/api/settlements` | GET | settlements | no | indirect truck/load | MEMBER | C | U/X | vulnerable |
 | `/api/settlements` | POST | settlement | no | client relations | ADMIN | M | U/X/I/R | vulnerable |
 | `/api/settlements/[id]` | PATCH, DELETE | settlement | no | indirect truck/load | ADMIN | C/M | U/X/I/R | vulnerable |
-| `/api/inspections/truck` | GET | truck inspections | no | indirect truck | MEMBER | C | U/X | vulnerable |
-| `/api/inspections/truck` | POST | truck inspection | no | client truck | MEMBER | M | U/X/I | vulnerable |
-| `/api/inspections/truck/[id]` | GET | truck inspection | no | indirect truck | MEMBER | C | U/X | vulnerable |
-| `/api/inspections/truck/latest/[truckId]` | GET | truck inspection | no | client truck | MEMBER | C | U/X/I | vulnerable |
-| `/api/inspections/truck/[id]/photos` | POST | inspection files | no | indirect/late check | MEMBER | C/M/S | U/X/I/F | vulnerable |
-| `/api/inspections/driver` | GET | orientations | no | indirect driver/truck | MEMBER | C | U/X | vulnerable |
-| `/api/inspections/driver` | POST | orientation | no | client driver | MEMBER | M | U/X/I | vulnerable |
-| `/api/inspections/driver/[id]` | GET | orientation | no | indirect driver/truck | MEMBER | C | U/X | vulnerable |
-| `/api/inspections/driver/latest-by-truck/[truckId]` | GET | orientation | no | client truck | MEMBER | C | U/X/I | vulnerable |
+| `/api/inspections/truck` | GET | truck inspections | yes | parent truck | MEMBER | C | U/X | protected |
+| `/api/inspections/truck` | POST | truck inspection | yes | parent truck | MEMBER | M | U/X/I | protected |
+| `/api/inspections/truck/[id]` | GET | truck inspection | yes | parent truck | MEMBER | C | U/X | protected |
+| `/api/inspections/truck/latest/[truckId]` | GET | truck inspection | yes | parent truck | MEMBER | C | U/X/I | protected |
+| `/api/inspections/truck/[id]/photos` | POST | inspection files | yes | parent truck, pre-write | MEMBER | C/M/S | U/X/I/F | protected |
+| `/api/inspections/driver` | GET | orientations | yes | driver truck | MEMBER | C | U/X | protected |
+| `/api/inspections/driver` | POST | orientation | yes | driver truck | MEMBER | M | U/X/I | protected |
+| `/api/inspections/driver/[id]` | GET | orientation | yes | driver truck | MEMBER | C | U/X | protected |
+| `/api/inspections/driver/latest-by-truck/[truckId]` | GET | orientation | yes | driver truck | MEMBER | C | U/X/I | protected |
 
 Drivers without a truck have no company ownership in the current schema and
 must remain hidden until an explicit ownership relation is added and reviewed.
@@ -84,20 +84,20 @@ must remain hidden until an explicit ownership relation is added and reviewed.
 This phase secures the following handlers without adding artificial ownership
 to child records:
 
-- [ ] `GET /api/trucks` — `MEMBER`, direct `Truck.companyId`
-- [ ] `POST /api/trucks` — `ADMIN`, company derived from active membership
-- [ ] `PATCH /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
-- [ ] `DELETE /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
-- [ ] `GET /api/inspections/truck` — `MEMBER`, through `Truck.companyId`
-- [ ] `POST /api/inspections/truck` — `MEMBER`, verify selected truck
-- [ ] `GET /api/inspections/truck/[id]` — `MEMBER`, through owning truck
-- [ ] `POST /api/inspections/truck/[id]/photos` — `MEMBER`, authorize before
+- [x] `GET /api/trucks` — `MEMBER`, direct `Truck.companyId`
+- [x] `POST /api/trucks` — `ADMIN`, company derived from active membership
+- [x] `PATCH /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
+- [x] `DELETE /api/trucks/[id]` — `ADMIN`, direct `Truck.companyId`
+- [x] `GET /api/inspections/truck` — `MEMBER`, through `Truck.companyId`
+- [x] `POST /api/inspections/truck` — `MEMBER`, verify selected truck
+- [x] `GET /api/inspections/truck/[id]` — `MEMBER`, through owning truck
+- [x] `POST /api/inspections/truck/[id]/photos` — `MEMBER`, authorize before
   writing files
-- [ ] `GET /api/inspections/truck/latest/[truckId]` — `MEMBER`, verify truck
-- [ ] `GET /api/inspections/driver` — `MEMBER`, through driver-assigned truck
-- [ ] `POST /api/inspections/driver` — `MEMBER`, verify driver-assigned truck
-- [ ] `GET /api/inspections/driver/[id]` — `MEMBER`, through driver and truck
-- [ ] `GET /api/inspections/driver/latest-by-truck/[truckId]` — `MEMBER`,
+- [x] `GET /api/inspections/truck/latest/[truckId]` — `MEMBER`, verify truck
+- [x] `GET /api/inspections/driver` — `MEMBER`, through driver-assigned truck
+- [x] `POST /api/inspections/driver` — `MEMBER`, verify driver-assigned truck
+- [x] `GET /api/inspections/driver/[id]` — `MEMBER`, through driver and truck
+- [x] `GET /api/inspections/driver/latest-by-truck/[truckId]` — `MEMBER`,
   verify truck before resolving its driver
 
 No trailer model, relation, or API handler exists in the current repository.

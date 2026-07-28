@@ -1,34 +1,40 @@
-import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
+import { fleetRouteErrorResponse } from '@/lib/fleet/fleet-route-response';
 
 export async function GET() {
   try {
+    const context = await fleetAuthorizationService.requireCompany();
     const orientations = await prisma.driverOrientation.findMany({
+      where: {
+        driver: { truck: { is: { companyId: context.companyId } } },
+      },
       include: { driver: { select: { firstName: true, lastName: true } } },
       orderBy: { completedAt: 'desc' },
       take: 100,
-    })
-    return NextResponse.json(orientations)
+    });
+    return NextResponse.json(orientations);
   } catch (error) {
-    console.error(error)
-    return NextResponse.json({ error: 'Failed to fetch orientations' }, { status: 500 })
+    return fleetRouteErrorResponse(error, 'Failed to fetch orientations');
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const { driverId, completedBy, checklist, signature, notes } = body
+    await fleetAuthorizationService.requireCompany();
+    const body = await request.json();
+    const { driverId, completedBy, checklist, signature, notes } = body;
     if (!driverId || !completedBy || !checklist || !signature) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+    await fleetAuthorizationService.requireDriver(driverId);
     const orientation = await prisma.driverOrientation.create({
       data: { driverId, completedBy, checklist, signature, notes },
       include: { driver: { select: { firstName: true, lastName: true } } },
-    })
-    return NextResponse.json(orientation, { status: 201 })
+    });
+    return NextResponse.json(orientation, { status: 201 });
   } catch (error) {
-    console.error(error)
-    return NextResponse.json({ error: 'Failed to create orientation' }, { status: 500 })
+    return fleetRouteErrorResponse(error, 'Failed to create orientation');
   }
 }
