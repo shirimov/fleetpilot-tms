@@ -47,6 +47,7 @@ export class PrismaActivityService implements ActivityService {
         action: event.action,
         actorType: event.actorType,
         actorId: event.actorId,
+        actorUserId: event.actorUserId,
         sourceType: event.sourceType,
         sourceId: event.sourceId,
         metadata: event.metadata,

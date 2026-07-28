@@ -42,6 +42,62 @@ model Company {
   loads     Load[]
   bankAccounts BankAccount[]
   taskProjects TaskProject[]
+  memberships CompanyMembership[]
+  activeUsers User[] @relation("ActiveCompany")
+}
+
+enum CompanyMembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  displayName     String
+  image           String?
+  isActive        Boolean  @default(true)
+  activeCompanyId String?
+  activeCompany   Company? @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  authAccounts   AuthAccount[]
+  memberships    CompanyMembership[]
+  taskComments   TaskComment[]
+  taskActivities TaskActivity[]
+
+  @@index([activeCompanyId])
+}
+
+model AuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model CompanyMembership {
+  id        String                @id @default(cuid())
+  userId    String
+  companyId String
+  role      CompanyMembershipRole @default(MEMBER)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([companyId, role])
 }
 
 model Truck {
@@ -385,6 +441,7 @@ enum TaskActivityAction {
 
 enum TaskActivityActorType {
   UNATTRIBUTED
+  USER
   EMPLOYEE
   SYSTEM
   INTEGRATION
@@ -464,9 +521,13 @@ model TaskComment {
   cardId String
   card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
   author String
+  authorUserId String?
+  authorUser User? @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
   content String @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([authorUserId])
 }
 
 model TaskActivity {
@@ -479,6 +540,7 @@ model TaskActivity {
   action      TaskActivityAction
   actorType   TaskActivityActorType  @default(UNATTRIBUTED)
   actorId     String?
+  actorUserId String?
   sourceType  String?
   sourceId    String?
   metadata    Json?
@@ -487,12 +549,14 @@ model TaskActivity {
 
   project TaskProject @relation(fields: [projectId], references: [id], onDelete: Restrict)
   card    TaskCard?   @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  actorUser User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([projectId, occurredAt, id])
   @@index([cardId, occurredAt, id])
   @@index([entityType, entityId, occurredAt, id])
   @@index([sourceType, sourceId])
   @@index([occurredAt, id])
+  @@index([actorUserId, occurredAt, id])
 }
 
 model TaskAttachment {
