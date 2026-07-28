@@ -53,10 +53,7 @@ export class FleetAuthorizationService {
   async requireDriver(driverId: string): Promise<CompanyAuthorization> {
     const context = await this.requireCompany();
     const driver = await this.database.driver.findFirst({
-      where: {
-        id: driverId,
-        truck: { is: { companyId: context.companyId } },
-      },
+      where: { id: driverId, companyId: context.companyId },
       select: { id: true },
     });
     if (!driver) throw new FleetResourceNotFoundError();
@@ -70,11 +67,21 @@ export class FleetAuthorizationService {
     const orientation = await this.database.driverOrientation.findFirst({
       where: {
         id: orientationId,
-        driver: { truck: { is: { companyId: context.companyId } } },
+        driver: { companyId: context.companyId },
       },
       select: { id: true },
     });
     if (!orientation) throw new FleetResourceNotFoundError();
+    return context;
+  }
+
+  async requireLoad(loadId: string): Promise<CompanyAuthorization> {
+    const context = await this.requireCompany();
+    const load = await this.database.load.findFirst({
+      where: { id: loadId, companyId: context.companyId },
+      select: { id: true },
+    });
+    if (!load) throw new FleetResourceNotFoundError();
     return context;
   }
 }

@@ -7,9 +7,7 @@ export async function GET() {
   try {
     const context = await fleetAuthorizationService.requireCompany();
     const orientations = await prisma.driverOrientation.findMany({
-      where: {
-        driver: { truck: { is: { companyId: context.companyId } } },
-      },
+      where: { driver: { companyId: context.companyId } },
       include: { driver: { select: { firstName: true, lastName: true } } },
       orderBy: { completedAt: 'desc' },
       take: 100,

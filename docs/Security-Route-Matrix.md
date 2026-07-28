@@ -11,6 +11,11 @@ No additional application server actions or route handlers were found outside
 this inventory. Client components call these APIs and are not authorization
 boundaries.
 
+Current disposition: 73 handlers audited, 60 tenant-scoped, 12 intentionally
+blocked, one reviewed public exemption, and zero handlers left vulnerable.
+Blocked handlers remain production rollout blockers until their ownership
+models are reviewed and implemented.
+
 ## Legend
 
 - Auth/scope: `yes` is enforced today, `no` is missing, `partial` is not safe
@@ -47,7 +52,7 @@ boundaries.
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `/api/dashboard` | GET | fleet/load/settlement aggregates | yes | yes | MEMBER | C/A | U/X/G | protected |
-| `/api/qm-stats` | GET | QuickManage carrier aggregates/refresh | no | global file | MEMBER; ADMIN refresh | C/M/S/A | U/X/R/G | vulnerable |
+| `/api/qm-stats` | GET | QuickManage carrier aggregates/refresh | yes | unavailable | MEMBER | C/M/S/A | U/X/R/G | blocked |
 | `/api/lookup/dot` | GET | public FMCSA lookup | no | external | public | abuse | validation/rate-limit | exempt |
 
 ## Fleet, loads, settlements, and inspections
@@ -57,12 +62,12 @@ boundaries.
 | `/api/trucks` | GET | trucks | yes | yes | MEMBER | C | U/X | protected |
 | `/api/trucks` | POST | truck | yes | yes | ADMIN | M | U/X/I/R | protected |
 | `/api/trucks/[id]` | PATCH, DELETE | truck | yes | yes | ADMIN | C/M | U/X/I/R | protected |
-| `/api/drivers` | GET | drivers | no | indirect/unscoped | MEMBER | C | U/X | vulnerable |
-| `/api/drivers` | POST | driver/truck | no | client truck | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/drivers/[id]` | PATCH, DELETE | driver | no | indirect/unscoped | ADMIN | C/M | U/X/I/R | vulnerable |
-| `/api/loads` | GET | loads | no | no | MEMBER | C | U/X | vulnerable |
-| `/api/loads` | POST | load/relations | no | client company | MEMBER | M | U/X/I | vulnerable |
-| `/api/loads/[id]` | PATCH, DELETE | load/relations | no | no/client company | MEMBER | C/M | U/X/I | vulnerable |
+| `/api/drivers` | GET | drivers | yes | direct company | MEMBER | C | U/X | protected |
+| `/api/drivers` | POST | driver/truck | yes | verified company/truck | ADMIN | M | U/X/I/R | protected |
+| `/api/drivers/[id]` | PATCH, DELETE | driver | yes | direct company | ADMIN | C/M | U/X/I/R | protected |
+| `/api/loads` | GET | loads | yes | direct company | MEMBER | C | U/X | protected |
+| `/api/loads` | POST | load/relations | yes | verified company/relations | MEMBER | M | U/X/I | protected |
+| `/api/loads/[id]` | PATCH, DELETE | load/relations | yes | verified company/relations | MEMBER | C/M | U/X/I | protected |
 | `/api/settlements` | GET | settlements | yes | parent truck | MEMBER | C | U/X | protected |
 | `/api/settlements` | POST | settlement | yes | verified parents | ADMIN | M | U/X/I/R | protected |
 | `/api/settlements/[id]` | PATCH, DELETE | settlement | yes | parent truck | ADMIN | C/M | U/X/I/R | protected |
@@ -76,8 +81,9 @@ boundaries.
 | `/api/inspections/driver/[id]` | GET | orientation | yes | driver truck | MEMBER | C | U/X | protected |
 | `/api/inspections/driver/latest-by-truck/[truckId]` | GET | orientation | yes | driver truck | MEMBER | C | U/X/I | protected |
 
-Drivers without a truck have no company ownership in the current schema and
-must remain hidden until an explicit ownership relation is added and reviewed.
+Drivers now have explicit nullable company ownership. Legacy null-company
+drivers remain hidden until independently reconciled; truck assignment is not
+used as a substitute for driver ownership.
 
 ### Fleet and inspection remediation checklist
 
@@ -99,6 +105,10 @@ to child records:
 - [x] `GET /api/inspections/driver/[id]` — `MEMBER`, through driver and truck
 - [x] `GET /api/inspections/driver/latest-by-truck/[truckId]` — `MEMBER`,
   verify truck before resolving its driver
+- [x] Driver list/create/update/delete — direct company scope, `MEMBER` read,
+  `ADMIN` writes, and verified optional truck ownership.
+- [x] Load list/create/update/delete — direct company scope and verified truck
+  and optional driver ownership inside mutation transactions.
 
 No trailer model, relation, or API handler exists in the current repository.
 Trailer authorization cannot be implemented until a separately reviewed data
@@ -108,17 +118,17 @@ model and product scope exists; no truck record will be treated as a trailer.
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/employees` | GET | employees | no | no ownership field | MEMBER | C | U/X | vulnerable |
-| `/api/employees` | POST | employee | no | no ownership field | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/employees/[id]` | GET | employee | no | no ownership field | MEMBER | C | U/X | vulnerable |
-| `/api/employees/[id]` | PUT, DELETE | employee | no | no ownership field | ADMIN | C/M | U/X/I/R | vulnerable |
-| `/api/employees/[id]/payments` | GET | payroll | no | indirect employee | ADMIN | C | U/X/R | vulnerable |
-| `/api/employees/[id]/payments` | POST | payroll | no | client employee | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/employees/[id]/payments/[paymentId]` | PATCH | payroll | no | no parent/tenant check | ADMIN | C/M | U/X/I/R | vulnerable |
-| `/api/escrow` | GET | employee escrow | no | indirect employee | ADMIN | C | U/X/R | vulnerable |
-| `/api/escrow` | POST | employee escrow | no | client employee | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/escrow/[id]` | GET | escrow | no | indirect employee | ADMIN | C | U/X/R | vulnerable |
-| `/api/escrow/[id]` | POST | escrow transaction | no | indirect employee | ADMIN | M | U/X/I/R | vulnerable |
+| `/api/employees` | GET | employees | yes | direct company | ADMIN | C | U/X/R | protected |
+| `/api/employees` | POST | employee | yes | derived company | ADMIN | M | U/X/I/R | protected |
+| `/api/employees/[id]` | GET | employee | yes | direct company | ADMIN | C | U/X/R | protected |
+| `/api/employees/[id]` | PUT, DELETE | employee | yes | direct company | ADMIN | C/M | U/X/I/R | protected |
+| `/api/employees/[id]/payments` | GET | payroll | yes | parent employee | ADMIN | C | U/X/R | protected |
+| `/api/employees/[id]/payments` | POST | payroll | yes | verified employee | ADMIN | M | U/X/I/R | protected |
+| `/api/employees/[id]/payments/[paymentId]` | PATCH | payroll | yes | verified parent/payment | ADMIN | C/M | U/X/I/R | protected |
+| `/api/escrow` | GET | employee escrow | yes | verified employee | ADMIN | C | U/X/R | protected |
+| `/api/escrow` | POST | employee escrow | yes | verified employee | ADMIN | M | U/X/I/R | protected |
+| `/api/escrow/[id]` | GET | escrow | yes | verified employee | ADMIN | C | U/X/R | protected |
+| `/api/escrow/[id]` | POST | escrow transaction | yes | verified employee | ADMIN | M | U/X/I/R | protected |
 | `/api/reserve` | GET | dispatch reserve | yes | unavailable | ADMIN | C | U/X/R | blocked |
 | `/api/reserve` | POST | dispatch reserve | yes | unavailable | ADMIN | M | U/X/I/R | blocked |
 | `/api/tmfund` | GET | TM fund | yes | unavailable | ADMIN | C | U/X/R | blocked |
@@ -128,23 +138,23 @@ These models require additive company ownership before safe tenant scoping.
 
 ### Phase 4 remediation checklist
 
-- [ ] Driver list/create/detail/update/delete — `MEMBER` read and `ADMIN`
+- [x] Driver list/create/detail/update/delete — `MEMBER` read and `ADMIN`
   write; direct nullable `Driver.companyId`; verify optional truck belongs to
   the same company; hide legacy null-company drivers.
-- [ ] Load list/create/update/delete — `MEMBER` read and write; direct
+- [x] Load list/create/update/delete — `MEMBER` read and write; direct
   `Load.companyId`; verify truck and optional driver share the active company;
   ignore client company selectors.
-- [ ] Employee list/create/detail/update/delete — `ADMIN`; direct nullable
+- [x] Employee list/create/detail/update/delete — `ADMIN`; direct nullable
   `Employee.companyId`; employee identity remains separate from authenticated
   `User` and `CompanyMembership`; hide legacy null-company employees.
-- [ ] Employee payment list/create/update — `ADMIN`; scope through
+- [x] Employee payment list/create/update — `ADMIN`; scope through
   `Employee.companyId` and validate both route parent and payment parent.
-- [ ] Escrow list/create/detail/transactions — `ADMIN`; scope the legacy
+- [x] Escrow list/create/detail/transactions — `ADMIN`; scope the legacy
   string employee reference through a verified company-owned Employee and
   write balances atomically.
-- [ ] QuickManage `/api/qm-stats` — require membership and fail closed until a
+- [x] QuickManage `/api/qm-stats` — require membership and fail closed until a
   reviewed company/carrier mapping and partitioned cache exist.
-- [ ] Service worker — use network-only behavior for authenticated `/api/**`
+- [x] Service worker — use network-only behavior for authenticated `/api/**`
   responses so private tenant data is never stored in shared browser caches.
 
 The additive ownership migration adds nullable `companyId` only to Driver and
@@ -226,8 +236,10 @@ verified webhook authenticity and an explicit integration-to-company mapping.
 - A credential is embedded in an existing QuickManage script. It must be
   rotated immediately and replaced with environment-backed secret management;
   the value must never be copied into issues, logs, commits, or tests.
-- Generated service-worker caching of authenticated API responses must be
-  reviewed so one browser session cannot receive another user's cached data.
+- The prior generated service worker applied runtime caching to `/api/**`.
+  The application now overrides API handling with `NetworkOnly`; the production
+  build artifact was inspected to confirm that rule is emitted. Browser cache
+  storage is therefore not used for authenticated API responses.
 
 Credential-use audit found multiple standalone QuickManage scripts containing
 interactive login logic. Production secret rotation and deployment are outside
@@ -235,6 +247,26 @@ this PR. Safe removal requires all operational scripts to read `QM_EMAIL` and
 `QM_PASSWORD`, fail when either is absent, remove every literal credential from
 Git history where operationally approved, rotate the provider credential, and
 restart only after the new environment values are installed.
+
+The audit found 13 QuickManage scripts with embedded login logic. Their values
+were not copied into documentation, issues, logs, or tests. Source removal is
+deferred because the repository does not yet provide a consistently reviewed
+non-production secret mechanism for those standalone scripts; the exact
+removal and rotation sequence above is a production rollout blocker.
+
+## Phase 4 validation
+
+- Prisma format, validate, and client generation: pass.
+- Local migration status: 18 migrations, schema up to date.
+- Local database-to-schema migration diff: empty.
+- TypeScript and targeted ESLint for all changed files: pass.
+- Unit and integration tests: 50 pass.
+- Playwright: 5 pass.
+- Production build: pass; generated service worker uses the custom API
+  `NetworkOnly` rule.
+- `git diff --check`: pass.
+- Full repository lint: 224 pre-existing issues (116 errors, 108 warnings);
+  changed files are clean.
 
 ## Remediation order
 

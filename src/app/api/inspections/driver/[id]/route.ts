@@ -11,7 +11,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const orientation = await prisma.driverOrientation.findFirst({
       where: {
         id,
-        driver: { truck: { is: { companyId: context.companyId } } },
+        driver: { companyId: context.companyId },
       },
       include: { driver: { select: { firstName: true, lastName: true, phone: true } } },
     });

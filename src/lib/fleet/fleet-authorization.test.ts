@@ -27,6 +27,9 @@ let firstTruckId = '';
 let secondTruckId = '';
 let firstDriverId = '';
 let secondDriverId = '';
+let legacyDriverId = '';
+let firstLoadId = '';
+let secondLoadId = '';
 let firstInspectionId = '';
 let secondInspectionId = '';
 let firstOrientationId = '';
@@ -109,12 +112,13 @@ before(async () => {
   firstTruckId = firstTruck.id;
   secondTruckId = secondTruck.id;
 
-  const [firstDriver, secondDriver] = await Promise.all([
+  const [firstDriver, secondDriver, legacyDriver] = await Promise.all([
     prisma.driver.create({
       data: {
         firstName: 'First',
         lastName: 'Driver',
         payRate: 0,
+        companyId: firstCompanyId,
         truckId: firstTruckId,
       },
     }),
@@ -123,12 +127,48 @@ before(async () => {
         firstName: 'Second',
         lastName: 'Driver',
         payRate: 0,
+        companyId: secondCompanyId,
         truckId: secondTruckId,
+      },
+    }),
+    prisma.driver.create({
+      data: {
+        firstName: 'Legacy',
+        lastName: 'Driver',
+        payRate: 0,
       },
     }),
   ]);
   firstDriverId = firstDriver.id;
   secondDriverId = secondDriver.id;
+  legacyDriverId = legacyDriver.id;
+
+  const [firstLoad, secondLoad] = await Promise.all([
+    prisma.load.create({
+      data: {
+        loadNumber: `fleet-auth-first-load-${suffix}`,
+        origin: 'First origin',
+        destination: 'First destination',
+        rate: 1000,
+        truckId: firstTruckId,
+        driverId: firstDriverId,
+        companyId: firstCompanyId,
+      },
+    }),
+    prisma.load.create({
+      data: {
+        loadNumber: `fleet-auth-second-load-${suffix}`,
+        origin: 'Second origin',
+        destination: 'Second destination',
+        rate: 2000,
+        truckId: secondTruckId,
+        driverId: secondDriverId,
+        companyId: secondCompanyId,
+      },
+    }),
+  ]);
+  firstLoadId = firstLoad.id;
+  secondLoadId = secondLoad.id;
 
   const [firstInspection, secondInspection, firstOrientation, secondOrientation] =
     await Promise.all([
@@ -174,6 +214,9 @@ before(async () => {
 });
 
 after(async () => {
+  await prisma.load.deleteMany({
+    where: { id: { in: [firstLoadId, secondLoadId] } },
+  });
   await prisma.driverOrientation.deleteMany({
     where: { id: { in: [firstOrientationId, secondOrientationId] } },
   });
@@ -181,7 +224,7 @@ after(async () => {
     where: { id: { in: [firstInspectionId, secondInspectionId] } },
   });
   await prisma.driver.deleteMany({
-    where: { id: { in: [firstDriverId, secondDriverId] } },
+    where: { id: { in: [firstDriverId, secondDriverId, legacyDriverId] } },
   });
   await prisma.truck.deleteMany({
     where: { id: { in: [firstTruckId, secondTruckId] } },
@@ -263,12 +306,18 @@ test('allows same-company indirect resources and hides foreign parents', async (
     ).companyId,
     firstCompanyId,
   );
+  assert.equal(
+    (await fleetAuthorization.requireLoad(firstLoadId)).companyId,
+    firstCompanyId,
+  );
 
   for (const request of [
     () => fleetAuthorization.requireTruck(secondTruckId),
     () => fleetAuthorization.requireTruckInspection(secondInspectionId),
     () => fleetAuthorization.requireDriver(secondDriverId),
+    () => fleetAuthorization.requireDriver(legacyDriverId),
     () => fleetAuthorization.requireDriverOrientation(secondOrientationId),
+    () => fleetAuthorization.requireLoad(secondLoadId),
   ]) {
     await assert.rejects(request(), FleetResourceNotFoundError);
   }

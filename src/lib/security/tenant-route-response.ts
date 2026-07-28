@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
 import { FinancialResourceNotFoundError } from '@/lib/finance/financial-authorization';
+import { WorkforceResourceNotFoundError } from '@/lib/workforce/workforce-authorization';
 
 export function tenantRouteErrorResponse(
   error: unknown,
@@ -8,7 +9,8 @@ export function tenantRouteErrorResponse(
 ): NextResponse {
   return (
     authorizationErrorResponse(error) ??
-    (error instanceof FinancialResourceNotFoundError
+    (error instanceof FinancialResourceNotFoundError ||
+    error instanceof WorkforceResourceNotFoundError
       ? NextResponse.json({ error: 'Not found' }, { status: 404 })
       : null) ??
     NextResponse.json({ error: fallback }, { status: 500 })

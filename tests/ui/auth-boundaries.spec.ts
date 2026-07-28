@@ -16,6 +16,11 @@ test('company-owned APIs reject unauthenticated requests consistently', async ({
     request.get('/api/uploads/inspections/fake/file.jpg'),
     request.get('/api/reserve'),
     request.get('/api/tmfund'),
+    request.get('/api/drivers'),
+    request.get('/api/loads'),
+    request.get('/api/employees'),
+    request.get('/api/escrow'),
+    request.get('/api/qm-stats'),
     request.post('/api/trucks', { data: { companyId: 'spoofed-company' } }),
     request.post('/api/inspections/truck', {
       data: { truckId: 'foreign-truck' },

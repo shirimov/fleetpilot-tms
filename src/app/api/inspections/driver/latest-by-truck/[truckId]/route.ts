@@ -11,7 +11,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ truckId: s
     const driver = await prisma.driver.findFirst({
       where: {
         truckId,
-        truck: { is: { companyId: context.companyId } },
+        companyId: context.companyId,
       },
     });
     if (!driver) return NextResponse.json(null);
@@ -19,7 +19,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ truckId: s
     const orientation = await prisma.driverOrientation.findFirst({
       where: {
         driverId: driver.id,
-        driver: { truck: { is: { companyId: context.companyId } } },
+        driver: { companyId: context.companyId },
       },
       orderBy: { completedAt: 'desc' },
       include: { driver: { select: { firstName: true, lastName: true } } },
