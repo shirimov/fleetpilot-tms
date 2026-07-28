@@ -1,0 +1,63 @@
+name: Deploy Internal Alpha staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full 40-character commit SHA to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleetpilot-internal-alpha-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy exact commit
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      - name: Validate requested commit
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          if [[ ! "${REQUESTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "commit_sha must be a full lowercase Git SHA" >&2
+            exit 1
+          fi
+
+      - name: Check out exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify checkout identity
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: test "$(git rev-parse HEAD)" = "${REQUESTED_SHA}"
+
+      - name: Configure staging SSH
+        env:
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.STAGING_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "${HOME}/.ssh"
+          printf '%s\n' "${STAGING_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          chmod 0600 "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${STAGING_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 0600 "${HOME}/.ssh/known_hosts"
+
+      - name: Deploy on staging host
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -o BatchMode=yes "${STAGING_USER}@${STAGING_HOST}" \
+            "cd /opt/fleetpilot && git fetch --prune origin && git checkout --detach '${REQUESTED_SHA}' && APP_COMMIT_SHA='${REQUESTED_SHA}' ./scripts/deploy-staging.sh"

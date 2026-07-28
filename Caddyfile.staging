@@ -1,0 +1,29 @@
+{
+	email {$CADDY_EMAIL}
+	admin off
+}
+
+{$STAGING_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	@api path /api/*
+	reverse_proxy @api app:3000 {
+		header_down Cache-Control "private, no-store"
+		header_down Vary "Cookie, Authorization"
+	}
+
+	reverse_proxy app:3000
+
+	log {
+		output stdout
+		format json
+	}
+}
