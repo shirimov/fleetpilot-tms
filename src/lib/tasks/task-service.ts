@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient, TaskCard } from '@prisma/client';
+import { Prisma, type PrismaClient, type TaskCard } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
   defaultActivityService,
@@ -7,9 +7,19 @@ import {
 import type {
   CreateTaskCardInput,
   CreateTaskProjectInput,
+  MoveTaskCardInput,
   TaskActivityEvent,
   UpdateTaskCardInput,
 } from './task-types';
+import {
+  InvalidTaskDestinationIndexError,
+  TaskBoardNotFoundError,
+  TaskBoardProjectMismatchError,
+  TaskBoardStatusUnmappedError,
+  TaskMoveConflictError,
+  TaskNotFoundError,
+  TaskProjectNotFoundError,
+} from './task-errors';
 import { TaskValidationError } from './task-validation';
 
 const cardInclude = {
@@ -29,12 +39,50 @@ const projectInclude = {
   },
 } satisfies Prisma.TaskProjectInclude;
 
-export class TaskNotFoundError extends Error {
-  constructor(message = 'Task card not found.') {
-    super(message);
-    this.name = 'TaskNotFoundError';
-  }
-}
+export { TaskNotFoundError } from './task-errors';
+
+const boardCardSelect = {
+  id: true,
+  title: true,
+  description: true,
+  priority: true,
+  status: true,
+  assignedTo: true,
+  dueDate: true,
+  order: true,
+  updatedAt: true,
+  labels: {
+    select: {
+      id: true,
+      name: true,
+      color: true,
+    },
+  },
+} satisfies Prisma.TaskCardSelect;
+
+const projectBoardSelect = {
+  id: true,
+  name: true,
+  description: true,
+  boards: {
+    orderBy: [{ order: 'asc' as const }, { createdAt: 'asc' as const }, { id: 'asc' as const }],
+    select: {
+      id: true,
+      name: true,
+      color: true,
+      order: true,
+      status: true,
+      cards: {
+        orderBy: [
+          { order: 'asc' as const },
+          { createdAt: 'asc' as const },
+          { id: 'asc' as const },
+        ],
+        select: boardCardSelect,
+      },
+    },
+  },
+} satisfies Prisma.TaskProjectSelect;
 
 export class TaskService {
   constructor(
@@ -69,10 +117,10 @@ export class TaskService {
           companyId: input.companyId,
           boards: {
             create: [
-              { name: 'To Do', order: 0 },
-              { name: 'In Progress', order: 1 },
-              { name: 'In Review', order: 2 },
-              { name: 'Done', order: 3 },
+              { name: 'To Do', order: 0, status: 'TODO' },
+              { name: 'In Progress', order: 1, status: 'IN_PROGRESS' },
+              { name: 'In Review', order: 2, status: 'IN_REVIEW' },
+              { name: 'Done', order: 3, status: 'DONE' },
             ],
           },
         },
@@ -134,6 +182,158 @@ export class TaskService {
 
       return card;
     });
+  }
+
+  async getProjectBoard(projectId: string) {
+    const project = await this.database.taskProject.findUnique({
+      where: { id: projectId },
+      select: projectBoardSelect,
+    });
+
+    if (!project) throw new TaskProjectNotFoundError();
+    return project;
+  }
+
+  async moveCard(input: MoveTaskCardInput) {
+    try {
+      return await this.database.$transaction(
+        async (transaction) => {
+          const existing = await transaction.taskCard.findUnique({
+            where: { id: input.cardId },
+          });
+          if (!existing) throw new TaskNotFoundError();
+
+          if (existing.boardId !== input.sourceBoardId) {
+            throw new TaskMoveConflictError(
+              'Task card no longer belongs to the expected source board.',
+            );
+          }
+          if (
+            input.expectedUpdatedAt &&
+            existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()
+          ) {
+            throw new TaskMoveConflictError(
+              'Task card was updated after the board state was loaded.',
+            );
+          }
+
+          const boardIds = Array.from(
+            new Set([input.sourceBoardId, input.destinationBoardId]),
+          );
+          const boards = await transaction.taskBoard.findMany({
+            where: { id: { in: boardIds } },
+            select: { id: true, projectId: true, status: true },
+          });
+          const sourceBoard = boards.find(({ id }) => id === input.sourceBoardId);
+          const destinationBoard = boards.find(
+            ({ id }) => id === input.destinationBoardId,
+          );
+
+          if (!sourceBoard) throw new TaskBoardNotFoundError('Source task board not found.');
+          if (!destinationBoard) {
+            throw new TaskBoardNotFoundError('Destination task board not found.');
+          }
+          if (
+            sourceBoard.projectId !== existing.projectId ||
+            destinationBoard.projectId !== existing.projectId
+          ) {
+            throw new TaskBoardProjectMismatchError();
+          }
+          if (!destinationBoard.status) throw new TaskBoardStatusUnmappedError();
+          const destinationStatus = destinationBoard.status;
+
+          const orderedCards = await transaction.taskCard.findMany({
+            where: { boardId: { in: boardIds } },
+            orderBy: [
+              { order: 'asc' },
+              { createdAt: 'asc' },
+              { id: 'asc' },
+            ],
+          });
+          const sourceCards = orderedCards.filter(
+            ({ boardId, id }) =>
+              boardId === input.sourceBoardId && id !== existing.id,
+          );
+          const destinationCards =
+            input.sourceBoardId === input.destinationBoardId
+              ? sourceCards
+              : orderedCards.filter(
+                  ({ boardId, id }) =>
+                    boardId === input.destinationBoardId && id !== existing.id,
+                );
+
+          if (input.destinationIndex > destinationCards.length) {
+            throw new InvalidTaskDestinationIndexError();
+          }
+
+          destinationCards.splice(input.destinationIndex, 0, existing);
+
+          const normalizedCards =
+            input.sourceBoardId === input.destinationBoardId
+              ? destinationCards.map((card, order) => ({
+                  card,
+                  boardId: destinationBoard.id,
+                  status:
+                    card.id === existing.id ? destinationStatus : card.status,
+                  order,
+                }))
+              : [
+                  ...sourceCards.map((card, order) => ({
+                    card,
+                    boardId: sourceBoard.id,
+                    status: card.status,
+                    order,
+                  })),
+                  ...destinationCards.map((card, order) => ({
+                    card,
+                    boardId: destinationBoard.id,
+                    status:
+                      card.id === existing.id ? destinationStatus : card.status,
+                    order,
+                  })),
+                ];
+
+          for (const normalized of normalizedCards) {
+            if (
+              normalized.card.boardId === normalized.boardId &&
+              normalized.card.status === normalized.status &&
+              normalized.card.order === normalized.order
+            ) {
+              continue;
+            }
+
+            const updated = await transaction.taskCard.update({
+              where: { id: normalized.card.id },
+              data: {
+                boardId: normalized.boardId,
+                status: normalized.status,
+                order: normalized.order,
+              },
+            });
+
+            for (const activity of this.describeChanges(normalized.card, updated)) {
+              await this.activityService.record(transaction, activity);
+            }
+          }
+
+          const project = await transaction.taskProject.findUnique({
+            where: { id: existing.projectId },
+            select: projectBoardSelect,
+          });
+          if (!project) throw new TaskProjectNotFoundError();
+          return project;
+        },
+        { isolationLevel: 'Serializable' },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2034'
+      ) {
+        throw new TaskMoveConflictError();
+      }
+      throw error;
+    }
   }
 
   async updateCard(input: UpdateTaskCardInput) {

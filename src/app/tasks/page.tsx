@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import KanbanBoard from '@/components/KanbanBoard';
 import TaskListView from '@/components/TaskListView';
 
 interface TaskProject {
@@ -9,7 +10,7 @@ interface TaskProject {
   description?: string;
   color: string;
   icon?: string;
-  boards: any[];
+  boards: unknown[];
 }
 
 export default function TasksPage() {
@@ -17,7 +18,8 @@ export default function TasksPage() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [newProjectName, setNewProjectName] = useState('');
-  const [employees, setEmployees] = useState<any[]>([]);
+  const [employees, setEmployees] = useState<unknown[]>([]);
+  const [view, setView] = useState<'kanban' | 'list'>('kanban');
 
   useEffect(() => {
     fetchProjects();
@@ -115,7 +117,43 @@ export default function TasksPage() {
         )}
 
         {currentProject && (
-          <TaskListView project={currentProject} employees={employees} onUpdate={fetchProjects} />
+          <>
+            <div className="mb-5 flex gap-2" aria-label="Task view">
+              <button
+                type="button"
+                onClick={() => setView('kanban')}
+                aria-pressed={view === 'kanban'}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                  view === 'kanban'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-300'
+                }`}
+              >
+                Kanban
+              </button>
+              <button
+                type="button"
+                onClick={() => setView('list')}
+                aria-pressed={view === 'list'}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${
+                  view === 'list'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-300'
+                }`}
+              >
+                List
+              </button>
+            </div>
+            {view === 'kanban' ? (
+              <KanbanBoard projectId={currentProject.id} />
+            ) : (
+              <TaskListView
+                project={currentProject}
+                employees={employees}
+                onUpdate={fetchProjects}
+              />
+            )}
+          </>
         )}
 
         {projects.length === 0 && !loading && (
