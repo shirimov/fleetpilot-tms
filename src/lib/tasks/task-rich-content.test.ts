@@ -2,7 +2,10 @@ import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { safeMarkdownUrl } from '@/components/tasks/MarkdownContent';
-import { extractMentionUserIds } from '@/components/tasks/TaskDescriptionEditor';
+import {
+  extractMentionUserIds,
+  isCurrentDescriptionSave,
+} from '@/components/tasks/TaskDescriptionEditor';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import { prisma } from '@/lib/prisma';
 import {
@@ -117,6 +120,12 @@ test('Markdown URLs and mention parsing fail safe', () => {
     ),
     [teammateId],
   );
+});
+
+test('description autosave ignores responses for a different card or request generation', () => {
+  assert.equal(isCurrentDescriptionSave('card-1', 'card-1', 2, 2), true);
+  assert.equal(isCurrentDescriptionSave('card-1', 'card-2', 2, 2), false);
+  assert.equal(isCurrentDescriptionSave('card-1', 'card-1', 1, 2), false);
 });
 
 test('upload validation rejects traversal, active content, mismatch, and oversize', () => {

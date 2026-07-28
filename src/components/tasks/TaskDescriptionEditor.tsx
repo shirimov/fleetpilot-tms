@@ -22,6 +22,15 @@ export function extractMentionUserIds(markdown: string): string[] {
   return [...new Set([...markdown.matchAll(mentionPattern)].map((match) => match[2]))];
 }
 
+export function isCurrentDescriptionSave(
+  requestCardId: string,
+  currentCardId: string,
+  requestSequence: number,
+  currentSequence: number,
+): boolean {
+  return requestCardId === currentCardId && requestSequence === currentSequence;
+}
+
 export default function TaskDescriptionEditor({
   cardId,
   initialMarkdown,
@@ -36,6 +45,13 @@ export default function TaskDescriptionEditor({
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestSequence = useRef(0);
+  const activeCardId = useRef(cardId);
+  const markdownRef = useRef(markdown);
+  if (activeCardId.current !== cardId) {
+    activeCardId.current = cardId;
+    requestSequence.current += 1;
+  }
+  markdownRef.current = markdown;
   const dirty = markdown !== savedMarkdown;
 
   useEffect(() => {
@@ -67,6 +83,8 @@ export default function TaskDescriptionEditor({
   useEffect(() => {
     if (!dirty || saveState === 'saving' || saveState === 'error') return;
     const sequence = ++requestSequence.current;
+    const requestCardId = cardId;
+    const requestMarkdown = markdown;
     const timer = window.setTimeout(async () => {
       setSaveState('saving');
       try {
@@ -75,9 +93,9 @@ export default function TaskDescriptionEditor({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: cardId,
-            description: markdown || null,
+            description: requestMarkdown || null,
             expectedUpdatedAt: updatedAt,
-            mentionUserIds: extractMentionUserIds(markdown),
+            mentionUserIds: extractMentionUserIds(requestMarkdown),
           }),
         });
         const body = (await response.json()) as {
@@ -86,13 +104,34 @@ export default function TaskDescriptionEditor({
           updatedAt?: string;
         };
         if (!response.ok) throw new Error(body.error ?? 'Description could not be saved.');
+        if (
+          !isCurrentDescriptionSave(
+            requestCardId,
+            activeCardId.current,
+            sequence,
+            requestSequence.current,
+          )
+        ) {
+          return;
+        }
         const canonical = body.description ?? '';
         setSavedMarkdown(canonical);
         setUpdatedAt(body.updatedAt ?? updatedAt);
         setSaveState('saved');
-        onSaved?.(canonical, body.updatedAt ?? updatedAt);
+        if (markdownRef.current === requestMarkdown) {
+          onSaved?.(canonical, body.updatedAt ?? updatedAt);
+        }
       } catch {
-        if (sequence === requestSequence.current) setSaveState('error');
+        if (
+          isCurrentDescriptionSave(
+            requestCardId,
+            activeCardId.current,
+            sequence,
+            requestSequence.current,
+          )
+        ) {
+          setSaveState('error');
+        }
       }
     }, 800);
     return () => window.clearTimeout(timer);
