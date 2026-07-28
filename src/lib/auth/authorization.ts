@@ -89,6 +89,18 @@ export class AuthorizationService {
     }
     return { user, companyId: membership.companyId, role: membership.role };
   }
+
+  async setActiveCompany(companyId: string): Promise<CompanyAuthorization> {
+    const context = await this.requireCompanyMembership(companyId);
+    await this.database.user.update({
+      where: { id: context.user.id },
+      data: { activeCompanyId: context.companyId },
+    });
+    return {
+      ...context,
+      user: { ...context.user, activeCompanyId: context.companyId },
+    };
+  }
 }
 
 export const authorizationService = new AuthorizationService();

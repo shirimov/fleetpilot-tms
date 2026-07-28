@@ -1,13 +1,49 @@
 import NextAuth from 'next-auth';
 import GitHub from 'next-auth/providers/github';
-import { prisma } from '@/lib/prisma';
-
-function normalizeEmail(email: string): string {
-  return email.trim().toLocaleLowerCase();
-}
+import {
+  accountLinkingService,
+  selectVerifiedPrimaryGitHubEmail,
+  type GitHubEmail,
+} from '@/lib/auth/account-linking';
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
-  providers: [GitHub],
+  providers: [
+    GitHub({
+      userinfo: {
+        url: 'https://api.github.com/user',
+        async request({
+          tokens,
+        }: {
+          tokens: { access_token?: string };
+        }) {
+          if (!tokens.access_token) {
+            throw new Error('GitHub did not return an access token.');
+          }
+          const headers = {
+            Authorization: `Bearer ${tokens.access_token}`,
+            'User-Agent': 'fleetpilot-auth',
+          };
+          const [profileResponse, emailResponse] = await Promise.all([
+            fetch('https://api.github.com/user', { headers }),
+            fetch('https://api.github.com/user/emails', { headers }),
+          ]);
+          if (!profileResponse.ok || !emailResponse.ok) {
+            throw new Error('GitHub profile verification failed.');
+          }
+          const profile = (await profileResponse.json()) as Record<
+            string,
+            unknown
+          >;
+          const emails = (await emailResponse.json()) as GitHubEmail[];
+          const verifiedEmail = selectVerifiedPrimaryGitHubEmail(emails);
+          if (!verifiedEmail) {
+            throw new Error('A verified primary GitHub email is required.');
+          }
+          return { ...profile, email: verifiedEmail };
+        },
+      },
+    }),
+  ],
   session: { strategy: 'jwt' },
   callbacks: {
     async jwt({ token, account }) {
@@ -16,40 +52,12 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         throw new Error('The authentication provider did not return an email.');
       }
 
-      const email = normalizeEmail(token.email);
-      const displayName = token.name?.trim() || email;
-      const databaseUser = await prisma.$transaction(async (transaction) => {
-        const linkedAccount = await transaction.authAccount.findUnique({
-          where: {
-            provider_providerAccountId: {
-              provider: account.provider,
-              providerAccountId: account.providerAccountId,
-            },
-          },
-          include: { user: true },
-        });
-        if (linkedAccount) return linkedAccount.user;
-
-        const user = await transaction.user.upsert({
-          where: { email },
-          create: {
-            email,
-            displayName,
-            image: token.picture,
-          },
-          update: {
-            image: token.picture,
-          },
-        });
-
-        await transaction.authAccount.create({
-          data: {
-            userId: user.id,
-            provider: account.provider,
-            providerAccountId: account.providerAccountId,
-          },
-        });
-        return user;
+      const databaseUser = await accountLinkingService.link({
+        provider: account.provider,
+        providerAccountId: account.providerAccountId,
+        email: token.email,
+        displayName: token.name?.trim() || token.email,
+        image: token.picture,
       });
 
       token.userId = databaseUser.id;
