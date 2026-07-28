@@ -20,6 +20,12 @@ test('company-owned APIs reject unauthenticated requests consistently', async ({
     request.get('/api/tmfund'),
     request.get('/api/drivers'),
     request.get('/api/loads'),
+    request.get('/api/dispatch/board'),
+    request.get('/api/customers'),
+    request.get('/api/trailers'),
+    request.post('/api/loads/spoofed-load/transition', {
+      data: { status: 'PLANNED', companyId: 'spoofed-company' },
+    }),
     request.get('/api/employees'),
     request.get('/api/escrow'),
     request.get('/api/qm-stats'),
