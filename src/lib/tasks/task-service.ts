@@ -7,6 +7,7 @@ import {
 import type {
   CreateTaskCardInput,
   CreateTaskProjectInput,
+  TaskActivityEvent,
   UpdateTaskCardInput,
 } from './task-types';
 import { TaskValidationError } from './task-validation';
@@ -79,7 +80,7 @@ export class TaskService {
       });
     });
 
-    await this.activityService.record({
+    await this.recordActivityBestEffort({
       action: 'PROJECT_CREATED',
       projectId: project.id,
       metadata: { name: project.name },
@@ -116,7 +117,7 @@ export class TaskService {
       });
     });
 
-    await this.activityService.record({
+    await this.recordActivityBestEffort({
       action: 'TASK_CREATED',
       projectId: card.projectId,
       cardId: card.id,
@@ -160,7 +161,7 @@ export class TaskService {
       return { card, existing };
     });
 
-    await this.activityService.record({
+    await this.recordActivityBestEffort({
       action: 'TASK_UPDATED',
       projectId: result.card.projectId,
       cardId: result.card.id,
@@ -184,7 +185,7 @@ export class TaskService {
       return existing;
     });
 
-    await this.activityService.record({
+    await this.recordActivityBestEffort({
       action: 'TASK_DELETED',
       projectId: deleted.projectId,
       cardId: deleted.id,
@@ -194,6 +195,19 @@ export class TaskService {
       },
       occurredAt: new Date(),
     });
+  }
+
+  private async recordActivityBestEffort(event: TaskActivityEvent): Promise<void> {
+    try {
+      await this.activityService.record(event);
+    } catch (error) {
+      console.error('Task activity recording failed', {
+        action: event.action,
+        projectId: event.projectId,
+        cardId: event.cardId,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
   }
 
   private async validateBoardProject(
