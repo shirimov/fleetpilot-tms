@@ -9,13 +9,15 @@ import {
   validateTaskCardId,
   validateUpdateTaskCardInput,
 } from '@/lib/tasks/task-validation';
+import { taskAuthorizationService } from '@/lib/tasks/task-authorization';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
     const input = validateCreateTaskCardInput(await parseTaskRequestBody(req));
-    const card = await taskService.createCard(input);
+    const context = await taskAuthorizationService.requireProject(input.projectId);
+    const card = await taskService.createCard(input, { userId: context.user.id });
 
     return NextResponse.json(card, { status: 201 });
   } catch (error) {
@@ -26,7 +28,8 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const input = validateUpdateTaskCardInput(await parseTaskRequestBody(req));
-    const card = await taskService.updateCard(input);
+    const context = await taskAuthorizationService.requireCard(input.id);
+    const card = await taskService.updateCard(input, { userId: context.user.id });
 
     return NextResponse.json(card);
   } catch (error) {
@@ -38,7 +41,8 @@ export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const cardId = validateTaskCardId(searchParams.get('id'));
-    await taskService.deleteCard(cardId);
+    const context = await taskAuthorizationService.requireCard(cardId);
+    await taskService.deleteCard(cardId, { userId: context.user.id });
 
     return NextResponse.json({ success: true });
   } catch (error) {

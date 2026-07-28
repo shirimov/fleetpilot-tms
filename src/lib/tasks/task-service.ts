@@ -9,6 +9,7 @@ import type {
   CreateTaskProjectInput,
   MoveTaskCardInput,
   TaskActivityEvent,
+  TaskMutationActor,
   UpdateTaskCardInput,
 } from './task-types';
 import {
@@ -90,14 +91,17 @@ export class TaskService {
     private readonly activityService: ActivityService = defaultActivityService,
   ) {}
 
-  async getProjects(projectId?: string) {
+  async getProjects(projectId?: string, companyId?: string) {
     return this.database.taskProject.findMany({
-      where: projectId ? { id: projectId } : {},
+      where: {
+        ...(projectId ? { id: projectId } : {}),
+        ...(companyId ? { companyId } : {}),
+      },
       include: projectInclude,
     });
   }
 
-  async createProject(input: CreateTaskProjectInput) {
+  async createProject(input: CreateTaskProjectInput, actor?: TaskMutationActor) {
     return this.database.$transaction(async (transaction) => {
       if (input.companyId) {
         const company = await transaction.company.findUnique({
@@ -133,13 +137,14 @@ export class TaskService {
         entityType: 'PROJECT',
         entityId: project.id,
         entityTitle: project.name,
+        ...this.activityActor(actor),
       });
 
       return project;
     });
   }
 
-  async createCard(input: CreateTaskCardInput) {
+  async createCard(input: CreateTaskCardInput, actor?: TaskMutationActor) {
     return this.database.$transaction(async (transaction) => {
       await this.validateBoardProject(transaction, input.boardId, input.projectId);
 
@@ -172,6 +177,7 @@ export class TaskService {
         entityType: 'TASK_CARD',
         entityId: card.id,
         entityTitle: card.title,
+        ...this.activityActor(actor),
         metadata: {
           boardId: card.boardId,
           order: card.order,
@@ -184,9 +190,9 @@ export class TaskService {
     });
   }
 
-  async getProjectBoard(projectId: string) {
-    const project = await this.database.taskProject.findUnique({
-      where: { id: projectId },
+  async getProjectBoard(projectId: string, companyId?: string) {
+    const project = await this.database.taskProject.findFirst({
+      where: { id: projectId, ...(companyId ? { companyId } : {}) },
       select: projectBoardSelect,
     });
 
@@ -194,7 +200,7 @@ export class TaskService {
     return project;
   }
 
-  async moveCard(input: MoveTaskCardInput) {
+  async moveCard(input: MoveTaskCardInput, actor?: TaskMutationActor) {
     try {
       return await this.database.$transaction(
         async (transaction) => {
@@ -311,7 +317,11 @@ export class TaskService {
               },
             });
 
-            for (const activity of this.describeChanges(normalized.card, updated)) {
+            for (const activity of this.describeChanges(
+              normalized.card,
+              updated,
+              actor,
+            )) {
               await this.activityService.record(transaction, activity);
             }
           }
@@ -336,7 +346,7 @@ export class TaskService {
     }
   }
 
-  async updateCard(input: UpdateTaskCardInput) {
+  async updateCard(input: UpdateTaskCardInput, actor?: TaskMutationActor) {
     return this.database.$transaction(async (transaction) => {
       const existing = await transaction.taskCard.findUnique({
         where: { id: input.id },
@@ -362,7 +372,7 @@ export class TaskService {
         include: cardInclude,
       });
 
-      for (const activity of this.describeChanges(existing, card)) {
+      for (const activity of this.describeChanges(existing, card, actor)) {
         await this.activityService.record(transaction, activity);
       }
 
@@ -370,7 +380,10 @@ export class TaskService {
     });
   }
 
-  async deleteCard(cardId: string): Promise<void> {
+  async deleteCard(
+    cardId: string,
+    actor?: TaskMutationActor,
+  ): Promise<void> {
     await this.database.$transaction(async (transaction) => {
       const existing = await transaction.taskCard.findUnique({
         where: { id: cardId },
@@ -384,6 +397,7 @@ export class TaskService {
         entityType: 'TASK_CARD',
         entityId: existing.id,
         entityTitle: existing.title,
+        ...this.activityActor(actor),
         metadata: {
           boardId: existing.boardId,
           priority: existing.priority,
@@ -395,18 +409,22 @@ export class TaskService {
     });
   }
 
-  async getCardActivity(cardId: string) {
+  async getCardActivity(cardId: string, companyId?: string) {
     const activities = await this.database.taskActivity.findMany({
       where: {
         entityType: 'TASK_CARD',
         entityId: cardId,
+        ...(companyId ? { project: { companyId } } : {}),
       },
       orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
     });
 
     if (activities.length === 0) {
-      const card = await this.database.taskCard.findUnique({
-        where: { id: cardId },
+      const card = await this.database.taskCard.findFirst({
+        where: {
+          id: cardId,
+          ...(companyId ? { project: { companyId } } : {}),
+        },
         select: { id: true },
       });
       if (!card) throw new TaskNotFoundError();
@@ -433,7 +451,11 @@ export class TaskService {
     }
   }
 
-  private describeChanges(before: TaskCard, after: TaskCard): TaskActivityEvent[] {
+  private describeChanges(
+    before: TaskCard,
+    after: TaskCard,
+    actor?: TaskMutationActor,
+  ): TaskActivityEvent[] {
     const changes: Array<{
       field: keyof TaskCard;
       action: TaskActivityEvent['action'];
@@ -461,12 +483,21 @@ export class TaskService {
         entityType: 'TASK_CARD',
         entityId: after.id,
         entityTitle: after.title,
+        ...this.activityActor(actor),
         metadata: {
           field,
           from: this.serializeActivityValue(before[field]),
           to: this.serializeActivityValue(after[field]),
         },
       }));
+  }
+
+  private activityActor(
+    actor?: TaskMutationActor,
+  ): Pick<TaskActivityEvent, 'actorType' | 'actorUserId'> | object {
+    return actor
+      ? { actorType: 'USER' as const, actorUserId: actor.userId }
+      : {};
   }
 
   private serializeActivityValue(value: unknown): string | number | boolean | null {

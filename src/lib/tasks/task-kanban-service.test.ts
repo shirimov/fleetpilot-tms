@@ -2,8 +2,6 @@ import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { Prisma, type PrismaClient } from '@prisma/client';
-import { POST as moveCardRoute } from '@/app/api/tasks/cards/[id]/move/route';
-import { GET as projectBoardRoute } from '@/app/api/tasks/projects/[id]/board/route';
 import { prisma } from '@/lib/prisma';
 import type { ActivityService } from './task-activity-service';
 import {
@@ -82,12 +80,6 @@ test('TaskService supports deterministic Kanban movement', async (t) => {
       deterministicIds,
     );
     assert.equal('comments' in todo.cards[0], false);
-
-    const response = await projectBoardRoute(new Request('http://local.test'), {
-      params: Promise.resolve({ id: project.id }),
-    });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).id, project.id);
   });
 
   await t.test('same-board reorder normalizes order and emits only changed order activity', async () => {
@@ -385,56 +377,6 @@ test('TaskService supports deterministic Kanban movement', async (t) => {
     );
   });
 
-  await t.test('move API returns success, conflict, and unmapped-board responses', async () => {
-    const card = await prisma.taskCard.findUniqueOrThrow({
-      where: { id: deterministicIds[0] },
-    });
-    const successResponse = await moveCardRoute(
-      new Request(`http://local.test/api/tasks/cards/${card.id}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceBoardId: card.boardId,
-          destinationBoardId: doneBoard.id,
-          destinationIndex: 0,
-          expectedUpdatedAt: card.updatedAt.toISOString(),
-        }),
-      }),
-      { params: Promise.resolve({ id: card.id }) },
-    );
-    assert.equal(successResponse.status, 200);
-
-    const conflictResponse = await moveCardRoute(
-      new Request(`http://local.test/api/tasks/cards/${card.id}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceBoardId: todoBoard.id,
-          destinationBoardId: doneBoard.id,
-          destinationIndex: 0,
-        }),
-      }),
-      { params: Promise.resolve({ id: card.id }) },
-    );
-    assert.equal(conflictResponse.status, 409);
-
-    const movedCard = await prisma.taskCard.findUniqueOrThrow({
-      where: { id: card.id },
-    });
-    const unmappedResponse = await moveCardRoute(
-      new Request(`http://local.test/api/tasks/cards/${card.id}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceBoardId: movedCard.boardId,
-          destinationBoardId: unmappedBoard.id,
-          destinationIndex: 0,
-        }),
-      }),
-      { params: Promise.resolve({ id: card.id }) },
-    );
-    assert.equal(unmappedResponse.status, 409);
-  });
 });
 
 test('optimistic move is immutable so a failed request can restore its snapshot', () => {

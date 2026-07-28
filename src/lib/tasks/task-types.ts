@@ -52,8 +52,13 @@ export type TaskActivityEvent = {
   entityTitle?: string | null;
   actorType?: TaskActivityActorType;
   actorId?: string;
+  actorUserId?: string;
   sourceType?: string;
   sourceId?: string;
   metadata?: Prisma.InputJsonValue;
   occurredAt?: Date;
+};
+
+export type TaskMutationActor = {
+  userId: string;
 };

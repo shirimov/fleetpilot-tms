@@ -9,6 +9,7 @@ import {
   TaskProjectNotFoundError,
 } from './task-errors';
 import { TaskValidationError } from './task-validation';
+import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
 
 export async function parseTaskRequestBody(request: Request): Promise<unknown> {
   try {
@@ -19,6 +20,9 @@ export async function parseTaskRequestBody(request: Request): Promise<unknown> {
 }
 
 export function taskRouteErrorResponse(error: unknown): NextResponse {
+  const authorizationResponse = authorizationErrorResponse(error);
+  if (authorizationResponse) return authorizationResponse;
+
   if (error instanceof TaskValidationError) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
