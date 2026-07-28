@@ -9,7 +9,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    await workforceAuthorizationService.requireEscrow(id);
+    const context = await workforceAuthorizationService.requireEscrow(id);
     const data = await request.json();
     const amount = parseFloat(data.amount);
     const delta = data.type === 'DEPOSIT' ? amount : -amount;
@@ -19,6 +19,14 @@ export async function POST(
         where: { id },
       });
       if (!escrow) return null;
+      const employee = await database.employee.findFirst({
+        where: {
+          id: escrow.employeeId,
+          companyId: context.companyId,
+        },
+        select: { id: true },
+      });
+      if (!employee) return null;
       const escrowTransaction = await database.escrowTx.create({
         data: {
           escrowId: id,
