@@ -8,6 +8,35 @@ The long-term product should connect operational data, employee work, fleet even
 
 The application should not behave like a collection of disconnected pages. Important business events should create trackable work through the Task Activity Engine.
 
+## Current System
+
+FleetPilot is a modular Next.js application using the App Router. React client pages call route handlers under `src/app/api`; Prisma provides typed access to PostgreSQL through a shared client in `src/lib/prisma.ts`.
+
+Implemented product areas include:
+
+- companies, trucks, drivers, loads, and settlements
+- truck inspections and driver orientation
+- employees, payroll support, escrow, and reserve tracking
+- bank account and transaction ingestion through Plaid
+- email inbox synchronization
+- Telegram task commands
+- task projects, boards, cards, labels, comments, and attachment records
+
+The task module has a central `TaskService`, request validation, stable route error handling, Prisma transaction boundaries, and an injectable activity abstraction. Activity is currently structured console output and is deliberately best-effort. Durable task activity, authenticated actor identity, authorization, notifications, and automation remain planned work.
+
+## Runtime Boundaries
+
+```text
+Browser or integration
+  -> Next.js route handler
+  -> validation and transport mapping
+  -> domain service
+  -> Prisma transaction
+  -> PostgreSQL
+```
+
+Route handlers should remain thin. Domain services own business rules and transaction boundaries. Integrations such as Telegram, email, and future AI workflows should call the same services rather than write directly through Prisma.
+
 ## Main Modules
 
 ### Task Activity Engine
@@ -127,9 +156,9 @@ Use generic source fields only for integration events or future entity types.
 
 ### Service Layer for Mutations
 
-Task mutations should be centralized.
+Task project and card mutations are centralized in the current task service foundation.
 
-Recommended structure:
+Current structure:
 
 ```text
 src/
@@ -137,6 +166,7 @@ src/
     tasks/
       task-service.ts
       task-activity-service.ts
+      task-route-response.ts
       task-validation.ts
       task-types.ts
 ```
@@ -145,7 +175,18 @@ UI and route handlers should call the task service instead of duplicating mutati
 
 ### Activity History
 
-Every meaningful task change should create a `TaskActivity` record in the same database transaction as the change.
+The current activity abstraction produces best-effort structured logs. A logging failure cannot turn a committed task mutation into an API error.
+
+The planned audit system is stronger: every meaningful task change should create a durable `TaskActivity` record in the same database transaction as the change. Best-effort operational logging and transactional audit history are separate concerns.
+
+### Tenant and Actor Context
+
+Company scope and authenticated actor identity are not yet enforced across the application. Before production multi-company use:
+
+- every request must resolve its company and actor on the server
+- services must validate that referenced entities belong to that company
+- activity records must capture actor and source attribution
+- authorization must be enforced independently of UI visibility
 
 ### Backward-Compatible Migration
 
@@ -174,11 +215,11 @@ At minimum, plan for these permission concepts:
 
 Do not hard-code access only by UI visibility. Enforce it server-side.
 
-## Suggested Task API
+## Task API Direction
 
-Exact routing should follow the existing project style.
+The current API uses `GET` and `POST /api/tasks` plus `POST`, `PATCH`, and `DELETE /api/tasks/cards`. These routes delegate to `TaskService` and preserve existing response shapes.
 
-Potential operations:
+Planned resource-oriented operations:
 
 ```text
 GET    /api/tasks
@@ -197,6 +238,8 @@ GET    /api/employees?active=true
 ```
 
 If the project uses server actions instead of REST, preserve that convention.
+
+See [API.md](API.md) for current request fields, response behavior, and planned endpoints.
 
 ## Task Completion Rules
 
@@ -233,3 +276,17 @@ Never log:
 - access tokens
 - bank credentials
 - full sensitive message bodies unless necessary and protected
+
+## Planned Evolution
+
+Architecture should evolve in small, backward-compatible stages:
+
+1. Persist task activity atomically and expose a timeline.
+2. Add authenticated actor identity, company scoping, and server-side authorization.
+3. Replace legacy string assignment with an optional Employee relation through a staged migration.
+4. Add task details, checklist, comments, attachments, and typed business links.
+5. Route fleet, dispatch, communication, finance, and safety events into the Task Activity Engine.
+6. Add notifications and policy-controlled automation.
+7. Add observable AI recommendations and draft actions with human review.
+
+Each stage must preserve existing task data and successful API contracts unless an explicit migration or versioning plan is approved.

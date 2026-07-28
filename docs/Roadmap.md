@@ -1,13 +1,39 @@
 # FleetPilot Product Roadmap
 
+## Delivery Approach
+
+FleetPilot will evolve from a connected operational database into a task-centered operating system. Each phase should deliver usable workflow improvements while preserving existing data and API compatibility.
+
+Phase gates require:
+
+- reviewed, forward-safe database migrations where applicable
+- domain logic behind services rather than UI or integration handlers
+- server-side validation and company scoping
+- observable failures without secret leakage
+- tests for critical business rules
+- production build validation
+
+## Current Position
+
+The Task Service Foundation is complete. Task routes now use centralized validation and transactional service methods, but persistent activity, actor identity, authorization, task details, and advanced workflow capabilities remain incomplete.
+
+The immediate next milestone is a durable task activity timeline. Database changes must first reconcile the existing task-table migration drift and must not risk production data.
+
 ## Phase 1 — Task Activity Engine
 
 Goal: Create the operational foundation used by every FleetPilot module.
 
-Deliverables:
+Delivered foundation:
+
+- task projects, boards, and cards
+- list and basic Kanban components
+- central task service and validation
+- transactional project and card mutations
+- stable task route response behavior
+
+Remaining deliverables:
 
 - professional Kanban
-- list view
 - task details
 - employee assignment
 - activity timeline
@@ -19,6 +45,8 @@ Deliverables:
 - notification foundation
 - automation foundation
 - AI metadata foundation
+
+Exit condition: task work is attributable, queryable, safely linked to business entities, and usable as the shared workflow layer for later phases.
 
 ## Phase 2 — Fleet Integration
 
@@ -111,3 +139,24 @@ Deliverables:
 - employee workload
 - open critical tasks
 - AI recommendations with evidence
+
+## Cross-Cutting Work
+
+The following capabilities progress alongside the product phases:
+
+- authentication, company isolation, and role-based authorization
+- audit history and operational observability
+- idempotency for integrations and retried commands
+- file storage and attachment security
+- data retention, backup, and recovery
+- automated tests and deployment checks
+- mobile usability and accessibility
+
+## Sequencing Rules
+
+- Do not automate a workflow before its manual task process is reliable.
+- Do not let integrations bypass domain services.
+- Do not allow AI recommendations to silently override human decisions.
+- Do not remove legacy fields until production data is migrated and verified.
+- Do not treat notifications or console logs as durable audit history.
+- Do not begin executive scoring until underlying operational metrics are trustworthy.
