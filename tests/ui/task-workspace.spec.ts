@@ -100,6 +100,15 @@ const project = {
 };
 
 async function mockTaskApis(page: Page) {
+  let attachments: Array<{
+    id: string;
+    filename: string;
+    byteSize: number;
+    mimeType: string;
+    createdAt: string;
+    uploader: { id: string; displayName: string; image: null };
+    canDelete: boolean;
+  }> = [];
   let checklist = [
     {
       id: 'checklist-1',
@@ -144,6 +153,56 @@ async function mockTaskApis(page: Page) {
   });
   await page.route('**/api/tasks/projects/project-1/board', async (route) => {
     await route.fulfill({ json: project });
+  });
+  await page.route('**/api/tasks/mentions*', async (route) => {
+    await route.fulfill({
+      json: [{ id: 'user-maya', displayName: 'Maya Chen', image: null }],
+    });
+  });
+  await page.route('**/api/tasks/cards', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const body = route.request().postDataJSON() as {
+        id: string;
+        description: string;
+      };
+      await route.fulfill({
+        json: {
+          ...project.boards[0].cards.find(({ id }) => id === body.id),
+          description: body.description,
+          updatedAt: '2026-07-28T13:00:00.000Z',
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route('**/api/tasks/cards/*/attachments', async (route) => {
+    if (route.request().method() === 'POST') {
+      const attachment = {
+        id: 'attachment-1',
+        filename: 'inspection.pdf',
+        byteSize: 12,
+        mimeType: 'application/pdf',
+        createdAt: '2026-07-28T13:00:00.000Z',
+        uploader: { id: 'user-maya', displayName: 'Maya Chen', image: null },
+        canDelete: true,
+      };
+      attachments = [...attachments, attachment];
+      await route.fulfill({ status: 201, json: attachment });
+      return;
+    }
+    await route.fulfill({ json: attachments });
+  });
+  await page.route('**/api/tasks/cards/*/attachments/*', async (route) => {
+    if (route.request().url().includes('/download')) {
+      await route.fulfill({
+        body: '%PDF-1.7 mock',
+        contentType: 'application/pdf',
+      });
+      return;
+    }
+    attachments = [];
+    await route.fulfill({ json: { success: true } });
   });
   await page.route('**/api/tasks/cards/*/activity', async (route) => {
     await route.fulfill({
@@ -329,6 +388,41 @@ test('supports checklist and comment collaboration in the task drawer', async ({
   await expect(drawer).toBeHidden();
 });
 
+test('autosaves rich Markdown, scopes mentions, and uploads attachments', async ({
+  page,
+}) => {
+  await page
+    .getByRole('button', { name: 'Complete trailer inspection', exact: true })
+    .click();
+  const drawer = page.getByRole('dialog');
+  await drawer.getByRole('button', { name: 'write' }).click();
+  const editor = drawer.getByLabel('Task description Markdown');
+  const saveRequest = page.waitForRequest(
+    (request) =>
+      request.url().endsWith('/api/tasks/cards') &&
+      request.method() === 'PATCH',
+  );
+  await editor.fill(
+    '# Inspection plan\n\n- [ ] Verify brakes\n\n<script>alert(1)</script>\n\n@Ma',
+  );
+  await drawer.getByRole('option', { name: 'Maya Chen' }).click();
+  const request = await saveRequest;
+  expect(request.postDataJSON().mentionUserIds).toEqual(['user-maya']);
+  await expect(drawer.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible();
+  await drawer.getByRole('button', { name: 'preview' }).click();
+  await expect(drawer.getByRole('heading', { name: 'Inspection plan' })).toBeVisible();
+  await expect(drawer.getByText('alert(1)')).toBeHidden();
+  await expect(drawer.getByLabel('Mention Maya Chen')).toBeVisible();
+
+  await drawer.getByLabel('Choose task attachment').setInputFiles({
+    name: 'inspection.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7 mock'),
+  });
+  await expect(drawer.getByText('Upload complete.')).toBeVisible();
+  await expect(drawer.getByRole('link', { name: 'inspection.pdf' })).toBeVisible();
+});
+
 test('moves a task optimistically and reconciles the canonical response', async ({
   page,
 }) => {
@@ -387,13 +481,13 @@ test('captures approved desktop and responsive workspace references', async ({
     .click();
   await expect(page.getByRole('dialog').getByText('Historical handoff note.')).toBeVisible();
   await page.screenshot({
-    path: 'docs/screenshots/task-collaboration-desktop.png',
+    path: 'docs/screenshots/task-rich-content-desktop.png',
     fullPage: true,
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: 'docs/screenshots/task-collaboration-responsive.png',
+    path: 'docs/screenshots/task-rich-content-responsive.png',
     fullPage: true,
   });
 });

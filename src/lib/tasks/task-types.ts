@@ -34,6 +34,8 @@ export type UpdateTaskCardInput = {
   assignedTo?: string | null;
   dueDate?: Date | null;
   order?: number;
+  expectedUpdatedAt?: Date;
+  mentionUserIds?: string[];
 };
 
 export type MoveTaskCardInput = {
@@ -90,6 +92,7 @@ export type ReorderTaskChecklistInput = {
 export type CreateTaskCommentInput = {
   cardId: string;
   content: string;
+  mentionUserIds?: string[];
 };
 
 export type UpdateTaskCommentInput = CreateTaskCommentInput & {

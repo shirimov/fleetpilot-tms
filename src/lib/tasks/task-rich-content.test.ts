@@ -1,0 +1,222 @@
+import 'dotenv/config';
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { safeMarkdownUrl } from '@/components/tasks/MarkdownContent';
+import { extractMentionUserIds } from '@/components/tasks/TaskDescriptionEditor';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
+import { prisma } from '@/lib/prisma';
+import {
+  MAX_TASK_ATTACHMENT_BYTES,
+  sanitizeTaskFilename,
+  validateTaskFile,
+} from './task-file-policy';
+import { TaskMoveConflictError, TaskNotFoundError } from './task-errors';
+import { TaskService } from './task-service';
+import type { TaskAttachmentStorage } from './task-storage';
+import type { TaskCompanyActor } from './task-types';
+
+class MemoryStorage implements TaskAttachmentStorage {
+  files = new Map<string, Uint8Array>();
+  sequence = 0;
+  async put(bytes: Uint8Array) {
+    const key = `00000000-0000-4000-8000-${String(++this.sequence).padStart(12, '0')}`;
+    this.files.set(key, bytes);
+    return key;
+  }
+  async get(key: string) {
+    const value = this.files.get(key);
+    if (!value) throw new Error('missing');
+    return value;
+  }
+  async delete(key: string) {
+    this.files.delete(key);
+  }
+}
+
+const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const storage = new MemoryStorage();
+const service = new TaskService(prisma, undefined, storage);
+let companyId = '';
+let foreignCompanyId = '';
+let userId = '';
+let teammateId = '';
+let foreignUserId = '';
+let cardId = '';
+let foreignCardId = '';
+let actor: TaskCompanyActor;
+let teammateActor: TaskCompanyActor;
+
+before(async () => {
+  const [company, foreignCompany] = await Promise.all([
+    prisma.company.create({ data: { name: `Rich content ${suffix}` } }),
+    prisma.company.create({ data: { name: `Foreign rich content ${suffix}` } }),
+  ]);
+  companyId = company.id;
+  foreignCompanyId = foreignCompany.id;
+  const [user, teammate, foreignUser] = await Promise.all([
+    prisma.user.create({ data: { email: `rich-${suffix}@test.dev`, displayName: 'Rich author' } }),
+    prisma.user.create({ data: { email: `mention-${suffix}@test.dev`, displayName: 'Mention teammate' } }),
+    prisma.user.create({ data: { email: `foreign-rich-${suffix}@test.dev`, displayName: 'Foreign user' } }),
+  ]);
+  userId = user.id;
+  teammateId = teammate.id;
+  foreignUserId = foreignUser.id;
+  await prisma.companyMembership.createMany({
+    data: [
+      { companyId, userId, role: 'MEMBER' },
+      { companyId, userId: teammateId, role: 'MEMBER' },
+      { companyId: foreignCompanyId, userId: foreignUserId, role: 'OWNER' },
+    ],
+  });
+  actor = { userId, companyId, displayName: user.displayName, role: 'MEMBER' };
+  teammateActor = {
+    userId: teammateId,
+    companyId,
+    displayName: teammate.displayName,
+    role: 'MEMBER',
+  };
+  const [project, foreignProject] = await Promise.all([
+    service.createProject({ name: `Rich project ${suffix}`, companyId }),
+    service.createProject({ name: `Foreign rich project ${suffix}`, companyId: foreignCompanyId }),
+  ]);
+  cardId = (await service.createCard({
+    projectId: project.id,
+    boardId: project.boards[0].id,
+    title: 'Rich task',
+  })).id;
+  foreignCardId = (await service.createCard({
+    projectId: foreignProject.id,
+    boardId: foreignProject.boards[0].id,
+    title: 'Foreign task',
+  })).id;
+});
+
+after(async () => {
+  await prisma.taskActivity.deleteMany({
+    where: { project: { companyId: { in: [companyId, foreignCompanyId] } } },
+  });
+  await prisma.taskProject.deleteMany({
+    where: { companyId: { in: [companyId, foreignCompanyId] } },
+  });
+  await prisma.user.deleteMany({
+    where: { id: { in: [userId, teammateId, foreignUserId] } },
+  });
+  await prisma.company.deleteMany({
+    where: { id: { in: [companyId, foreignCompanyId] } },
+  });
+  await prisma.$disconnect();
+});
+
+test('Markdown URLs and mention parsing fail safe', () => {
+  assert.equal(safeMarkdownUrl('javascript:alert(1)'), '#');
+  assert.equal(safeMarkdownUrl('https://fleetpilot.example/task'), 'https://fleetpilot.example/task');
+  assert.equal(safeMarkdownUrl(`user:${teammateId}`), `user:${teammateId}`);
+  assert.deepEqual(
+    extractMentionUserIds(
+      `@[Mention teammate](user:${teammateId}) and again @[Mention teammate](user:${teammateId})`,
+    ),
+    [teammateId],
+  );
+});
+
+test('upload validation rejects traversal, active content, mismatch, and oversize', () => {
+  assert.throws(() => sanitizeTaskFilename('../invoice.pdf'), /filename/i);
+  assert.throws(() => sanitizeTaskFilename('invoice.pdf.exe'), /active-content/i);
+  assert.throws(
+    () => validateTaskFile(
+      new File([new Uint8Array([1])], 'invoice.pdf', { type: 'application/pdf' }),
+      new Uint8Array([1]),
+    ),
+    /content/i,
+  );
+  assert.equal(MAX_TASK_ATTACHMENT_BYTES, 20 * 1024 * 1024);
+});
+
+test('description writes are stale-safe, deduplicated, and company-verified', async () => {
+  const before = await prisma.taskCard.findUniqueOrThrow({ where: { id: cardId } });
+  await service.updateCard(
+    {
+      id: cardId,
+      description: `# Dispatch\n@[Mention teammate](user:${teammateId})`,
+      mentionUserIds: [teammateId, teammateId],
+      expectedUpdatedAt: before.updatedAt,
+    },
+    actor,
+  );
+  await assert.rejects(
+    service.updateCard(
+      {
+        id: cardId,
+        description: 'stale',
+        expectedUpdatedAt: before.updatedAt,
+      },
+      actor,
+    ),
+    TaskMoveConflictError,
+  );
+  await assert.rejects(
+    service.updateCard(
+      { id: cardId, description: 'forged', mentionUserIds: [foreignUserId] },
+      actor,
+    ),
+    /active member/,
+  );
+  assert.equal(
+    await prisma.taskMention.count({
+      where: { cardId, mentionedUserId: teammateId, resolvedAt: null },
+    }),
+    1,
+  );
+  assert.equal(
+    await prisma.taskActivity.count({
+      where: { entityId: cardId, action: 'MENTION_ADDED' },
+    }),
+    1,
+  );
+});
+
+test('attachments are private, tenant-scoped, attributable, and permission checked', async () => {
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+  const attachment = await service.createAttachment(
+    cardId,
+    {
+      originalFilename: 'rate-confirmation.pdf',
+      displayFilename: 'rate-confirmation.pdf',
+      mimeType: 'application/pdf',
+      byteSize: bytes.length,
+    },
+    bytes,
+    actor,
+  );
+  assert.equal('storageKey' in attachment, false);
+  assert.equal((await service.getAttachmentDownload(cardId, attachment.id, actor)).bytes.length, bytes.length);
+  await assert.rejects(
+    service.getAttachmentDownload(foreignCardId, attachment.id, actor),
+    TaskNotFoundError,
+  );
+  await assert.rejects(
+    service.deleteAttachment(cardId, attachment.id, teammateActor),
+    AuthorizationDeniedError,
+  );
+  await service.deleteAttachment(cardId, attachment.id, actor);
+  assert.equal(storage.files.size, 0);
+  assert.equal(
+    await prisma.taskActivity.count({
+      where: {
+        entityId: cardId,
+        action: { in: ['ATTACHMENT_ADDED', 'ATTACHMENT_REMOVED'] },
+      },
+    }),
+    2,
+  );
+});
+
+test('mention autocomplete is active-company scoped', async () => {
+  assert.deepEqual(
+    (await service.getMentionCandidates(companyId, 'Mention')).map(({ id }) => id),
+    [teammateId],
+  );
+  await prisma.user.update({ where: { id: teammateId }, data: { isActive: false } });
+  assert.deepEqual(await service.getMentionCandidates(companyId, 'Mention'), []);
+  await prisma.user.update({ where: { id: teammateId }, data: { isActive: true } });
+});

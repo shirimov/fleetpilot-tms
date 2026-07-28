@@ -65,6 +65,20 @@ function optionalOrder(value: unknown): number | undefined {
   return value as number;
 }
 
+function optionalMentionUserIds(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > 25 ||
+    value.some((id) => typeof id !== 'string' || !id.trim())
+  ) {
+    throw new TaskValidationError(
+      'mentionUserIds must contain at most 25 non-empty user IDs.',
+    );
+  }
+  return [...new Set(value.map((id) => id.trim()))];
+}
+
 export function validateProjectId(value: string | null): string | undefined {
   if (value === null) return undefined;
   return requiredString(value, 'projectId');
@@ -112,6 +126,7 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
     'assignedTo',
     'dueDate',
     'order',
+    'mentionUserIds',
   ];
 
   if (!updateKeys.some((key) => Object.hasOwn(body, key))) {
@@ -142,6 +157,17 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
     }
   }
 
+  let expectedUpdatedAt: Date | undefined;
+  if (body.expectedUpdatedAt !== undefined) {
+    if (typeof body.expectedUpdatedAt !== 'string') {
+      throw new TaskValidationError('expectedUpdatedAt must be a valid date string.');
+    }
+    expectedUpdatedAt = new Date(body.expectedUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime())) {
+      throw new TaskValidationError('expectedUpdatedAt must be a valid date string.');
+    }
+  }
+
   return {
     id: requiredString(body.id, 'id'),
     boardId:
@@ -153,6 +179,8 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
     assignedTo: optionalNullableString(body.assignedTo, 'assignedTo'),
     dueDate,
     order: optionalOrder(body.order),
+    expectedUpdatedAt,
+    mentionUserIds: optionalMentionUserIds(body.mentionUserIds),
   };
 }
 
@@ -273,6 +301,7 @@ export function validateCreateCommentInput(
   return {
     cardId: requiredString(cardId, 'cardId'),
     content: collaborationContent(body.content),
+    mentionUserIds: optionalMentionUserIds(body.mentionUserIds),
   };
 }
 

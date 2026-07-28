@@ -18,6 +18,14 @@ import type { ActivityService } from './task-activity-service';
 import { defaultActivityService } from './task-activity-service';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import {
+  taskAttachmentStorage,
+  type TaskAttachmentStorage,
+} from './task-storage';
+import {
+  MAX_TASK_ATTACHMENTS,
+  type ValidatedTaskFile,
+} from './task-file-policy';
+import {
   InvalidTaskDestinationIndexError,
   TaskBoardNotFoundError,
   TaskBoardProjectMismatchError,
@@ -98,6 +106,7 @@ export class TaskService {
   constructor(
     private readonly database: PrismaClient = prisma,
     private readonly activityService: ActivityService = defaultActivityService,
+    private readonly attachmentStorage: TaskAttachmentStorage = taskAttachmentStorage,
   ) {}
 
   async getProjects(projectId?: string, companyId?: string) {
@@ -355,12 +364,23 @@ export class TaskService {
     }
   }
 
-  async updateCard(input: UpdateTaskCardInput, actor?: TaskMutationActor) {
+  async updateCard(
+    input: UpdateTaskCardInput,
+    actor?: TaskMutationActor | TaskCompanyActor,
+  ) {
     return this.database.$transaction(async (transaction) => {
       const existing = await transaction.taskCard.findUnique({
         where: { id: input.id },
       });
       if (!existing) throw new TaskNotFoundError();
+      if (
+        input.expectedUpdatedAt &&
+        existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()
+      ) {
+        throw new TaskMoveConflictError(
+          'Task card was updated after the editor was loaded.',
+        );
+      }
 
       if (input.boardId && input.boardId !== existing.boardId) {
         await this.validateBoardProject(transaction, input.boardId, existing.projectId);
@@ -383,6 +403,18 @@ export class TaskService {
 
       for (const activity of this.describeChanges(existing, card, actor)) {
         await this.activityService.record(transaction, activity);
+      }
+      if (input.mentionUserIds !== undefined) {
+        if (!actor || !('companyId' in actor)) {
+          throw new AuthorizationDeniedError();
+        }
+        await this.syncMentions(
+          transaction,
+          card,
+          actor as TaskCompanyActor,
+          'DESCRIPTION',
+          input.mentionUserIds,
+        );
       }
 
       return card;
@@ -653,6 +685,14 @@ export class TaskService {
         action: 'COMMENT_ADDED',
         metadata: { commentId: comment.id },
       });
+      await this.syncMentions(
+        transaction,
+        card,
+        actor,
+        'COMMENT',
+        input.mentionUserIds ?? [],
+        comment.id,
+      );
       return comment;
     });
   }
@@ -682,6 +722,16 @@ export class TaskService {
         action: 'COMMENT_EDITED',
         metadata: { commentId: comment.id },
       });
+      if (input.mentionUserIds !== undefined) {
+        await this.syncMentions(
+          transaction,
+          card,
+          actor,
+          'COMMENT',
+          input.mentionUserIds,
+          comment.id,
+        );
+      }
       return comment;
     });
   }
@@ -708,6 +758,269 @@ export class TaskService {
         metadata: { commentId: comment.id },
       });
     });
+  }
+
+  async getMentionCandidates(companyId: string, query = '') {
+    return this.database.companyMembership.findMany({
+      where: {
+        companyId,
+        user: {
+          isActive: true,
+          ...(query
+            ? {
+                OR: [
+                  { displayName: { contains: query, mode: 'insensitive' } },
+                  { email: { contains: query, mode: 'insensitive' } },
+                ],
+              }
+            : {}),
+        },
+      },
+      orderBy: [{ user: { displayName: 'asc' } }, { userId: 'asc' }],
+      take: 20,
+      select: {
+        user: { select: { id: true, displayName: true, image: true } },
+      },
+    }).then((memberships) => memberships.map(({ user }) => user));
+  }
+
+  async getAttachments(cardId: string, actor: TaskCompanyActor) {
+    await this.requireCompanyCard(this.database, cardId, actor.companyId);
+    const attachments = await this.database.taskAttachment.findMany({
+      where: { cardId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      include: {
+        uploaderUser: {
+          select: { id: true, displayName: true, image: true },
+        },
+      },
+    });
+    return attachments.map((attachment) =>
+      this.publicAttachment(attachment, actor),
+    );
+  }
+
+  async createAttachment(
+    cardId: string,
+    file: ValidatedTaskFile,
+    bytes: Uint8Array,
+    actor: TaskCompanyActor,
+  ) {
+    await this.requireCompanyCard(this.database, cardId, actor.companyId);
+    if (
+      (await this.database.taskAttachment.count({ where: { cardId } })) >=
+      MAX_TASK_ATTACHMENTS
+    ) {
+      throw new TaskValidationError('A task may have at most 20 attachments.');
+    }
+    const storageKey = await this.attachmentStorage.put(bytes);
+    try {
+      const attachment = await this.database.$transaction(async (transaction) => {
+        const card = await this.requireCompanyCard(
+          transaction,
+          cardId,
+          actor.companyId,
+        );
+        const created = await transaction.taskAttachment.create({
+          data: {
+            cardId,
+            name: file.displayFilename,
+            url: '',
+            size: file.byteSize,
+            mimeType: file.mimeType,
+            uploadedBy: actor.displayName,
+            uploaderUserId: actor.userId,
+            originalFilename: file.originalFilename,
+            displayFilename: file.displayFilename,
+            storageKey,
+            byteSize: file.byteSize,
+          },
+          include: {
+            uploaderUser: {
+              select: { id: true, displayName: true, image: true },
+            },
+          },
+        });
+        await this.recordCardActivity(transaction, card, actor, {
+          action: 'ATTACHMENT_ADDED',
+          metadata: {
+            attachmentId: created.id,
+            displayFilename: file.displayFilename,
+            byteSize: file.byteSize,
+            mimeType: file.mimeType,
+          },
+        });
+        return created;
+      });
+      return this.publicAttachment(attachment, actor);
+    } catch (error) {
+      await this.attachmentStorage.delete(storageKey);
+      throw error;
+    }
+  }
+
+  async getAttachmentDownload(
+    cardId: string,
+    attachmentId: string,
+    actor: TaskCompanyActor,
+  ) {
+    await this.requireCompanyCard(this.database, cardId, actor.companyId);
+    const attachment = await this.database.taskAttachment.findFirst({
+      where: {
+        id: attachmentId,
+        cardId,
+        card: { project: { companyId: actor.companyId } },
+      },
+    });
+    if (!attachment?.storageKey) throw new TaskNotFoundError();
+    return {
+      bytes: await this.attachmentStorage.get(attachment.storageKey),
+      filename: attachment.displayFilename ?? attachment.name,
+      mimeType: attachment.mimeType ?? 'application/octet-stream',
+    };
+  }
+
+  async deleteAttachment(
+    cardId: string,
+    attachmentId: string,
+    actor: TaskCompanyActor,
+  ) {
+    const attachment = await this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        cardId,
+        actor.companyId,
+      );
+      const existing = await transaction.taskAttachment.findFirst({
+        where: { id: attachmentId, cardId },
+      });
+      if (!existing) throw new TaskNotFoundError();
+      if (
+        existing.uploaderUserId !== actor.userId &&
+        actor.role !== 'ADMIN' &&
+        actor.role !== 'OWNER'
+      ) {
+        throw new AuthorizationDeniedError();
+      }
+      await transaction.taskAttachment.delete({ where: { id: existing.id } });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'ATTACHMENT_REMOVED',
+        metadata: {
+          attachmentId: existing.id,
+          displayFilename: existing.displayFilename ?? existing.name,
+        },
+      });
+      return existing;
+    });
+    if (attachment.storageKey) {
+      await this.attachmentStorage.delete(attachment.storageKey);
+    }
+  }
+
+  private publicAttachment<
+    Attachment extends {
+      id: string;
+      name: string;
+      displayFilename: string | null;
+      byteSize: number | null;
+      size: number | null;
+      mimeType: string | null;
+      createdAt: Date;
+      uploaderUserId: string | null;
+      uploadedBy: string;
+      uploaderUser?: { id: string; displayName: string; image: string | null } | null;
+    },
+  >(attachment: Attachment, actor: TaskCompanyActor) {
+    return {
+      id: attachment.id,
+      filename: attachment.displayFilename ?? attachment.name,
+      byteSize: attachment.byteSize ?? attachment.size,
+      mimeType: attachment.mimeType ?? 'application/octet-stream',
+      createdAt: attachment.createdAt,
+      uploader:
+        attachment.uploaderUser ?? {
+          id: null,
+          displayName: attachment.uploadedBy,
+          image: null,
+        },
+      canDelete:
+        attachment.uploaderUserId === actor.userId ||
+        actor.role === 'ADMIN' ||
+        actor.role === 'OWNER',
+    };
+  }
+
+  private async syncMentions(
+    transaction: Prisma.TransactionClient,
+    card: { id: string; projectId: string; title: string },
+    actor: TaskCompanyActor,
+    sourceType: 'DESCRIPTION' | 'COMMENT',
+    mentionUserIds: string[],
+    commentId?: string,
+  ) {
+    const requestedIds = [...new Set(mentionUserIds)];
+    const members = await transaction.companyMembership.findMany({
+      where: {
+        companyId: actor.companyId,
+        userId: { in: requestedIds },
+        user: { isActive: true },
+      },
+      select: {
+        user: { select: { id: true, displayName: true } },
+      },
+    });
+    if (members.length !== requestedIds.length) {
+      throw new TaskValidationError(
+        'Every mentioned user must be an active member of the current company.',
+      );
+    }
+    const existing = await transaction.taskMention.findMany({
+      where: {
+        cardId: card.id,
+        sourceType,
+        commentId: commentId ?? null,
+        resolvedAt: null,
+      },
+      select: { id: true, mentionedUserId: true },
+    });
+    const requested = new Set(requestedIds);
+    const existingIds = new Set(
+      existing.flatMap(({ mentionedUserId }) =>
+        mentionedUserId ? [mentionedUserId] : [],
+      ),
+    );
+    await transaction.taskMention.updateMany({
+      where: {
+        id: {
+          in: existing
+            .filter(({ mentionedUserId }) => !mentionedUserId || !requested.has(mentionedUserId))
+            .map(({ id }) => id),
+        },
+      },
+      data: { resolvedAt: new Date() },
+    });
+    for (const { user } of members) {
+      if (existingIds.has(user.id)) continue;
+      await transaction.taskMention.create({
+        data: {
+          cardId: card.id,
+          commentId,
+          mentionedUserId: user.id,
+          mentionedDisplayName: user.displayName,
+          sourceType,
+          createdByUserId: actor.userId,
+        },
+      });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'MENTION_ADDED',
+        metadata: {
+          mentionedUserId: user.id,
+          mentionedDisplayName: user.displayName,
+          sourceType,
+          ...(commentId ? { commentId } : {}),
+        },
+      });
+    }
   }
 
   private async requireCompanyCard(
