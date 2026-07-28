@@ -262,7 +262,7 @@ removal and rotation sequence above is a production rollout blocker.
 - Local migration status: 18 migrations, schema up to date.
 - Local database-to-schema migration diff: empty.
 - TypeScript and targeted ESLint for all changed files: pass.
-- Unit and integration tests: 50 pass.
+- Unit and integration tests: 53 pass.
 - Playwright: 5 pass.
 - Production build: pass; generated service worker uses the custom API
   `NetworkOnly` rule.
@@ -271,9 +271,10 @@ removal and rotation sequence above is a production rollout blocker.
   changed files are clean.
 - Final server-boundary audit: 74 total (73 HTTP handlers plus the public login
   Server Action); no unaudited server entry point.
-- Dependency audit: 38 advisories (29 high, 8 moderate, 1 low). Merge and
-  production rollout require a separately reviewed remediation or explicit
-  security acceptance; no dependency was changed in this tenant-isolation PR.
+- Dependency audit baseline: 38 advisories (29 high, 8 moderate, 1 low).
+- Dependency audit after remediation: 6 build/lint-only advisories (2 high,
+  4 moderate, 0 low), with no reachable production high finding and explicit
+  time-bounded acceptances in `docs/Dependency-Advisory-Matrix.md`.
 
 ## Remediation order
 

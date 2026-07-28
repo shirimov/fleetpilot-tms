@@ -20,8 +20,8 @@ external-data exemption. The login action is public by design and accepts no
 identity or tenant selector.
 
 The authorization and tenant-isolation implementation is ready for final
-security review. Merge readiness remains blocked by the dependency advisory
-inventory described below.
+security review. Reachable dependency advisories are remediated; the remaining
+build-only findings have explicit, time-bounded security acceptances below.
 
 ## Threat model
 
@@ -171,22 +171,18 @@ error responses carry `Cache-Control: private, no-store`.
 
 ## Dependency audit
 
-At review time, `npm audit` reports 38 known advisories: 29 high, 8 moderate,
-and 1 low. There are no critical advisories. A production-only audit reports
-37 because Prisma tooling is currently installed as a production dependency.
+The baseline `npm audit` reported 38 findings: 29 high, 8 moderate, and 1 low.
+Minimal removals, matched Prisma updates, and scoped security overrides reduce
+that inventory to 6 findings: 2 high and 4 moderate, with no critical or low
+findings.
 
-Important chains include Next.js build/runtime transitive packages, both PWA
-packages and Workbox, Prisma tooling, Plaid's Axios dependency, mail parsing,
-and the legacy `node-imap`/`utf7` chain. The legacy inbox routes are fail
-closed, but installed vulnerable packages still require deliberate remediation.
-`next-pwa` is also duplicated; only `@ducanh2912/next-pwa` is configured.
+All production-request-reachable high findings are removed or fixed. The two
+remaining high findings and four moderate findings are confined to trusted
+PWA/lint build inputs and have explicit time-bounded security acceptances with
+owners, preconditions, compensating controls, and follow-up requirements.
 
-No package was upgraded during this authorization PR because the safe fixes
-span framework, ORM, build tooling, and an IMAP package with no automatic fix.
-A separate reviewed dependency-remediation change must remove the unused PWA
-package, update supported direct dependencies, retest Auth.js beta
-compatibility, and document any accepted build-only risk. Production rollout
-and merge remain blocked until that review is complete.
+The full baseline and final disposition are documented in
+`docs/Dependency-Advisory-Matrix.md`.
 
 ## Test coverage
 
@@ -203,7 +199,8 @@ and emit non-cacheable responses.
 
 ## Production rollout checklist
 
-- [ ] Resolve or formally accept every dependency advisory with security review.
+- [x] Fix reachable dependency advisories and formally accept remaining
+  build-only findings with owners and expiry dates.
 - [ ] Back up the production database and verify restore procedures.
 - [ ] Confirm all committed migrations match production migration history.
 - [ ] Apply additive migrations in committed order.
@@ -221,6 +218,7 @@ and emit non-cacheable responses.
 ## Deployment checklist
 
 - [ ] Verify deployment repository, branch, and exact commit SHA.
+- [ ] Use a Prisma-supported Node runtime (20.19+, 22.12+, or 24.x).
 - [ ] Run Prisma migration status without reset, resolve, or db push.
 - [ ] Run Prisma validate/generate, TypeScript, tests, Playwright, and build.
 - [ ] Confirm required environment keys exist without printing values.
@@ -235,4 +233,3 @@ and emit non-cacheable responses.
 - [ ] Do not use `migrate reset`, `db push`, or destructive SQL.
 - [ ] Preserve audit/activity data and database backups.
 - [ ] Re-run cross-company isolation checks before restoring traffic.
-
