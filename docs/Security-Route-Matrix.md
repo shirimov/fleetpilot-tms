@@ -2,14 +2,16 @@
 
 Issue: [#10](https://github.com/shirimov/fleetpilot-tms/issues/10)
 
-Audit scope: all 44 App Router API route files (73 exported HTTP handlers),
-the login server action, database access outside route handlers, filesystem
+Audit scope: all 44 App Router API route files (73 HTTP handlers),
+the one login Server Action, database access outside route handlers, filesystem
 upload/download handlers, dashboard aggregation, Plaid, email sync, Telegram,
 and QuickManage integration code.
 
 No additional application server actions or route handlers were found outside
-this inventory. Client components call these APIs and are not authorization
-boundaries.
+this inventory. No middleware/proxy, cron handler, background job, or scheduled
+worker exists. Auth.js owns the OAuth callback route; Telegram is the only
+application webhook. Client components call these APIs and are not
+authorization boundaries.
 
 Current disposition: 73 handlers audited, 60 tenant-scoped, 12 intentionally
 blocked, one reviewed public exemption, and zero handlers left vulnerable.
@@ -267,6 +269,11 @@ removal and rotation sequence above is a production rollout blocker.
 - `git diff --check`: pass.
 - Full repository lint: 224 pre-existing issues (116 errors, 108 warnings);
   changed files are clean.
+- Final server-boundary audit: 74 total (73 HTTP handlers plus the public login
+  Server Action); no unaudited server entry point.
+- Dependency audit: 38 advisories (29 high, 8 moderate, 1 low). Merge and
+  production rollout require a separately reviewed remediation or explicit
+  security acceptance; no dependency was changed in this tenant-isolation PR.
 
 ## Remediation order
 

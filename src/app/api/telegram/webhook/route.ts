@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyTelegramWebhook } from '@/lib/integrations/telegram-webhook';
+import { PRIVATE_NO_STORE_HEADERS } from '@/lib/security/cache-headers';
 
 export async function POST(request: NextRequest) {
   const verification = verifyTelegramWebhook(
@@ -9,13 +10,13 @@ export async function POST(request: NextRequest) {
   if (verification === 'unconfigured') {
     return NextResponse.json(
       { ok: false, error: 'Telegram integration is unavailable.' },
-      { status: 503 },
+      { status: 503, headers: PRIVATE_NO_STORE_HEADERS },
     );
   }
   if (verification === 'invalid') {
     return NextResponse.json(
       { ok: false, error: 'Unauthorized.' },
-      { status: 401 },
+      { status: 401, headers: PRIVATE_NO_STORE_HEADERS },
     );
   }
 
@@ -25,6 +26,6 @@ export async function POST(request: NextRequest) {
       error:
         'Telegram integration is unavailable until company routing is configured.',
     },
-    { status: 503 },
+    { status: 503, headers: PRIVATE_NO_STORE_HEADERS },
   );
 }
