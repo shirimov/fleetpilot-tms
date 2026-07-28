@@ -63,9 +63,9 @@ boundaries.
 | `/api/loads` | GET | loads | no | no | MEMBER | C | U/X | vulnerable |
 | `/api/loads` | POST | load/relations | no | client company | MEMBER | M | U/X/I | vulnerable |
 | `/api/loads/[id]` | PATCH, DELETE | load/relations | no | no/client company | MEMBER | C/M | U/X/I | vulnerable |
-| `/api/settlements` | GET | settlements | no | indirect truck/load | MEMBER | C | U/X | vulnerable |
-| `/api/settlements` | POST | settlement | no | client relations | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/settlements/[id]` | PATCH, DELETE | settlement | no | indirect truck/load | ADMIN | C/M | U/X/I/R | vulnerable |
+| `/api/settlements` | GET | settlements | yes | parent truck | MEMBER | C | U/X | protected |
+| `/api/settlements` | POST | settlement | yes | verified parents | ADMIN | M | U/X/I/R | protected |
+| `/api/settlements/[id]` | PATCH, DELETE | settlement | yes | parent truck | ADMIN | C/M | U/X/I/R | protected |
 | `/api/inspections/truck` | GET | truck inspections | yes | parent truck | MEMBER | C | U/X | protected |
 | `/api/inspections/truck` | POST | truck inspection | yes | parent truck | MEMBER | M | U/X/I | protected |
 | `/api/inspections/truck/[id]` | GET | truck inspection | yes | parent truck | MEMBER | C | U/X | protected |
@@ -119,10 +119,10 @@ model and product scope exists; no truck record will be treated as a trailer.
 | `/api/escrow` | POST | employee escrow | no | client employee | ADMIN | M | U/X/I/R | vulnerable |
 | `/api/escrow/[id]` | GET | escrow | no | indirect employee | ADMIN | C | U/X/R | vulnerable |
 | `/api/escrow/[id]` | POST | escrow transaction | no | indirect employee | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/reserve` | GET | dispatch reserve | no | no ownership field | ADMIN | C | U/X/R | vulnerable |
-| `/api/reserve` | POST | dispatch reserve | no | no ownership field | ADMIN | M | U/X/I/R | vulnerable |
-| `/api/tmfund` | GET | TM fund | no | global first row | ADMIN | C | U/X/R | vulnerable |
-| `/api/tmfund` | POST | TM fund transaction | no | global/client employee | ADMIN | M | U/X/I/R | vulnerable |
+| `/api/reserve` | GET | dispatch reserve | yes | unavailable | ADMIN | C | U/X/R | blocked |
+| `/api/reserve` | POST | dispatch reserve | yes | unavailable | ADMIN | M | U/X/I/R | blocked |
+| `/api/tmfund` | GET | TM fund | yes | unavailable | ADMIN | C | U/X/R | blocked |
+| `/api/tmfund` | POST | TM fund transaction | yes | unavailable | ADMIN | M | U/X/I/R | blocked |
 
 These models require additive company ownership before safe tenant scoping.
 
@@ -130,31 +130,31 @@ These models require additive company ownership before safe tenant scoping.
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/plaid/create-link-token` | POST | link token | no | no | ADMIN | S/M | U/X/R | vulnerable |
-| `/api/plaid/exchange-token` | POST | access token/accounts | no | client company | ADMIN | C/M/S | U/X/I/R | vulnerable |
-| `/api/plaid/accounts` | GET | bank accounts | no | no | ADMIN | C/S | U/X/R | vulnerable |
-| `/api/plaid/accounts` | DELETE | bank account tree | no | selector only | ADMIN | C/M/S | U/X/I/R | vulnerable |
-| `/api/plaid/transactions` | GET | bank transactions | no | partial selector | ADMIN | C/S | U/X/I/R | vulnerable |
-| `/api/plaid/transactions` | POST | Plaid sync | no | selector only | ADMIN | C/M/S | U/X/I/R | vulnerable |
+| `/api/plaid/create-link-token` | POST | link token | yes | active company | ADMIN | S/M | U/X/R | protected |
+| `/api/plaid/exchange-token` | POST | access token/accounts | yes | active company | ADMIN | C/M/S | U/X/I/R | protected |
+| `/api/plaid/accounts` | GET | bank accounts | yes | direct company | ADMIN | C/S | U/X/R | protected |
+| `/api/plaid/accounts` | DELETE | bank account tree | yes | parent account | ADMIN | C/M/S | U/X/I/R | protected |
+| `/api/plaid/transactions` | GET | bank transactions | yes | parent account | ADMIN | C/S | U/X/I/R | protected |
+| `/api/plaid/transactions` | POST | Plaid sync | yes | parent account | ADMIN | C/M/S | U/X/I/R | protected |
 
 Nullable legacy `BankAccount.companyId` rows must remain hidden until ownership
 is independently reconciled.
 
 ### Finance and integration remediation checklist
 
-- [ ] Settlement list/detail/mutations — scope through `Truck.companyId`; verify
+- [x] Settlement list/detail/mutations — scope through `Truck.companyId`; verify
   load, truck, and driver parents before writes; `MEMBER` read, `ADMIN` write.
-- [ ] Reserve and TM Fund — require `ADMIN` and fail closed until additive
+- [x] Reserve and TM Fund — require `ADMIN` and fail closed until additive
   company ownership is designed; never return the existing global rows.
-- [ ] Plaid link token — authenticated `ADMIN`; no client company selector.
-- [ ] Plaid exchange/sync/accounts — `ADMIN`, derive company from membership,
+- [x] Plaid link token — authenticated `ADMIN`; no client company selector.
+- [x] Plaid exchange/sync/accounts — `ADMIN`, derive company from membership,
   require non-null `BankAccount.companyId`, and scope every child through it.
-- [ ] Upload download — `MEMBER`, allow only inspection paths whose inspection
+- [x] Upload download — `MEMBER`, allow only inspection paths whose inspection
   resolves through a truck owned by the active company; reject all unindexed
   generic paths.
-- [ ] Inbox/IMAP — require `ADMIN` and fail closed until `EmailAccount` has
+- [x] Inbox/IMAP — require `ADMIN` and fail closed until `EmailAccount` has
   reviewed company ownership; do not expose or sync global legacy accounts.
-- [ ] Telegram — validate webhook authenticity and fail closed until a
+- [x] Telegram — validate webhook authenticity and fail closed until a
   persistent integration-to-company mapping exists; do not execute global task
   reads or writes.
 
@@ -166,14 +166,14 @@ Plaid transaction reads; those selectors must be scoped before use.
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/inbox` | GET | emails | no | no ownership field | MEMBER | C/S | U/X | vulnerable |
-| `/api/inbox` | PATCH | email state | no | selector only | MEMBER | C/M | U/X/I | vulnerable |
-| `/api/inbox/accounts` | GET | email credentials metadata | no | no ownership field | ADMIN | C/S | U/X/R | vulnerable |
-| `/api/inbox/accounts` | POST | email credentials | no | no ownership field | ADMIN | M/S | U/X/I/R | vulnerable |
-| `/api/inbox/accounts` | DELETE | account/email tree | no | selector only | ADMIN | C/M/S | U/X/I/R | vulnerable |
-| `/api/inbox/sync` | POST | IMAP sync | no | selector only | ADMIN | C/M/S | U/X/I/R | vulnerable |
-| `/api/uploads/[...path]` | GET | local files | no | path only | MEMBER | C/S | U/X/I/F | vulnerable |
-| `/api/telegram/webhook` | POST | Telegram/task integration | no verified webhook | global tasks | Integration | C/M/S/A | webhook/X/I/G | vulnerable |
+| `/api/inbox` | GET | emails | yes | unavailable | ADMIN | C/S | U/X | blocked |
+| `/api/inbox` | PATCH | email state | yes | unavailable | ADMIN | C/M | U/X/I | blocked |
+| `/api/inbox/accounts` | GET | email credentials metadata | yes | unavailable | ADMIN | C/S | U/X/R | blocked |
+| `/api/inbox/accounts` | POST | email credentials | yes | unavailable | ADMIN | M/S | U/X/I/R | blocked |
+| `/api/inbox/accounts` | DELETE | account/email tree | yes | unavailable | ADMIN | C/M/S | U/X/I/R | blocked |
+| `/api/inbox/sync` | POST | IMAP sync | yes | unavailable | ADMIN | C/M/S | U/X/I/R | blocked |
+| `/api/uploads/[...path]` | GET | inspection files | yes | inspection truck | MEMBER | C/S | U/X/I/F | protected |
+| `/api/telegram/webhook` | POST | Telegram/task integration | verified secret | unavailable | Integration | C/M/S/A | webhook/X/I/G | blocked |
 
 Email accounts need additive company ownership. Upload access needs a
 database-backed ownership lookup rather than path authorization. Telegram needs

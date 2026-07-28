@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { plaidClient } from '@/lib/plaid';
 import { prisma } from '@/lib/prisma';
+import { authorizationService } from '@/lib/auth/authorization';
+import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
 
 export async function POST(req: NextRequest) {
   try {
-    const { public_token, companyId } = await req.json();
+    const context = await authorizationService.requireActiveCompany('ADMIN');
+    const { public_token } = await req.json();
 
     // Exchange public token for access token
     const exchangeResponse = await plaidClient.itemPublicTokenExchange({ public_token });
@@ -31,7 +34,7 @@ export async function POST(req: NextRequest) {
     // Save to DB
     const bankAccount = await prisma.bankAccount.create({
       data: {
-        companyId: companyId || null,
+        companyId: context.companyId,
         plaidItemId: itemId,
         plaidAccessToken: accessToken,
         institutionId,
@@ -56,14 +59,23 @@ export async function POST(req: NextRequest) {
     // Sync transactions (last 30 days)
     await syncTransactions(accessToken, bankAccount.id);
 
-    return NextResponse.json({ success: true, bankAccount });
+    const safeBankAccount = await prisma.bankAccount.findUniqueOrThrow({
+      where: { id: bankAccount.id },
+      select: {
+        id: true,
+        companyId: true,
+        plaidItemId: true,
+        institutionId: true,
+        institutionName: true,
+        lastSync: true,
+        createdAt: true,
+        updatedAt: true,
+        accounts: true,
+      },
+    });
+    return NextResponse.json({ success: true, bankAccount: safeBankAccount });
   } catch (error: unknown) {
-    console.error('Plaid exchange token error:', error);
-    const err = error as { response?: { data?: unknown }; message?: string };
-    return NextResponse.json(
-      { error: 'Failed to connect bank', details: err?.response?.data || err?.message },
-      { status: 500 }
-    );
+    return tenantRouteErrorResponse(error, 'Failed to connect bank');
   }
 }
 

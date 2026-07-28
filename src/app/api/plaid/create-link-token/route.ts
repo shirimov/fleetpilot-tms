@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 import { plaidClient } from '@/lib/plaid';
 import { CountryCode, Products } from 'plaid';
+import { authorizationService } from '@/lib/auth/authorization';
+import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
 
 export async function POST() {
   try {
+    const context = await authorizationService.requireActiveCompany('ADMIN');
     const response = await plaidClient.linkTokenCreate({
-      user: { client_user_id: 'fleetpilot-user' },
+      user: { client_user_id: `${context.user.id}:${context.companyId}` },
       client_name: 'FleetPilot TMS',
       products: [Products.Transactions],
       country_codes: [CountryCode.Us],
@@ -13,11 +16,6 @@ export async function POST() {
     });
     return NextResponse.json({ link_token: response.data.link_token });
   } catch (error: unknown) {
-    console.error('Plaid create link token error:', error);
-    const err = error as { response?: { data?: unknown }; message?: string };
-    return NextResponse.json(
-      { error: 'Failed to create link token', details: err?.response?.data || err?.message },
-      { status: 500 }
-    );
+    return tenantRouteErrorResponse(error, 'Failed to create link token');
   }
 }

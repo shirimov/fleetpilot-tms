@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { plaidClient } from '@/lib/plaid';
+import { authorizationService } from '@/lib/auth/authorization';
+import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
+import { financialAuthorizationService } from '@/lib/finance/financial-authorization';
 
 export async function GET(req: NextRequest) {
   try {
+    const context = await authorizationService.requireActiveCompany('ADMIN');
     const { searchParams } = new URL(req.url);
     const bankAccountId = searchParams.get('bankAccountId');
     const days = parseInt(searchParams.get('days') || '30');
@@ -11,7 +15,10 @@ export async function GET(req: NextRequest) {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
-    const where: Record<string, unknown> = { date: { gte: since } };
+    const where: Record<string, unknown> = {
+      date: { gte: since },
+      bankAccount: { companyId: context.companyId },
+    };
     if (bankAccountId) where.bankAccountId = bankAccountId;
 
     const transactions = await prisma.bankTransaction.findMany({
@@ -30,8 +37,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ transactions, summary: { income, expenses, net: income - expenses } });
   } catch (error) {
-    console.error('Get transactions error:', error);
-    return NextResponse.json({ error: 'Failed to fetch transactions' }, { status: 500 });
+    return tenantRouteErrorResponse(error, 'Failed to fetch transactions');
   }
 }
 
@@ -39,12 +45,14 @@ export async function POST(req: NextRequest) {
   // Sync latest transactions
   try {
     const { bankAccountId } = await req.json();
+    const context =
+      await financialAuthorizationService.requireBankAccount(bankAccountId);
 
-    const bankAccount = await prisma.bankAccount.findUnique({
-      where: { id: bankAccountId },
+    const bankAccount = await prisma.bankAccount.findFirst({
+      where: { id: bankAccountId, companyId: context.companyId },
       include: { accounts: true },
     });
-    if (!bankAccount) return NextResponse.json({ error: 'Bank account not found' }, { status: 404 });
+    if (!bankAccount) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 30);
@@ -84,13 +92,12 @@ export async function POST(req: NextRequest) {
     }
 
     await prisma.bankAccount.update({
-      where: { id: bankAccountId },
+      where: { id: bankAccountId, companyId: context.companyId },
       data: { lastSync: new Date() },
     });
 
     return NextResponse.json({ success: true, synced });
   } catch (error) {
-    console.error('Sync transactions error:', error);
-    return NextResponse.json({ error: 'Failed to sync transactions' }, { status: 500 });
+    return tenantRouteErrorResponse(error, 'Failed to sync transactions');
   }
 }
