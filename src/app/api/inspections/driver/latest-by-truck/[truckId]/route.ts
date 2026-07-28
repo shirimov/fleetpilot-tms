@@ -1,23 +1,32 @@
-import { NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
+import { fleetRouteErrorResponse } from '@/lib/fleet/fleet-route-response';
 
 // Returns the most recent driver orientation for the driver currently assigned to this truck
 export async function GET(_: Request, { params }: { params: Promise<{ truckId: string }> }) {
-  const { truckId } = await params
+  const { truckId } = await params;
   try {
-    // Find driver assigned to this truck
-    const driver = await prisma.driver.findFirst({ where: { truckId } })
-    if (!driver) return NextResponse.json(null)
+    const context = await fleetAuthorizationService.requireTruck(truckId);
+    const driver = await prisma.driver.findFirst({
+      where: {
+        truckId,
+        companyId: context.companyId,
+      },
+    });
+    if (!driver) return NextResponse.json(null);
 
     const orientation = await prisma.driverOrientation.findFirst({
-      where: { driverId: driver.id },
+      where: {
+        driverId: driver.id,
+        driver: { companyId: context.companyId },
+      },
       orderBy: { completedAt: 'desc' },
       include: { driver: { select: { firstName: true, lastName: true } } },
-    })
-    if (!orientation) return NextResponse.json(null)
-    return NextResponse.json(orientation)
-  } catch (err) {
-    console.error(err)
-    return NextResponse.json({ error: 'Failed to fetch' }, { status: 500 })
+    });
+    if (!orientation) return NextResponse.json(null);
+    return NextResponse.json(orientation);
+  } catch (error) {
+    return fleetRouteErrorResponse(error, 'Failed to fetch');
   }
 }

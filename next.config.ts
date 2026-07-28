@@ -11,6 +11,13 @@ export default withPWA({
   workboxOptions: {
     skipWaiting: true,
     clientsClaim: true,
+    runtimeCaching: [
+      {
+        urlPattern: /\/api\//,
+        handler: "NetworkOnly",
+        method: "GET",
+      },
+    ],
   },
   disable: process.env.NODE_ENV === "development",
 })(nextConfig);

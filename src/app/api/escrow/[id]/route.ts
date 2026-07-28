@@ -1,40 +1,69 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { workforceAuthorizationService } from '@/lib/workforce/workforce-authorization';
+import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
 
-// POST a transaction (deposit or deduction) to an escrow account
-export async function POST(req: NextRequest, props: { params: Promise<{ id: string }> }) {
-  const { id } = await props.params
-  const data = await req.json()
-  const amount = parseFloat(data.amount)
-  const delta = data.type === 'DEPOSIT' ? amount : -amount
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params;
+    const context = await workforceAuthorizationService.requireEscrow(id);
+    const data = await request.json();
+    const amount = parseFloat(data.amount);
+    const delta = data.type === 'DEPOSIT' ? amount : -amount;
 
-  const escrow = await prisma.employeeEscrow.findUnique({ where: { id } })
-  if (!escrow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-  const [tx] = await prisma.$transaction([
-    prisma.escrowTx.create({
-      data: {
-        escrowId: id,
-        amount,
-        type: data.type,
-        description: data.description,
-        date: data.date ? new Date(data.date) : new Date(),
-      },
-    }),
-    prisma.employeeEscrow.update({
-      where: { id },
-      data: { balance: escrow.balance + delta },
-    }),
-  ])
-
-  return NextResponse.json(tx)
+    const transaction = await prisma.$transaction(async (database) => {
+      const escrow = await database.employeeEscrow.findUnique({
+        where: { id },
+      });
+      if (!escrow) return null;
+      const employee = await database.employee.findFirst({
+        where: {
+          id: escrow.employeeId,
+          companyId: context.companyId,
+        },
+        select: { id: true },
+      });
+      if (!employee) return null;
+      const escrowTransaction = await database.escrowTx.create({
+        data: {
+          escrowId: id,
+          amount,
+          type: data.type,
+          description: data.description,
+          date: data.date ? new Date(data.date) : new Date(),
+        },
+      });
+      await database.employeeEscrow.update({
+        where: { id },
+        data: { balance: escrow.balance + delta },
+      });
+      return escrowTransaction;
+    });
+    if (!transaction) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    return NextResponse.json(transaction);
+  } catch (error) {
+    return tenantRouteErrorResponse(error, 'Failed to update escrow');
+  }
 }
 
-export async function GET(_: NextRequest, props: { params: Promise<{ id: string }> }) {
-  const { id } = await props.params
-  const escrow = await prisma.employeeEscrow.findUnique({
-    where: { id },
-    include: { transactions: { orderBy: { createdAt: 'desc' } } },
-  })
-  return NextResponse.json(escrow)
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params;
+    await workforceAuthorizationService.requireEscrow(id);
+    const escrow = await prisma.employeeEscrow.findUnique({
+      where: { id },
+      include: { transactions: { orderBy: { createdAt: 'desc' } } },
+    });
+    return NextResponse.json(escrow);
+  } catch (error) {
+    return tenantRouteErrorResponse(error, 'Failed to fetch escrow');
+  }
 }
