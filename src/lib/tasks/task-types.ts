@@ -35,6 +35,14 @@ export type UpdateTaskCardInput = {
   order?: number;
 };
 
+export type MoveTaskCardInput = {
+  cardId: string;
+  sourceBoardId: string;
+  destinationBoardId: string;
+  destinationIndex: number;
+  expectedUpdatedAt?: Date;
+};
+
 export type TaskActivityEvent = {
   action: TaskActivityAction;
   projectId: string;

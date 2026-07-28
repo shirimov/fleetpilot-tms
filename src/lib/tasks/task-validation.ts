@@ -2,6 +2,7 @@ import type { TaskPriority, TaskStatus } from '@prisma/client';
 import type {
   CreateTaskCardInput,
   CreateTaskProjectInput,
+  MoveTaskCardInput,
   UpdateTaskCardInput,
 } from './task-types';
 
@@ -152,4 +153,43 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
 
 export function validateTaskCardId(value: string | null): string {
   return requiredString(value, 'id');
+}
+
+export function validateRequiredProjectId(value: string | null): string {
+  return requiredString(value, 'projectId');
+}
+
+export function validateMoveTaskCardInput(
+  cardId: string,
+  value: unknown,
+): MoveTaskCardInput {
+  const body = requireObject(value);
+
+  if (!Number.isInteger(body.destinationIndex) || (body.destinationIndex as number) < 0) {
+    throw new TaskValidationError(
+      'destinationIndex must be a non-negative integer.',
+    );
+  }
+
+  let expectedUpdatedAt: Date | undefined;
+  if (body.expectedUpdatedAt !== undefined) {
+    if (typeof body.expectedUpdatedAt !== 'string') {
+      throw new TaskValidationError('expectedUpdatedAt must be a valid date string.');
+    }
+    expectedUpdatedAt = new Date(body.expectedUpdatedAt);
+    if (Number.isNaN(expectedUpdatedAt.getTime())) {
+      throw new TaskValidationError('expectedUpdatedAt must be a valid date string.');
+    }
+  }
+
+  return {
+    cardId: requiredString(cardId, 'id'),
+    sourceBoardId: requiredString(body.sourceBoardId, 'sourceBoardId'),
+    destinationBoardId: requiredString(
+      body.destinationBoardId,
+      'destinationBoardId',
+    ),
+    destinationIndex: body.destinationIndex as number,
+    expectedUpdatedAt,
+  };
 }

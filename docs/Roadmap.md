@@ -6,7 +6,7 @@ Goal: Create the operational foundation used by every FleetPilot module.
 
 Deliverables:
 
-- professional Kanban
+- professional Kanban — Sprint 4 complete
 - list view
 - task details
 - employee assignment

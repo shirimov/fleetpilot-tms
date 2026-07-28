@@ -421,6 +421,7 @@ model TaskBoard {
   name String
   order Int @default(0)
   color String? @default("#e5e7eb")
+  status TaskStatus?
   cards TaskCard[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

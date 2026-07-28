@@ -1,5 +1,13 @@
 import { NextResponse } from 'next/server';
-import { TaskNotFoundError } from './task-service';
+import {
+  InvalidTaskDestinationIndexError,
+  TaskBoardNotFoundError,
+  TaskBoardProjectMismatchError,
+  TaskBoardStatusUnmappedError,
+  TaskMoveConflictError,
+  TaskNotFoundError,
+  TaskProjectNotFoundError,
+} from './task-errors';
 import { TaskValidationError } from './task-validation';
 
 export async function parseTaskRequestBody(request: Request): Promise<unknown> {
@@ -17,6 +25,27 @@ export function taskRouteErrorResponse(error: unknown): NextResponse {
 
   if (error instanceof TaskNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+
+  if (
+    error instanceof TaskProjectNotFoundError ||
+    error instanceof TaskBoardNotFoundError
+  ) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+
+  if (
+    error instanceof TaskMoveConflictError ||
+    error instanceof TaskBoardStatusUnmappedError
+  ) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+
+  if (
+    error instanceof TaskBoardProjectMismatchError ||
+    error instanceof InvalidTaskDestinationIndexError
+  ) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
   console.error('Task route failed', {
