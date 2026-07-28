@@ -25,27 +25,89 @@ enum DriverPayType {
 }
 
 enum LoadStatus {
+  DRAFT
+  PLANNED
+  ASSIGNED
+  DISPATCHED
+  PICKED_UP
   PENDING
   IN_TRANSIT
   DELIVERED
+  POD_UPLOADED
+  INVOICED
+  PAID
   CANCELLED
 }
 
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TrailerEquipmentType {
+  DRY_VAN
+  REEFER
+  FLATBED
+  STEP_DECK
+  POWER_ONLY
+  OTHER
+}
+
+enum TrailerStatus {
+  AVAILABLE
+  ASSIGNED
+  IN_TRANSIT
+  MAINTENANCE
+  OUT_OF_SERVICE
+  INACTIVE
+}
+
+enum LoadStopType {
+  PICKUP
+  DELIVERY
+}
+
+enum DispatchDocumentType {
+  RATE_CONFIRMATION
+  BOL
+  POD
+  RECEIPT
+  TRAILER_REGISTRATION
+  TRAILER_INSURANCE
+  TRAILER_INSPECTION
+  OTHER
+}
+
+enum LoadActivityAction {
+  LOAD_CREATED
+  LOAD_UPDATED
+  STATUS_CHANGED
+  ASSIGNMENT_CHANGED
+  STOP_CREATED
+  STOP_UPDATED
+  STOP_DELETED
+  DOCUMENT_ADDED
+  DOCUMENT_REMOVED
+}
+
 model Company {
-  id        String   @id @default(cuid())
-  name      String
-  dotNumber String?
-  mcNumber  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  trucks    Truck[]
-  loads     Load[]
-  bankAccounts BankAccount[]
-  taskProjects TaskProject[]
-  memberships CompanyMembership[]
-  activeUsers User[] @relation("ActiveCompany")
-  companyDrivers Driver[] @relation("DriverCompany")
-  employees Employee[]
+  id             String              @id @default(cuid())
+  name           String
+  dotNumber      String?
+  mcNumber       String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  trucks         Truck[]
+  loads          Load[]
+  bankAccounts   BankAccount[]
+  taskProjects   TaskProject[]
+  memberships    CompanyMembership[]
+  activeUsers    User[]              @relation("ActiveCompany")
+  companyDrivers Driver[]            @relation("DriverCompany")
+  employees      Employee[]
+  customers      Customer[]
+  trailers       Trailer[]
+  loadActivities LoadActivity[]
 }
 
 enum CompanyMembershipRole {
@@ -65,14 +127,17 @@ model User {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  authAccounts   AuthAccount[]
-  memberships    CompanyMembership[]
-  taskComments   TaskComment[]
-  taskActivities TaskActivity[]
-  taskChecklistItems TaskChecklistItem[]
-  taskAttachments TaskAttachment[]
-  taskMentions TaskMention[] @relation("MentionedTaskUser")
-  createdTaskMentions TaskMention[] @relation("TaskMentionCreator")
+  authAccounts             AuthAccount[]
+  memberships              CompanyMembership[]
+  taskComments             TaskComment[]
+  taskActivities           TaskActivity[]
+  taskChecklistItems       TaskChecklistItem[]
+  taskAttachments          TaskAttachment[]
+  taskMentions             TaskMention[]       @relation("MentionedTaskUser")
+  createdTaskMentions      TaskMention[]       @relation("TaskMentionCreator")
+  loadActivities           LoadActivity[]
+  uploadedLoadDocuments    LoadDocument[]
+  uploadedTrailerDocuments TrailerDocument[]
 
   @@index([activeCompanyId])
 }
@@ -107,69 +172,226 @@ model CompanyMembership {
 }
 
 model Truck {
-  id          String      @id @default(cuid())
-  unitNumber  String      @unique
-  vin         String?
-  year        Int?
-  make        String?
-  model       String?
-  status      TruckStatus @default(ACTIVE)
-  companyId   String
-  company     Company     @relation(fields: [companyId], references: [id])
-  cabType     CabType     @default(SLEEPER)
-  isOwnerOp   Boolean     @default(false)
-  ownerName   String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id               String            @id @default(cuid())
+  unitNumber       String            @unique
+  vin              String?
+  year             Int?
+  make             String?
+  model            String?
+  status           TruckStatus       @default(ACTIVE)
+  companyId        String
+  company          Company           @relation(fields: [companyId], references: [id])
+  cabType          CabType           @default(SLEEPER)
+  isOwnerOp        Boolean           @default(false)
+  ownerName        String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
   drivers          Driver[]
   loads            Load[]
   settlements      Settlement[]
   truckInspections TruckInspection[]
 }
 
-model Driver {
-  id         String        @id @default(cuid())
-  companyId  String?
-  company    Company?      @relation("DriverCompany", fields: [companyId], references: [id])
-  firstName  String
-  lastName   String
-  phone      String?
+model Customer {
+  id        String            @id @default(cuid())
+  companyId String
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String
+  status    CustomerStatus    @default(ACTIVE)
+  mcNumber  String?
+  dotNumber String?
+  email     String?
+  phone     String?
+  notes     String?           @db.Text
+  contacts  CustomerContact[]
+  loads     Load[]
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId, status, name])
+}
+
+model CustomerContact {
+  id         String     @id @default(cuid())
+  customerId String
+  customer   Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name       String
+  title      String?
   email      String?
-  licenseNum String?
-  payType    DriverPayType @default(PERCENTAGE)
-  payRate    Float
-  truckId    String?
-  truck      Truck?        @relation(fields: [truckId], references: [id])
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-  loads               Load[]
-  settlements         Settlement[]
-  driverOrientations  DriverOrientation[]
+  phone      String?
+  notes      String?    @db.Text
+  loadStops  LoadStop[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([customerId, name])
+}
+
+model Trailer {
+  id            String               @id @default(cuid())
+  companyId     String
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unitNumber    String
+  equipmentType TrailerEquipmentType @default(DRY_VAN)
+  status        TrailerStatus        @default(AVAILABLE)
+  vin           String?
+  plate         String?
+  state         String?
+  notes         String?              @db.Text
+  loads         Load[]
+  documents     TrailerDocument[]
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@unique([companyId, unitNumber])
+  @@index([companyId, status, equipmentType])
+}
+
+model Driver {
+  id                 String              @id @default(cuid())
+  companyId          String?
+  company            Company?            @relation("DriverCompany", fields: [companyId], references: [id])
+  firstName          String
+  lastName           String
+  phone              String?
+  email              String?
+  licenseNum         String?
+  payType            DriverPayType       @default(PERCENTAGE)
+  payRate            Float
+  truckId            String?
+  truck              Truck?              @relation(fields: [truckId], references: [id])
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  loads              Load[]
+  settlements        Settlement[]
+  driverOrientations DriverOrientation[]
 
   @@index([companyId])
 }
 
 model Load {
-  id           String     @id @default(cuid())
-  loadNumber   String     @unique
-  referenceNum String?
-  status       LoadStatus @default(PENDING)
-  origin       String
-  destination  String
-  pickupDate   DateTime?
-  deliveryDate DateTime?
-  miles        Float?
-  rate         Float
-  fuelSurcharge Float?    @default(0)
-  truckId      String
-  truck        Truck      @relation(fields: [truckId], references: [id])
-  driverId     String?
-  driver       Driver?    @relation(fields: [driverId], references: [id])
-  companyId    String
-  company      Company    @relation(fields: [companyId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  settlement   Settlement?
+  id            String         @id @default(cuid())
+  loadNumber    String         @unique
+  referenceNum  String?
+  status        LoadStatus     @default(DRAFT)
+  origin        String
+  destination   String
+  pickupDate    DateTime?
+  deliveryDate  DateTime?
+  miles         Float?
+  rate          Float
+  fuelSurcharge Float?         @default(0)
+  truckId       String?
+  truck         Truck?         @relation(fields: [truckId], references: [id])
+  driverId      String?
+  driver        Driver?        @relation(fields: [driverId], references: [id])
+  trailerId     String?
+  trailer       Trailer?       @relation(fields: [trailerId], references: [id])
+  customerId    String?
+  customer      Customer?      @relation(fields: [customerId], references: [id])
+  companyId     String
+  company       Company        @relation(fields: [companyId], references: [id])
+  notes         String?        @db.Text
+  invoiceNumber String?
+  stops         LoadStop[]
+  documents     LoadDocument[]
+  activities    LoadActivity[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  settlement    Settlement?
+
+  @@index([companyId, status, pickupDate])
+  @@index([companyId, truckId, pickupDate, deliveryDate])
+  @@index([companyId, driverId, pickupDate, deliveryDate])
+  @@index([companyId, trailerId, pickupDate, deliveryDate])
+  @@index([customerId])
+}
+
+model LoadStop {
+  id               String           @id @default(cuid())
+  loadId           String
+  load             Load             @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  type             LoadStopType
+  order            Int
+  facilityName     String
+  addressLine1     String?
+  addressLine2     String?
+  city             String
+  state            String?
+  postalCode       String?
+  country          String           @default("US")
+  contactId        String?
+  contact          CustomerContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactName      String?
+  contactPhone     String?
+  appointmentStart DateTime?
+  appointmentEnd   DateTime?
+  arrivedAt        DateTime?
+  departedAt       DateTime?
+  notes            String?          @db.Text
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([loadId, order])
+  @@index([loadId, type, order])
+  @@index([contactId])
+}
+
+model LoadDocument {
+  id               String               @id @default(cuid())
+  loadId           String
+  load             Load                 @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  type             DispatchDocumentType
+  originalFilename String
+  displayFilename  String
+  mimeType         String
+  byteSize         Int
+  storageKey       String               @unique
+  uploaderUserId   String?
+  uploaderUser     User?                @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime             @default(now())
+
+  @@index([loadId, type, createdAt])
+  @@index([uploaderUserId])
+}
+
+model TrailerDocument {
+  id               String               @id @default(cuid())
+  trailerId        String
+  trailer          Trailer              @relation(fields: [trailerId], references: [id], onDelete: Cascade)
+  type             DispatchDocumentType
+  originalFilename String
+  displayFilename  String
+  mimeType         String
+  byteSize         Int
+  storageKey       String               @unique
+  expiresAt        DateTime?
+  uploaderUserId   String?
+  uploaderUser     User?                @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime             @default(now())
+
+  @@index([trailerId, type, createdAt])
+  @@index([uploaderUserId])
+}
+
+model LoadActivity {
+  id          String             @id @default(cuid())
+  companyId   String
+  company     Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  loadId      String?
+  load        Load?              @relation(fields: [loadId], references: [id], onDelete: SetNull)
+  loadNumber  String
+  action      LoadActivityAction
+  actorUserId String?
+  actorUser   User?              @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  metadata    Json?
+  occurredAt  DateTime           @default(now())
+  createdAt   DateTime           @default(now())
+
+  @@index([companyId, occurredAt, id])
+  @@index([loadId, occurredAt, id])
+  @@index([actorUserId, occurredAt, id])
 }
 
 model Settlement {
@@ -194,97 +416,97 @@ model Settlement {
 }
 
 model TruckInspection {
-  id          String   @id @default(cuid())
-  truckId     String
-  truck       Truck    @relation(fields: [truckId], references: [id])
-  inspectedBy String
-  inspectedAt DateTime @default(now())
-  phase1      Json
-  phase2      Json
-  phase3      Json
+  id             String   @id @default(cuid())
+  truckId        String
+  truck          Truck    @relation(fields: [truckId], references: [id])
+  inspectedBy    String
+  inspectedAt    DateTime @default(now())
+  phase1         Json
+  phase2         Json
+  phase3         Json
   currentMileage Int?
-  notes       String?
-  passed      Boolean  @default(true)
-  photos      Json?
-  createdAt   DateTime @default(now())
+  notes          String?
+  passed         Boolean  @default(true)
+  photos         Json?
+  createdAt      DateTime @default(now())
 }
 
 model BankAccount {
-  id              String        @id @default(cuid())
-  companyId       String?
-  company         Company?      @relation(fields: [companyId], references: [id])
-  plaidItemId     String        @unique
+  id               String            @id @default(cuid())
+  companyId        String?
+  company          Company?          @relation(fields: [companyId], references: [id])
+  plaidItemId      String            @unique
   plaidAccessToken String
-  institutionId   String?
-  institutionName String?
-  accounts        BankSubAccount[]
-  transactions    BankTransaction[]
-  lastSync        DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  institutionId    String?
+  institutionName  String?
+  accounts         BankSubAccount[]
+  transactions     BankTransaction[]
+  lastSync         DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 }
 
 model BankSubAccount {
-  id              String      @id @default(cuid())
-  bankAccountId   String
-  bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id])
-  plaidAccountId  String      @unique
-  name            String
-  officialName    String?
-  type            String
-  subtype         String?
-  mask            String?
-  currentBalance  Float?
+  id               String            @id @default(cuid())
+  bankAccountId    String
+  bankAccount      BankAccount       @relation(fields: [bankAccountId], references: [id])
+  plaidAccountId   String            @unique
+  name             String
+  officialName     String?
+  type             String
+  subtype          String?
+  mask             String?
+  currentBalance   Float?
   availableBalance Float?
-  transactions    BankTransaction[]
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  transactions     BankTransaction[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 }
 
 model BankTransaction {
-  id              String       @id @default(cuid())
-  bankAccountId   String
-  bankAccount     BankAccount  @relation(fields: [bankAccountId], references: [id])
-  subAccountId    String?
-  subAccount      BankSubAccount? @relation(fields: [subAccountId], references: [id])
-  plaidTransactionId String    @unique
-  date            DateTime
-  amount          Float
-  name            String
-  merchantName    String?
-  category        String?
-  subCategory     String?
-  pending         Boolean      @default(false)
-  notes           String?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  id                 String          @id @default(cuid())
+  bankAccountId      String
+  bankAccount        BankAccount     @relation(fields: [bankAccountId], references: [id])
+  subAccountId       String?
+  subAccount         BankSubAccount? @relation(fields: [subAccountId], references: [id])
+  plaidTransactionId String          @unique
+  date               DateTime
+  amount             Float
+  name               String
+  merchantName       String?
+  category           String?
+  subCategory        String?
+  pending            Boolean         @default(false)
+  notes              String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
 }
 
 model EmailAccount {
-  id          String   @id @default(cuid())
-  email       String   @unique
-  label       String
-  password    String
-  imapHost    String   @default("imap.gmail.com")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  emails      Email[]
+  id        String   @id @default(cuid())
+  email     String   @unique
+  label     String
+  password  String
+  imapHost  String   @default("imap.gmail.com")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  emails    Email[]
 }
 
 model Email {
-  id            String       @id @default(cuid())
-  accountId     String
-  account       EmailAccount @relation(fields: [accountId], references: [id])
-  messageId     String
-  from          String
-  subject       String
-  date          DateTime
-  body          String       @db.Text
-  isRead        Boolean      @default(false)
-  isHandled     Boolean      @default(false)
-  priority      String       @default("normal")
-  category      String?
-  createdAt     DateTime     @default(now())
+  id        String       @id @default(cuid())
+  accountId String
+  account   EmailAccount @relation(fields: [accountId], references: [id])
+  messageId String
+  from      String
+  subject   String
+  date      DateTime
+  body      String       @db.Text
+  isRead    Boolean      @default(false)
+  isHandled Boolean      @default(false)
+  priority  String       @default("normal")
+  category  String?
+  createdAt DateTime     @default(now())
 
   @@unique([accountId, messageId])
 }
@@ -307,44 +529,44 @@ enum PaymentStatus {
 }
 
 model Employee {
-  id            String       @id @default(cuid())
+  id            String            @id @default(cuid())
   companyId     String?
-  company       Company?     @relation(fields: [companyId], references: [id])
+  company       Company?          @relation(fields: [companyId], references: [id])
   firstName     String
   lastName      String
-  role          EmployeeRole @default(DISPATCHER)
+  role          EmployeeRole      @default(DISPATCHER)
   roleCustom    String?
   phone         String?
   email         String?
-  country       String       @default("Turkmenistan")
+  country       String            @default("Turkmenistan")
   city          String?
-  region        String?      // Mary, Ashgabat, Balkan, Dashoguz, Lebap
+  region        String? // Mary, Ashgabat, Balkan, Dashoguz, Lebap
   salary        Float?
-  currency      String       @default("USD")
-  paymentMethod String       @default("Bank Transfer")
+  currency      String            @default("USD")
+  paymentMethod String            @default("Bank Transfer")
   startDate     DateTime?
-  isActive      Boolean      @default(true)
+  isActive      Boolean           @default(true)
   notes         String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
   payments      EmployeePayment[]
 
   @@index([companyId])
 }
 
 model EmployeePayment {
-  id          String        @id @default(cuid())
-  employeeId  String
-  employee    Employee      @relation(fields: [employeeId], references: [id])
-  amount      Float
-  currency    String        @default("USD")
-  period      String        // e.g. "2026-04"
-  method      String        @default("Bank Transfer")
-  status      PaymentStatus @default(PENDING)
-  paidAt      DateTime?
-  notes       String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id         String        @id @default(cuid())
+  employeeId String
+  employee   Employee      @relation(fields: [employeeId], references: [id])
+  amount     Float
+  currency   String        @default("USD")
+  period     String // e.g. "2026-04"
+  method     String        @default("Bank Transfer")
+  status     PaymentStatus @default(PENDING)
+  paidAt     DateTime?
+  notes      String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
 }
 
 enum TmFundTxType {
@@ -355,13 +577,13 @@ enum TmFundTxType {
 }
 
 model TmFund {
-  id           String         @id @default(cuid())
-  name         String         @default("Turkmenistan Fund")
-  balance      Float          @default(0)
-  currency     String         @default("USD")
+  id           String     @id @default(cuid())
+  name         String     @default("Turkmenistan Fund")
+  balance      Float      @default(0)
+  currency     String     @default("USD")
   notes        String?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
   transactions TmFundTx[]
 }
 
@@ -372,7 +594,7 @@ model TmFundTx {
   type        TmFundTxType
   amount      Float
   description String
-  region      String?      // Mary, Ashgabat, Balkan, Dashoguz, Lebap
+  region      String? // Mary, Ashgabat, Balkan, Dashoguz, Lebap
   employeeId  String?
   paymentRef  String?
   date        DateTime     @default(now())
@@ -381,32 +603,32 @@ model TmFundTx {
 }
 
 model DispatchReserve {
-  id           String   @id @default(cuid())
-  amount       Float
-  description  String
-  period       String
-  createdAt    DateTime @default(now())
+  id          String   @id @default(cuid())
+  amount      Float
+  description String
+  period      String
+  createdAt   DateTime @default(now())
 }
 
 model EmployeeEscrow {
-  id          String          @id @default(cuid())
-  employeeId  String          @unique
-  balance     Float           @default(0)
-  target      Float           @default(0)  // should equal salary/weight pay
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id           String     @id @default(cuid())
+  employeeId   String     @unique
+  balance      Float      @default(0)
+  target       Float      @default(0) // should equal salary/weight pay
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
   transactions EscrowTx[]
 }
 
 model EscrowTx {
-  id          String        @id @default(cuid())
+  id          String         @id @default(cuid())
   escrowId    String
   escrow      EmployeeEscrow @relation(fields: [escrowId], references: [id])
   amount      Float
-  type        String        // DEPOSIT, DEDUCTION
+  type        String // DEPOSIT, DEDUCTION
   description String
-  date        DateTime      @default(now())
-  createdAt   DateTime      @default(now())
+  date        DateTime       @default(now())
+  createdAt   DateTime       @default(now())
 }
 
 model DriverOrientation {
@@ -420,7 +642,6 @@ model DriverOrientation {
   notes       String?
   createdAt   DateTime @default(now())
 }
-
 
 // ============ TASK MANAGER ============
 
@@ -486,96 +707,96 @@ enum TaskMentionSourceType {
 }
 
 model TaskProject {
-  id String @id @default(cuid())
-  name String
+  id          String         @id @default(cuid())
+  name        String
   description String?
-  color String? @default("#3b82f6")
-  icon String? @default("📋")
-  companyId String?
-  company Company? @relation(fields: [companyId], references: [id])
-  isArchived Boolean @default(false)
-  boards TaskBoard[]
-  cards TaskCard[]
-  activities TaskActivity[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  color       String?        @default("#3b82f6")
+  icon        String?        @default("📋")
+  companyId   String?
+  company     Company?       @relation(fields: [companyId], references: [id])
+  isArchived  Boolean        @default(false)
+  boards      TaskBoard[]
+  cards       TaskCard[]
+  activities  TaskActivity[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   @@index([companyId])
 }
 
 model TaskBoard {
-  id String @id @default(cuid())
+  id        String      @id @default(cuid())
   projectId String
-  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  name String
-  order Int @default(0)
-  color String? @default("#e5e7eb")
-  status TaskStatus?
-  cards TaskCard[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  project   TaskProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  order     Int         @default(0)
+  color     String?     @default("#e5e7eb")
+  status    TaskStatus?
+  cards     TaskCard[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
 }
 
 model TaskCard {
-  id String @id @default(cuid())
-  projectId String
-  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  boardId String
-  board TaskBoard @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  title String
-  description String? @db.Text
-  order Int @default(0)
-  priority TaskPriority @default(MEDIUM)
-  status TaskStatus @default(TODO)
-  assignedTo String?
-  dueDate DateTime?
-  labels TaskLabel[]
-  comments TaskComment[]
+  id             String              @id @default(cuid())
+  projectId      String
+  project        TaskProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  boardId        String
+  board          TaskBoard           @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?             @db.Text
+  order          Int                 @default(0)
+  priority       TaskPriority        @default(MEDIUM)
+  status         TaskStatus          @default(TODO)
+  assignedTo     String?
+  dueDate        DateTime?
+  labels         TaskLabel[]
+  comments       TaskComment[]
   checklistItems TaskChecklistItem[]
-  attachments TaskAttachment[]
-  mentions TaskMention[]
-  activities TaskActivity[]
-  startDate DateTime?
-  completedAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  attachments    TaskAttachment[]
+  mentions       TaskMention[]
+  activities     TaskActivity[]
+  startDate      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
 }
 
 model TaskLabel {
-  id String @id @default(cuid())
-  cardId String
-  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  name String
-  color String @default("#f3f4f6")
+  id        String   @id @default(cuid())
+  cardId    String
+  card      TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  name      String
+  color     String   @default("#f3f4f6")
   createdAt DateTime @default(now())
 }
 
 model TaskComment {
-  id String @id @default(cuid())
-  cardId String
-  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  author String
+  id           String        @id @default(cuid())
+  cardId       String
+  card         TaskCard      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  author       String
   authorUserId String?
-  authorUser User? @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
-  content String @db.Text
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  mentions TaskMention[]
+  authorUser   User?         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  content      String        @db.Text
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  mentions     TaskMention[]
 
   @@index([authorUserId])
 }
 
 model TaskChecklistItem {
-  id String @id @default(cuid())
-  cardId String
-  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  content String
-  isCompleted Boolean @default(false)
-  order Int @default(0)
+  id              String   @id @default(cuid())
+  cardId          String
+  card            TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  content         String
+  isCompleted     Boolean  @default(false)
+  order           Int      @default(0)
   createdByUserId String?
-  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdByUser   User?    @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([cardId, order, id])
   @@index([createdByUserId])
@@ -598,9 +819,9 @@ model TaskActivity {
   occurredAt  DateTime               @default(now())
   createdAt   DateTime               @default(now())
 
-  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  card    TaskCard?   @relation(fields: [cardId], references: [id], onDelete: SetNull)
-  actorUser User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  project   TaskProject @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  card      TaskCard?   @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  actorUser User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([projectId, occurredAt, id])
   @@index([cardId, occurredAt, id])
@@ -611,41 +832,41 @@ model TaskActivity {
 }
 
 model TaskAttachment {
-  id String @id @default(cuid())
-  cardId String
-  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  name String
-  url String
-  size Int?
-  mimeType String?
-  uploadedBy String
-  uploaderUserId String?
-  uploaderUser User? @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
+  id               String   @id @default(cuid())
+  cardId           String
+  card             TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  name             String
+  url              String
+  size             Int?
+  mimeType         String?
+  uploadedBy       String
+  uploaderUserId   String?
+  uploaderUser     User?    @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
   originalFilename String?
-  displayFilename String?
-  storageKey String? @unique
-  byteSize Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  displayFilename  String?
+  storageKey       String?  @unique
+  byteSize         Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
 
   @@index([cardId, createdAt, id])
   @@index([uploaderUserId])
 }
 
 model TaskMention {
-  id String @id @default(cuid())
-  cardId String
-  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  commentId String?
-  comment TaskComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
-  mentionedUserId String?
-  mentionedUser User? @relation("MentionedTaskUser", fields: [mentionedUserId], references: [id], onDelete: SetNull)
+  id                   String                @id @default(cuid())
+  cardId               String
+  card                 TaskCard              @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  commentId            String?
+  comment              TaskComment?          @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  mentionedUserId      String?
+  mentionedUser        User?                 @relation("MentionedTaskUser", fields: [mentionedUserId], references: [id], onDelete: SetNull)
   mentionedDisplayName String
-  sourceType TaskMentionSourceType
-  createdByUserId String?
-  createdByUser User? @relation("TaskMentionCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  resolvedAt DateTime?
-  createdAt DateTime @default(now())
+  sourceType           TaskMentionSourceType
+  createdByUserId      String?
+  createdByUser        User?                 @relation("TaskMentionCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  resolvedAt           DateTime?
+  createdAt            DateTime              @default(now())
 
   @@index([cardId, sourceType, createdAt])
   @@index([commentId])

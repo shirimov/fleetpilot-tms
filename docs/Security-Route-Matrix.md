@@ -2,7 +2,7 @@
 
 Issue: [#10](https://github.com/shirimov/fleetpilot-tms/issues/10)
 
-Audit scope: all 44 App Router API route files (73 HTTP handlers),
+Audit scope: all 59 App Router API route files (99 HTTP handlers),
 the one login Server Action, database access outside route handlers, filesystem
 upload/download handlers, dashboard aggregation, Plaid, email sync, Telegram,
 and QuickManage integration code.
@@ -13,7 +13,7 @@ worker exists. Auth.js owns the OAuth callback route; Telegram is the only
 application webhook. Client components call these APIs and are not
 authorization boundaries.
 
-Current disposition: 73 handlers audited, 60 tenant-scoped, 12 intentionally
+Current disposition: 99 handlers audited, 86 tenant-scoped, 12 intentionally
 blocked, one reviewed public exemption, and zero handlers left vulnerable.
 Blocked handlers remain production rollout blockers until their ownership
 models are reviewed and implemented.
@@ -48,6 +48,35 @@ models are reviewed and implemented.
 | `/api/tasks/cards` | POST, PATCH, DELETE | cards | yes | yes | MEMBER | C/M | U/X/I | protected |
 | `/api/tasks/cards/[id]/move` | POST | card ordering | yes | yes | MEMBER | M | U/X/I | protected |
 | `/api/tasks/cards/[id]/activity` | GET | activity | yes | yes | MEMBER | C | U/X/I | protected |
+| `/api/tasks/cards/[id]/checklist` | GET, POST, PATCH | checklist | yes | yes | MEMBER | C/M | U/X/I | protected |
+| `/api/tasks/cards/[id]/checklist/[itemId]` | PATCH, DELETE | checklist item | yes | yes | MEMBER | C/M | U/X/I | protected |
+| `/api/tasks/cards/[id]/comments` | GET, POST | comments | yes | yes | MEMBER | C/M | U/X/I | protected |
+| `/api/tasks/cards/[id]/comments/[commentId]` | PATCH, DELETE | comment | yes | yes | author/ADMIN | C/M | U/X/I/R | protected |
+
+## Dispatch Workflow Internal Alpha
+
+| Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `/api/dispatch/board` | GET | load board/aggregates | yes | direct company | MEMBER | C/A | U/X/I/G | protected |
+| `/api/customers` | GET, POST | customers/contacts | yes | direct company | MEMBER | C/M | U/X/I | protected |
+| `/api/customers/[id]` | PATCH | customer/contacts | yes | direct company | MEMBER | C/M | U/X/I | protected |
+| `/api/customers/[id]` | DELETE | customer | yes | direct company | ADMIN | C/M | U/X/I/R | protected |
+| `/api/trailers` | GET | trailers/assignments | yes | direct company | MEMBER | C | U/X/I | protected |
+| `/api/trailers` | POST | trailer | yes | derived company | ADMIN | M | U/X/I/R | protected |
+| `/api/trailers/[id]` | PATCH, DELETE | trailer | yes | direct company | ADMIN | C/M | U/X/I/R | protected |
+| `/api/trailers/[id]/documents` | POST | trailer document | yes | parent trailer | ADMIN | C/M/S | U/X/I/R/F | protected |
+| `/api/trailers/[id]/documents/[documentId]` | GET | trailer document | yes | parent trailer | MEMBER | C/S | U/X/I/F | protected |
+| `/api/trailers/[id]/documents/[documentId]` | DELETE | trailer document | yes | parent trailer | ADMIN | C/M/S | U/X/I/R/F | protected |
+| `/api/loads/[id]/transition` | POST | lifecycle | yes | direct company | MEMBER | C/M | U/X/I | protected |
+| `/api/loads/[id]/activity` | GET | load activity | yes | direct company | MEMBER | C | U/X/I | protected |
+| `/api/loads/[id]/documents` | POST | load document | yes | parent load | MEMBER | C/M/S | U/X/I/F | protected |
+| `/api/loads/[id]/documents/[documentId]` | GET | load document | yes | parent load | MEMBER | C/S | U/X/I/F | protected |
+| `/api/loads/[id]/documents/[documentId]` | DELETE | load document | yes | parent load | ADMIN | C/M/S | U/X/I/R/F | protected |
+
+Customer, trailer, driver, truck, stop-contact, and document parent IDs are
+resolved inside the active company. Load lifecycle and assignment mutations
+run through DispatchService in serializable transactions; overlapping active
+truck, driver, and trailer windows are rejected before mutation.
 
 ## Dashboard and shared aggregation
 

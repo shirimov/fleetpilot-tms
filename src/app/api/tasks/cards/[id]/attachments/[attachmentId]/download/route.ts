@@ -2,6 +2,7 @@ import { taskAuthorizationService } from '@/lib/tasks/task-authorization';
 import { taskRouteErrorResponse } from '@/lib/tasks/task-route-response';
 import { taskService } from '@/lib/tasks/task-service';
 import { validateTaskCardId } from '@/lib/tasks/task-validation';
+import { privateDownloadHeaders } from '@/lib/storage/private-file-storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,19 +26,18 @@ export async function GET(request: Request, { params }: RouteContext) {
         role: context.role,
       },
     );
-    const asciiFilename = download.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
     const preview =
       new URL(request.url).searchParams.get('preview') === '1' &&
       (download.mimeType.startsWith('image/') ||
         download.mimeType === 'application/pdf');
     return new Response(new Uint8Array(download.bytes).buffer as ArrayBuffer, {
       headers: {
-        'Content-Type': download.mimeType,
-        'Content-Disposition': `${preview ? 'inline' : 'attachment'}; filename="${asciiFilename}"; filename*=UTF-8''${encodeURIComponent(download.filename)}`,
+        ...privateDownloadHeaders(
+          download.filename,
+          download.mimeType,
+          preview ? 'inline' : 'attachment',
+        ),
         'Content-Length': String(download.bytes.byteLength),
-        'Cache-Control': 'private, no-store',
-        'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'none'; sandbox",
       },
     });
   } catch (error) {

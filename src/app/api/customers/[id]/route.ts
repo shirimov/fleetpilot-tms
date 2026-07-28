@@ -2,19 +2,23 @@ import { NextResponse } from 'next/server';
 import { authorizationService } from '@/lib/auth/authorization';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
-import { validateId, validateLoadInput } from '@/lib/dispatch/dispatch-validation';
+import {
+  validateCustomerInput,
+  validateId,
+} from '@/lib/dispatch/dispatch-validation';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: RouteContext) {
   try {
     const context = await authorizationService.requireActiveCompany();
-    const load = await dispatchService.updateLoad(
-      validateId((await params).id, 'Load ID'),
-      validateLoadInput(await request.json()),
-      context,
+    return NextResponse.json(
+      await dispatchService.updateCustomer(
+        validateId((await params).id, 'Customer ID'),
+        validateCustomerInput(await request.json()),
+        context,
+      ),
     );
-    return NextResponse.json(load);
   } catch (error) {
     return dispatchRouteErrorResponse(error);
   }
@@ -23,8 +27,8 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 export async function DELETE(_request: Request, { params }: RouteContext) {
   try {
     const context = await authorizationService.requireActiveCompany('ADMIN');
-    await dispatchService.deleteLoad(
-      validateId((await params).id, 'Load ID'),
+    await dispatchService.deleteCustomer(
+      validateId((await params).id, 'Customer ID'),
       context,
     );
     return NextResponse.json({ ok: true });
@@ -32,3 +36,4 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return dispatchRouteErrorResponse(error);
   }
 }
+

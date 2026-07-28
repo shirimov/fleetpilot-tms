@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "AUTH_SECRET=fleetpilot-test-only-not-production tsx --test src/lib/auth/*.test.ts src/lib/dashboard/*.test.ts src/lib/finance/*.test.ts src/lib/fleet/*.test.ts src/lib/integrations/*.test.ts src/lib/security/*.test.ts src/lib/tasks/*.test.ts src/lib/workforce/*.test.ts",
+    "test": "AUTH_SECRET=fleetpilot-test-only-not-production tsx --test src/lib/auth/*.test.ts src/lib/dashboard/*.test.ts src/lib/dispatch/*.test.ts src/lib/finance/*.test.ts src/lib/fleet/*.test.ts src/lib/integrations/*.test.ts src/lib/security/*.test.ts src/lib/tasks/*.test.ts src/lib/workforce/*.test.ts",
     "test:ui": "playwright test"
   },
   "dependencies": {

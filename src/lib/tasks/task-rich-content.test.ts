@@ -1,5 +1,8 @@
 import 'dotenv/config';
 import assert from 'node:assert/strict';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { safeMarkdownUrl } from '@/components/tasks/MarkdownContent';
 import {
@@ -8,6 +11,10 @@ import {
 } from '@/components/tasks/TaskDescriptionEditor';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import { prisma } from '@/lib/prisma';
+import {
+  FilesystemPrivateFileStorage,
+  privateDownloadHeaders,
+} from '@/lib/storage/private-file-storage';
 import {
   MAX_TASK_ATTACHMENT_BYTES,
   sanitizeTaskFilename,
@@ -126,6 +133,35 @@ test('description autosave ignores responses for a different card or request gen
   assert.equal(isCurrentDescriptionSave('card-1', 'card-1', 2, 2), true);
   assert.equal(isCurrentDescriptionSave('card-1', 'card-2', 2, 2), false);
   assert.equal(isCurrentDescriptionSave('card-1', 'card-1', 1, 2), false);
+});
+
+test('private storage isolates namespaces, writes atomically, and rejects path selectors', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'fleetpilot-private-storage-'));
+  try {
+    const tasks = new FilesystemPrivateFileStorage('task-attachments', root);
+    const dispatch = new FilesystemPrivateFileStorage('dispatch-documents', root);
+    const bytes = new Uint8Array([1, 2, 3]);
+    const taskKey = await tasks.put(bytes);
+    const dispatchKey = await dispatch.put(bytes);
+
+    assert.deepEqual([...await tasks.get(taskKey)], [...bytes]);
+    assert.deepEqual([...await dispatch.get(dispatchKey)], [...bytes]);
+    assert.deepEqual(await readdir(path.join(root, 'task-attachments')), [taskKey]);
+    assert.deepEqual(await readdir(path.join(root, 'dispatch-documents')), [dispatchKey]);
+    await assert.rejects(tasks.get('../dispatch-documents/secret'), /key is invalid/);
+    await tasks.delete(taskKey);
+    await tasks.delete(taskKey);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('private download headers prevent caching, sniffing, and filename injection', () => {
+  const headers = privateDownloadHeaders('invoice"\r\nX-Evil: yes.pdf', 'application/pdf');
+  assert.equal(headers['Cache-Control'], 'private, no-store');
+  assert.equal(headers['X-Content-Type-Options'], 'nosniff');
+  assert.doesNotMatch(headers['Content-Disposition'], /[\r\n]/);
+  assert.match(headers['Content-Disposition'], /^attachment;/);
 });
 
 test('upload validation rejects traversal, active content, mismatch, and oversize', () => {
