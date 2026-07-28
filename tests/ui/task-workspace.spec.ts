@@ -295,6 +295,12 @@ test('supports checklist and comment collaboration in the task drawer', async ({
     .click();
   const drawer = page.getByRole('dialog');
   await expect(drawer.getByRole('heading', { name: 'Complete trailer inspection' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  await page
+    .getByRole('button', { name: 'Complete trailer inspection', exact: true })
+    .click();
+  await expect(drawer).toBeVisible();
   await expect(drawer.getByText('changed the assignee')).toBeVisible();
   await expect(drawer.getByText('Historical handoff note.')).toBeVisible();
   await drawer.getByLabel('New checklist item').fill('Check brake lights');
@@ -308,15 +314,18 @@ test('supports checklist and comment collaboration in the task drawer', async ({
   await expect(drawer.getByText('Inspection is underway.')).toBeVisible();
   const commentsSection = drawer.getByRole('region', { name: 'Comments' });
   await commentsSection.getByRole('button', { name: 'Edit' }).click();
+  const commentEditor = drawer.getByLabel('Edit comment by Signed-in user');
+  await commentEditor.fill('Unsaved edit');
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeVisible();
+  await expect(commentEditor).toBeHidden();
+  await commentsSection.getByRole('button', { name: 'Edit' }).click();
   await drawer
     .getByLabel('Edit comment by Signed-in user')
     .fill('Inspection is complete.');
   await commentsSection.getByRole('button', { name: 'Save' }).click();
   await expect(drawer.getByText('Inspection is complete.')).toBeVisible();
-  await page.keyboard.press('Escape');
-  if (await drawer.isVisible()) {
-    await page.keyboard.press('Escape');
-  }
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(drawer).toBeHidden();
 });
 

@@ -128,15 +128,14 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
     function closeOnEscape(event: KeyboardEvent) {
       if (
         event.key === 'Escape' &&
-        editingItem === null &&
-        editingComment === null
+        !document.querySelector('[data-task-inline-editor="true"]')
       ) {
         onClose();
       }
     }
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [editingComment, editingItem, onClose]);
+  }, [onClose]);
 
   const completedCount = useMemo(
     () => checklist.filter(({ isCompleted }) => isCompleted).length,
@@ -239,6 +238,9 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
           .filter(({ id }) => id !== item.id)
           .map((candidate, order) => ({ ...candidate, order })),
       );
+      if (editingItem === item.id) {
+        setEditingItem(null);
+      }
     });
   }
 
@@ -310,6 +312,9 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
       );
       await responseJson<{ success: true }>(response);
       setComments((current) => current.filter(({ id }) => id !== comment.id));
+      if (editingComment === comment.id) {
+        setEditingComment(null);
+      }
     });
   }
 
@@ -374,9 +379,12 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
                   <li key={item.id} className="flex items-center gap-2 rounded-lg border border-white/8 bg-[#181b25] p-2">
                     <input aria-label={`Complete ${item.content}`} type="checkbox" checked={item.isCompleted} onChange={() => void toggleChecklistItem(item)} disabled={pending} />
                     {editingItem === item.id ? (
-                      <input aria-label={`Edit ${item.content}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
+                      <input data-task-inline-editor="true" aria-label={`Edit ${item.content}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
                         if (event.key === 'Enter') void saveChecklistItem(item);
-                        if (event.key === 'Escape') setEditingItem(null);
+                        if (event.key === 'Escape') {
+                          event.stopPropagation();
+                          setEditingItem(null);
+                        }
                       }} className="min-w-0 flex-1 rounded bg-[#10121a] px-2 py-1 text-sm outline-none ring-1 ring-blue-400" />
                     ) : <span className={`min-w-0 flex-1 text-sm ${item.isCompleted ? 'text-slate-500 line-through' : 'text-slate-200'}`}>{item.content}</span>}
                     {editingItem === item.id ? <button type="button" onClick={() => void saveChecklistItem(item)} className="text-xs text-blue-300">Save</button> : <button type="button" onClick={() => { setEditingItem(item.id); setEditValue(item.content); }} className="text-xs text-slate-400">Edit</button>}
@@ -404,8 +412,11 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
                     <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
                   </div>
                   {editingComment === comment.id ? (
-                    <textarea aria-label={`Edit comment by ${comment.authorUser?.displayName ?? comment.author}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
-                      if (event.key === 'Escape') setEditingComment(null);
+                    <textarea data-task-inline-editor="true" aria-label={`Edit comment by ${comment.authorUser?.displayName ?? comment.author}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.stopPropagation();
+                        setEditingComment(null);
+                      }
                     }} className="mt-2 min-h-20 w-full rounded-lg bg-[#10121a] p-2 text-sm outline-none ring-1 ring-blue-400" />
                   ) : <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-200">{comment.content}</p>}
                   {comment.canEdit && <div className="mt-2 flex gap-3 text-xs">
