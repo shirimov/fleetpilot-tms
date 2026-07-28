@@ -1,4 +1,11 @@
-import type { TaskPriority, TaskStatus } from '@prisma/client';
+import type {
+  Prisma,
+  TaskActivityAction,
+  TaskActivityActorType,
+  TaskActivityEntityType,
+  TaskPriority,
+  TaskStatus,
+} from '@prisma/client';
 
 export type CreateTaskProjectInput = {
   name: string;
@@ -28,16 +35,17 @@ export type UpdateTaskCardInput = {
   order?: number;
 };
 
-export type TaskActivityAction =
-  | 'PROJECT_CREATED'
-  | 'TASK_CREATED'
-  | 'TASK_UPDATED'
-  | 'TASK_DELETED';
-
 export type TaskActivityEvent = {
   action: TaskActivityAction;
-  projectId?: string;
+  projectId: string;
   cardId?: string;
-  metadata?: Record<string, unknown>;
-  occurredAt: Date;
+  entityType: TaskActivityEntityType;
+  entityId: string;
+  entityTitle?: string | null;
+  actorType?: TaskActivityActorType;
+  actorId?: string;
+  sourceType?: string;
+  sourceId?: string;
+  metadata?: Prisma.InputJsonValue;
+  occurredAt?: Date;
 };

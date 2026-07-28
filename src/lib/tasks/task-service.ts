@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient, TaskCard } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
   defaultActivityService,
@@ -50,7 +50,7 @@ export class TaskService {
   }
 
   async createProject(input: CreateTaskProjectInput) {
-    const project = await this.database.$transaction(async (transaction) => {
+    return this.database.$transaction(async (transaction) => {
       if (input.companyId) {
         const company = await transaction.company.findUnique({
           where: { id: input.companyId },
@@ -61,7 +61,7 @@ export class TaskService {
         }
       }
 
-      return transaction.taskProject.create({
+      const project = await transaction.taskProject.create({
         data: {
           name: input.name,
           description: input.description,
@@ -78,20 +78,21 @@ export class TaskService {
         },
         include: { boards: true },
       });
-    });
 
-    await this.recordActivityBestEffort({
-      action: 'PROJECT_CREATED',
-      projectId: project.id,
-      metadata: { name: project.name },
-      occurredAt: new Date(),
-    });
+      await this.activityService.record(transaction, {
+        action: 'PROJECT_CREATED',
+        projectId: project.id,
+        entityType: 'PROJECT',
+        entityId: project.id,
+        entityTitle: project.name,
+      });
 
-    return project;
+      return project;
+    });
   }
 
   async createCard(input: CreateTaskCardInput) {
-    const card = await this.database.$transaction(async (transaction) => {
+    return this.database.$transaction(async (transaction) => {
       await this.validateBoardProject(transaction, input.boardId, input.projectId);
 
       const order =
@@ -104,7 +105,7 @@ export class TaskService {
         )._max.order ??
         -1;
 
-      return transaction.taskCard.create({
+      const card = await transaction.taskCard.create({
         data: {
           projectId: input.projectId,
           boardId: input.boardId,
@@ -115,25 +116,28 @@ export class TaskService {
         },
         include: cardInclude,
       });
-    });
 
-    await this.recordActivityBestEffort({
-      action: 'TASK_CREATED',
-      projectId: card.projectId,
-      cardId: card.id,
-      metadata: {
-        boardId: card.boardId,
-        order: card.order,
-        title: card.title,
-      },
-      occurredAt: new Date(),
-    });
+      await this.activityService.record(transaction, {
+        action: 'TASK_CREATED',
+        projectId: card.projectId,
+        cardId: card.id,
+        entityType: 'TASK_CARD',
+        entityId: card.id,
+        entityTitle: card.title,
+        metadata: {
+          boardId: card.boardId,
+          order: card.order,
+          priority: card.priority,
+          status: card.status,
+        },
+      });
 
-    return card;
+      return card;
+    });
   }
 
   async updateCard(input: UpdateTaskCardInput) {
-    const result = await this.database.$transaction(async (transaction) => {
+    return this.database.$transaction(async (transaction) => {
       const existing = await transaction.taskCard.findUnique({
         where: { id: input.id },
       });
@@ -158,56 +162,57 @@ export class TaskService {
         include: cardInclude,
       });
 
-      return { card, existing };
-    });
+      for (const activity of this.describeChanges(existing, card)) {
+        await this.activityService.record(transaction, activity);
+      }
 
-    await this.recordActivityBestEffort({
-      action: 'TASK_UPDATED',
-      projectId: result.card.projectId,
-      cardId: result.card.id,
-      metadata: {
-        changes: this.describeChanges(result.existing, result.card),
-      },
-      occurredAt: new Date(),
+      return card;
     });
-
-    return result.card;
   }
 
   async deleteCard(cardId: string): Promise<void> {
-    const deleted = await this.database.$transaction(async (transaction) => {
+    await this.database.$transaction(async (transaction) => {
       const existing = await transaction.taskCard.findUnique({
         where: { id: cardId },
       });
       if (!existing) throw new TaskNotFoundError();
 
-      await transaction.taskCard.delete({ where: { id: cardId } });
-      return existing;
-    });
+      await this.activityService.record(transaction, {
+        action: 'TASK_DELETED',
+        projectId: existing.projectId,
+        cardId: existing.id,
+        entityType: 'TASK_CARD',
+        entityId: existing.id,
+        entityTitle: existing.title,
+        metadata: {
+          boardId: existing.boardId,
+          priority: existing.priority,
+          status: existing.status,
+        },
+      });
 
-    await this.recordActivityBestEffort({
-      action: 'TASK_DELETED',
-      projectId: deleted.projectId,
-      cardId: deleted.id,
-      metadata: {
-        boardId: deleted.boardId,
-        title: deleted.title,
-      },
-      occurredAt: new Date(),
+      await transaction.taskCard.delete({ where: { id: cardId } });
     });
   }
 
-  private async recordActivityBestEffort(event: TaskActivityEvent): Promise<void> {
-    try {
-      await this.activityService.record(event);
-    } catch (error) {
-      console.error('Task activity recording failed', {
-        action: event.action,
-        projectId: event.projectId,
-        cardId: event.cardId,
-        errorName: error instanceof Error ? error.name : 'UnknownError',
+  async getCardActivity(cardId: string) {
+    const activities = await this.database.taskActivity.findMany({
+      where: {
+        entityType: 'TASK_CARD',
+        entityId: cardId,
+      },
+      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+    });
+
+    if (activities.length === 0) {
+      const card = await this.database.taskCard.findUnique({
+        where: { id: cardId },
+        select: { id: true },
       });
+      if (!card) throw new TaskNotFoundError();
     }
+
+    return activities;
   }
 
   private async validateBoardProject(
@@ -228,29 +233,54 @@ export class TaskService {
     }
   }
 
-  private describeChanges(
-    before: Record<string, unknown>,
-    after: Record<string, unknown>,
-  ): Record<string, { from: unknown; to: unknown }> {
-    const trackedFields = [
-      'boardId',
-      'title',
-      'description',
-      'priority',
-      'status',
-      'assignedTo',
-      'dueDate',
-      'order',
+  private describeChanges(before: TaskCard, after: TaskCard): TaskActivityEvent[] {
+    const changes: Array<{
+      field: keyof TaskCard;
+      action: TaskActivityEvent['action'];
+    }> = [
+      { field: 'title', action: 'TITLE_CHANGED' },
+      { field: 'description', action: 'DESCRIPTION_CHANGED' },
+      { field: 'status', action: 'STATUS_CHANGED' },
+      { field: 'boardId', action: 'BOARD_CHANGED' },
+      { field: 'priority', action: 'PRIORITY_CHANGED' },
+      { field: 'assignedTo', action: 'ASSIGNEE_CHANGED' },
+      { field: 'dueDate', action: 'DUE_DATE_CHANGED' },
+      { field: 'order', action: 'ORDER_CHANGED' },
     ];
 
-    return Object.fromEntries(
-      trackedFields
-        .filter((field) => String(before[field] ?? '') !== String(after[field] ?? ''))
-        .map((field) => [
+    return changes
+      .filter(
+        ({ field }) =>
+          this.serializeActivityValue(before[field]) !==
+          this.serializeActivityValue(after[field]),
+      )
+      .map(({ field, action }) => ({
+        action,
+        projectId: after.projectId,
+        cardId: after.id,
+        entityType: 'TASK_CARD',
+        entityId: after.id,
+        entityTitle: after.title,
+        metadata: {
           field,
-          { from: before[field] ?? null, to: after[field] ?? null },
-        ]),
-    );
+          from: this.serializeActivityValue(before[field]),
+          to: this.serializeActivityValue(after[field]),
+        },
+      }));
+  }
+
+  private serializeActivityValue(value: unknown): string | number | boolean | null {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return value;
+    }
+
+    return String(value);
   }
 }
 

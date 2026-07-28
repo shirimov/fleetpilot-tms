@@ -369,6 +369,33 @@ enum TaskStatus {
   CANCELLED
 }
 
+enum TaskActivityAction {
+  PROJECT_CREATED
+  TASK_CREATED
+  TITLE_CHANGED
+  DESCRIPTION_CHANGED
+  STATUS_CHANGED
+  BOARD_CHANGED
+  PRIORITY_CHANGED
+  ASSIGNEE_CHANGED
+  DUE_DATE_CHANGED
+  ORDER_CHANGED
+  TASK_DELETED
+}
+
+enum TaskActivityActorType {
+  UNATTRIBUTED
+  EMPLOYEE
+  SYSTEM
+  INTEGRATION
+  AI
+}
+
+enum TaskActivityEntityType {
+  PROJECT
+  TASK_CARD
+}
+
 model TaskProject {
   id String @id @default(cuid())
   name String
@@ -380,8 +407,11 @@ model TaskProject {
   isArchived Boolean @default(false)
   boards TaskBoard[]
   cards TaskCard[]
+  activities TaskActivity[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([companyId])
 }
 
 model TaskBoard {
@@ -412,6 +442,7 @@ model TaskCard {
   labels TaskLabel[]
   comments TaskComment[]
   attachments TaskAttachment[]
+  activities TaskActivity[]
   startDate DateTime?
   completedAt DateTime?
   createdAt DateTime @default(now())
@@ -435,6 +466,32 @@ model TaskComment {
   content String @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model TaskActivity {
+  id          String                 @id @default(cuid())
+  projectId   String
+  cardId      String?
+  entityType  TaskActivityEntityType
+  entityId    String
+  entityTitle String?
+  action      TaskActivityAction
+  actorType   TaskActivityActorType  @default(UNATTRIBUTED)
+  actorId     String?
+  sourceType  String?
+  sourceId    String?
+  metadata    Json?
+  occurredAt  DateTime               @default(now())
+  createdAt   DateTime               @default(now())
+
+  project TaskProject @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  card    TaskCard?   @relation(fields: [cardId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, occurredAt, id])
+  @@index([cardId, occurredAt, id])
+  @@index([entityType, entityId, occurredAt, id])
+  @@index([sourceType, sourceId])
+  @@index([occurredAt, id])
 }
 
 model TaskAttachment {
