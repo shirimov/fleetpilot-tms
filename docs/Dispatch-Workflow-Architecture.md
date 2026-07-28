@@ -52,15 +52,18 @@ Foreign and missing records use the same 404 behavior.
 
 ## Documents
 
-Documents use an injectable private storage interface and opaque UUID keys.
-Only sanitized metadata is returned. Download routes reauthorize the parent
-load/trailer and use private/no-store plus `nosniff`.
+Task attachments and dispatch documents share an injectable private-file
+storage interface while retaining separate business validation policies. The
+filesystem adapter stores opaque UUID keys in isolated `task-attachments` and
+`dispatch-documents` namespaces outside `public/`. Set
+`PRIVATE_FILE_STORAGE_ROOT` to an absolute path on a persistent mounted volume
+for staging.
 
-The checked-in adapter stores files outside `public/` for development. A
-durable private object-storage adapter, retention policy, malware-scanning
-decision, and backup plan remain production rollout requirements. This
-abstraction overlaps with the unmerged Task Manager rich-content storage work
-and should be consolidated after one implementation is approved.
+Only sanitized metadata is returned. Reads occur only after the parent
+task/load/trailer is authorized. Download responses use safe
+`Content-Disposition`, private/no-store caching, `nosniff`, and a sandboxed
+content policy. Retention, backup, and malware-scanning decisions remain
+production rollout requirements.
 
 ## Permissions
 
@@ -85,4 +88,3 @@ constraint from `truckId`. It does not delete or rewrite rows.
 Operational rollback is app-first: deploy the prior compatible application and
 retain additive schema. A destructive schema rollback is not proposed while
 new dispatch records exist.
-

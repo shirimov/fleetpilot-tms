@@ -1,6 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  FilesystemPrivateFileStorage,
+  type PrivateFileStorage,
+} from '@/lib/storage/private-file-storage';
 import { DispatchValidationError } from './dispatch-errors';
 import type { DispatchDocumentInput } from './dispatch-types';
 
@@ -18,32 +20,14 @@ const allowed = new Map([
   ['.xlsx', ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']],
 ]);
 
-export interface DispatchDocumentStorage {
-  put(bytes: Uint8Array): Promise<string>;
-  get(key: string): Promise<Uint8Array>;
-  delete(key: string): Promise<void>;
-}
+export type DispatchDocumentStorage = PrivateFileStorage;
 
 export class DevelopmentDispatchDocumentStorage
+  extends FilesystemPrivateFileStorage
   implements DispatchDocumentStorage
 {
-  private readonly root = path.join(process.cwd(), '.data', 'dispatch-documents');
-
-  async put(bytes: Uint8Array) {
-    const key = randomUUID();
-    await mkdir(this.root, { recursive: true });
-    await writeFile(path.join(this.root, key), bytes, { flag: 'wx' });
-    return key;
-  }
-
-  async get(key: string) {
-    if (!/^[0-9a-f-]{36}$/.test(key)) throw new Error('Invalid storage key.');
-    return readFile(path.join(this.root, key));
-  }
-
-  async delete(key: string) {
-    if (!/^[0-9a-f-]{36}$/.test(key)) return;
-    await unlink(path.join(this.root, key)).catch(() => {});
+  constructor(root?: string) {
+    super('dispatch-documents', root);
   }
 }
 
@@ -93,4 +77,3 @@ export function validateDispatchDocument(
 }
 
 export const dispatchDocumentStorage = new DevelopmentDispatchDocumentStorage();
-

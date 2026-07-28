@@ -133,8 +133,8 @@ model User {
   taskActivities           TaskActivity[]
   taskChecklistItems       TaskChecklistItem[]
   taskAttachments          TaskAttachment[]
-  taskMentions             TaskMention[] @relation("MentionedTaskUser")
-  createdTaskMentions      TaskMention[] @relation("TaskMentionCreator")
+  taskMentions             TaskMention[]       @relation("MentionedTaskUser")
+  createdTaskMentions      TaskMention[]       @relation("TaskMentionCreator")
   loadActivities           LoadActivity[]
   uploadedLoadDocuments    LoadDocument[]
   uploadedTrailerDocuments TrailerDocument[]
@@ -772,15 +772,15 @@ model TaskLabel {
 }
 
 model TaskComment {
-  id           String   @id @default(cuid())
+  id           String        @id @default(cuid())
   cardId       String
-  card         TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  card         TaskCard      @relation(fields: [cardId], references: [id], onDelete: Cascade)
   author       String
   authorUserId String?
-  authorUser   User?    @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
-  content      String   @db.Text
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  authorUser   User?         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  content      String        @db.Text
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   mentions     TaskMention[]
 
   @@index([authorUserId])
@@ -832,14 +832,14 @@ model TaskActivity {
 }
 
 model TaskAttachment {
-  id         String   @id @default(cuid())
-  cardId     String
-  card       TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  name       String
-  url        String
-  size       Int?
-  mimeType   String?
-  uploadedBy String
+  id               String   @id @default(cuid())
+  cardId           String
+  card             TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  name             String
+  url              String
+  size             Int?
+  mimeType         String?
+  uploadedBy       String
   uploaderUserId   String?
   uploaderUser     User?    @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
   originalFilename String?
