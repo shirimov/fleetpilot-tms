@@ -3,9 +3,10 @@ import { expect, test } from 'playwright/test';
 test('company-owned APIs reject unauthenticated requests consistently', async ({
   request,
 }) => {
-  const [tasks, companies, switchCompany] = await Promise.all([
+  const [tasks, companies, dashboard, switchCompany] = await Promise.all([
     request.get('/api/tasks'),
     request.get('/api/companies'),
+    request.get('/api/dashboard'),
     request.patch('/api/auth/company', {
       data: { companyId: 'spoofed-company' },
     }),
@@ -13,6 +14,7 @@ test('company-owned APIs reject unauthenticated requests consistently', async ({
 
   expect(tasks.status()).toBe(401);
   expect(companies.status()).toBe(401);
+  expect(dashboard.status()).toBe(401);
   expect(switchCompany.status()).toBe(401);
   await expect(tasks.json()).resolves.toEqual({
     error: 'Authentication is required.',

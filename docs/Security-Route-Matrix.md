@@ -46,7 +46,7 @@ boundaries.
 
 | Route/action | Method | Resource | Auth | Scope | Role | Risk | Required tests | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/dashboard` | GET | fleet/load/settlement aggregates | no | no | MEMBER | C/A | U/X/G | vulnerable |
+| `/api/dashboard` | GET | fleet/load/settlement aggregates | yes | yes | MEMBER | C/A | U/X/G | protected |
 | `/api/qm-stats` | GET | QuickManage carrier aggregates/refresh | no | global file | MEMBER; ADMIN refresh | C/M/S/A | U/X/R/G | vulnerable |
 | `/api/lookup/dot` | GET | public FMCSA lookup | no | external | public | abuse | validation/rate-limit | exempt |
 
