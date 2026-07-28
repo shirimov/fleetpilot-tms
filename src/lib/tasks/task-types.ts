@@ -1,4 +1,5 @@
 import type {
+  CompanyMembershipRole,
   Prisma,
   TaskActivityAction,
   TaskActivityActorType,
@@ -61,4 +62,36 @@ export type TaskActivityEvent = {
 
 export type TaskMutationActor = {
   userId: string;
+};
+
+export type TaskCompanyActor = TaskMutationActor & {
+  companyId: string;
+  role: CompanyMembershipRole;
+  displayName: string;
+};
+
+export type CreateTaskChecklistItemInput = {
+  cardId: string;
+  content: string;
+};
+
+export type UpdateTaskChecklistItemInput = {
+  cardId: string;
+  itemId: string;
+  content?: string;
+  isCompleted?: boolean;
+};
+
+export type ReorderTaskChecklistInput = {
+  cardId: string;
+  itemIds: string[];
+};
+
+export type CreateTaskCommentInput = {
+  cardId: string;
+  content: string;
+};
+
+export type UpdateTaskCommentInput = CreateTaskCommentInput & {
+  commentId: string;
 };

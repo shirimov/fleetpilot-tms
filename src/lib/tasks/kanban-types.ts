@@ -17,6 +17,7 @@ export type KanbanCard = {
   order: number;
   updatedAt: string;
   labels: KanbanLabel[];
+  checklistItems?: Array<{ id: string; isCompleted: boolean }>;
 };
 
 export type KanbanColumn = {

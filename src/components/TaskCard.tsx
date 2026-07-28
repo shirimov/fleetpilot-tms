@@ -30,6 +30,10 @@ export default function TaskCard({
     dueDate.getTime() < renderedAt &&
     card.status !== 'DONE' &&
     card.status !== 'CANCELLED';
+  const checklistItems = card.checklistItems ?? [];
+  const completedChecklistItems = checklistItems.filter(
+    ({ isCompleted }) => isCompleted,
+  ).length;
 
   return (
     <article
@@ -110,6 +114,22 @@ export default function TaskCard({
             </li>
           ))}
         </ul>
+      )}
+      {checklistItems.length > 0 && (
+        <div className="mt-3" aria-label={`${completedChecklistItems} of ${checklistItems.length} checklist items complete`}>
+          <div className="mb-1 flex justify-between text-[11px] text-slate-500">
+            <span>Checklist</span>
+            <span>{completedChecklistItems}/{checklistItems.length}</span>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full bg-emerald-400"
+              style={{
+                width: `${(completedChecklistItems / checklistItems.length) * 100}%`,
+              }}
+            />
+          </div>
+        </div>
       )}
     </article>
   );

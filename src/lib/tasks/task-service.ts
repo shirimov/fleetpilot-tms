@@ -1,17 +1,22 @@
 import { Prisma, type PrismaClient, type TaskCard } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import {
-  defaultActivityService,
-  type ActivityService,
-} from './task-activity-service';
 import type {
+  CreateTaskChecklistItemInput,
   CreateTaskCardInput,
+  CreateTaskCommentInput,
   CreateTaskProjectInput,
   MoveTaskCardInput,
+  ReorderTaskChecklistInput,
   TaskActivityEvent,
+  TaskCompanyActor,
   TaskMutationActor,
   UpdateTaskCardInput,
+  UpdateTaskChecklistItemInput,
+  UpdateTaskCommentInput,
 } from './task-types';
+import type { ActivityService } from './task-activity-service';
+import { defaultActivityService } from './task-activity-service';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import {
   InvalidTaskDestinationIndexError,
   TaskBoardNotFoundError,
@@ -58,6 +63,10 @@ const boardCardSelect = {
       name: true,
       color: true,
     },
+  },
+  checklistItems: {
+    orderBy: [{ order: 'asc' as const }, { id: 'asc' as const }],
+    select: { id: true, isCompleted: true },
   },
 } satisfies Prisma.TaskCardSelect;
 
@@ -417,6 +426,11 @@ export class TaskService {
         ...(companyId ? { project: { companyId } } : {}),
       },
       orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+      include: {
+        actorUser: {
+          select: { id: true, displayName: true, image: true },
+        },
+      },
     });
 
     if (activities.length === 0) {
@@ -431,6 +445,333 @@ export class TaskService {
     }
 
     return activities;
+  }
+
+  async getChecklist(cardId: string, companyId: string) {
+    await this.requireCompanyCard(this.database, cardId, companyId);
+    return this.database.taskChecklistItem.findMany({
+      where: { cardId },
+      orderBy: [{ order: 'asc' }, { id: 'asc' }],
+      include: {
+        createdByUser: {
+          select: { id: true, displayName: true },
+        },
+      },
+    });
+  }
+
+  async createChecklistItem(
+    input: CreateTaskChecklistItemInput,
+    actor: TaskCompanyActor,
+  ) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        input.cardId,
+        actor.companyId,
+      );
+      const maximum = await transaction.taskChecklistItem.aggregate({
+        where: { cardId: input.cardId },
+        _max: { order: true },
+      });
+      const item = await transaction.taskChecklistItem.create({
+        data: {
+          cardId: input.cardId,
+          content: input.content,
+          order: (maximum._max.order ?? -1) + 1,
+          createdByUserId: actor.userId,
+        },
+        include: {
+          createdByUser: { select: { id: true, displayName: true } },
+        },
+      });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'CHECKLIST_ITEM_CREATED',
+        metadata: { checklistItemId: item.id, content: item.content },
+      });
+      return item;
+    });
+  }
+
+  async updateChecklistItem(
+    input: UpdateTaskChecklistItemInput,
+    actor: TaskCompanyActor,
+  ) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        input.cardId,
+        actor.companyId,
+      );
+      const existing = await transaction.taskChecklistItem.findFirst({
+        where: { id: input.itemId, cardId: input.cardId },
+      });
+      if (!existing) throw new TaskNotFoundError();
+      const item = await transaction.taskChecklistItem.update({
+        where: { id: existing.id },
+        data: {
+          content: input.content,
+          isCompleted: input.isCompleted,
+        },
+        include: {
+          createdByUser: { select: { id: true, displayName: true } },
+        },
+      });
+      if (input.content !== undefined && input.content !== existing.content) {
+        await this.recordCardActivity(transaction, card, actor, {
+          action: 'CHECKLIST_ITEM_UPDATED',
+          metadata: {
+            checklistItemId: item.id,
+            from: existing.content,
+            to: item.content,
+          },
+        });
+      }
+      if (
+        input.isCompleted !== undefined &&
+        input.isCompleted !== existing.isCompleted
+      ) {
+        await this.recordCardActivity(transaction, card, actor, {
+          action: input.isCompleted
+            ? 'CHECKLIST_ITEM_COMPLETED'
+            : 'CHECKLIST_ITEM_REOPENED',
+          metadata: { checklistItemId: item.id, content: item.content },
+        });
+      }
+      return item;
+    });
+  }
+
+  async reorderChecklist(
+    input: ReorderTaskChecklistInput,
+    actor: TaskCompanyActor,
+  ) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        input.cardId,
+        actor.companyId,
+      );
+      const existing = await transaction.taskChecklistItem.findMany({
+        where: { cardId: input.cardId },
+        orderBy: [{ order: 'asc' }, { id: 'asc' }],
+        select: { id: true },
+      });
+      if (
+        existing.length !== input.itemIds.length ||
+        existing.some(({ id }) => !input.itemIds.includes(id))
+      ) {
+        throw new TaskValidationError(
+          'itemIds must contain every checklist item exactly once.',
+        );
+      }
+      for (const [order, id] of input.itemIds.entries()) {
+        await transaction.taskChecklistItem.update({
+          where: { id },
+          data: { order },
+        });
+      }
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'CHECKLIST_ITEM_REORDERED',
+        metadata: { itemIds: input.itemIds },
+      });
+      return transaction.taskChecklistItem.findMany({
+        where: { cardId: input.cardId },
+        orderBy: [{ order: 'asc' }, { id: 'asc' }],
+        include: {
+          createdByUser: { select: { id: true, displayName: true } },
+        },
+      });
+    });
+  }
+
+  async deleteChecklistItem(
+    cardId: string,
+    itemId: string,
+    actor: TaskCompanyActor,
+  ): Promise<void> {
+    await this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        cardId,
+        actor.companyId,
+      );
+      const item = await transaction.taskChecklistItem.findFirst({
+        where: { id: itemId, cardId },
+      });
+      if (!item) throw new TaskNotFoundError();
+      await transaction.taskChecklistItem.delete({ where: { id: item.id } });
+      await this.normalizeChecklistOrder(transaction, cardId);
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'CHECKLIST_ITEM_DELETED',
+        metadata: { checklistItemId: item.id, content: item.content },
+      });
+    });
+  }
+
+  async getComments(cardId: string, actor: TaskCompanyActor) {
+    await this.requireCompanyCard(this.database, cardId, actor.companyId);
+    const comments = await this.database.taskComment.findMany({
+      where: { cardId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      include: {
+        authorUser: {
+          select: { id: true, displayName: true, image: true },
+        },
+      },
+    });
+    return comments.map((comment) => ({
+      ...comment,
+      canEdit:
+        comment.authorUserId === actor.userId ||
+        actor.role === 'OWNER' ||
+        actor.role === 'ADMIN',
+    }));
+  }
+
+  async createComment(input: CreateTaskCommentInput, actor: TaskCompanyActor) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        input.cardId,
+        actor.companyId,
+      );
+      const comment = await transaction.taskComment.create({
+        data: {
+          cardId: input.cardId,
+          author: actor.displayName,
+          authorUserId: actor.userId,
+          content: input.content,
+        },
+        include: {
+          authorUser: {
+            select: { id: true, displayName: true, image: true },
+          },
+        },
+      });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'COMMENT_ADDED',
+        metadata: { commentId: comment.id },
+      });
+      return comment;
+    });
+  }
+
+  async updateComment(input: UpdateTaskCommentInput, actor: TaskCompanyActor) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        input.cardId,
+        actor.companyId,
+      );
+      const existing = await transaction.taskComment.findFirst({
+        where: { id: input.commentId, cardId: input.cardId },
+      });
+      if (!existing) throw new TaskNotFoundError();
+      this.requireCommentMutationPermission(existing.authorUserId, actor);
+      const comment = await transaction.taskComment.update({
+        where: { id: existing.id },
+        data: { content: input.content },
+        include: {
+          authorUser: {
+            select: { id: true, displayName: true, image: true },
+          },
+        },
+      });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'COMMENT_EDITED',
+        metadata: { commentId: comment.id },
+      });
+      return comment;
+    });
+  }
+
+  async deleteComment(
+    cardId: string,
+    commentId: string,
+    actor: TaskCompanyActor,
+  ): Promise<void> {
+    await this.database.$transaction(async (transaction) => {
+      const card = await this.requireCompanyCard(
+        transaction,
+        cardId,
+        actor.companyId,
+      );
+      const comment = await transaction.taskComment.findFirst({
+        where: { id: commentId, cardId },
+      });
+      if (!comment) throw new TaskNotFoundError();
+      this.requireCommentMutationPermission(comment.authorUserId, actor);
+      await transaction.taskComment.delete({ where: { id: comment.id } });
+      await this.recordCardActivity(transaction, card, actor, {
+        action: 'COMMENT_DELETED',
+        metadata: { commentId: comment.id },
+      });
+    });
+  }
+
+  private async requireCompanyCard(
+    transaction: Prisma.TransactionClient | PrismaClient,
+    cardId: string,
+    companyId: string,
+  ) {
+    const card = await transaction.taskCard.findFirst({
+      where: { id: cardId, project: { companyId } },
+      select: { id: true, projectId: true, title: true },
+    });
+    if (!card) throw new TaskNotFoundError();
+    return card;
+  }
+
+  private async recordCardActivity(
+    transaction: Prisma.TransactionClient,
+    card: { id: string; projectId: string; title: string },
+    actor: TaskCompanyActor,
+    event: Pick<TaskActivityEvent, 'action' | 'metadata'>,
+  ) {
+    await this.activityService.record(transaction, {
+      action: event.action,
+      projectId: card.projectId,
+      cardId: card.id,
+      entityType: 'TASK_CARD',
+      entityId: card.id,
+      entityTitle: card.title,
+      actorType: 'USER',
+      actorUserId: actor.userId,
+      metadata: event.metadata,
+    });
+  }
+
+  private requireCommentMutationPermission(
+    authorUserId: string | null,
+    actor: TaskCompanyActor,
+  ) {
+    if (
+      authorUserId !== actor.userId &&
+      actor.role !== 'OWNER' &&
+      actor.role !== 'ADMIN'
+    ) {
+      throw new AuthorizationDeniedError();
+    }
+  }
+
+  private async normalizeChecklistOrder(
+    transaction: Prisma.TransactionClient,
+    cardId: string,
+  ) {
+    const items = await transaction.taskChecklistItem.findMany({
+      where: { cardId },
+      orderBy: [{ order: 'asc' }, { id: 'asc' }],
+      select: { id: true, order: true },
+    });
+    for (const [order, item] of items.entries()) {
+      if (item.order !== order) {
+        await transaction.taskChecklistItem.update({
+          where: { id: item.id },
+          data: { order },
+        });
+      }
+    }
   }
 
   private async validateBoardProject(

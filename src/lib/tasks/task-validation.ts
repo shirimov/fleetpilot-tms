@@ -1,9 +1,14 @@
 import type { TaskPriority, TaskStatus } from '@prisma/client';
 import type {
+  CreateTaskChecklistItemInput,
+  CreateTaskCommentInput,
   CreateTaskCardInput,
   CreateTaskProjectInput,
   MoveTaskCardInput,
+  ReorderTaskChecklistInput,
   UpdateTaskCardInput,
+  UpdateTaskChecklistItemInput,
+  UpdateTaskCommentInput,
 } from './task-types';
 
 const TASK_PRIORITIES = new Set<TaskPriority>(['LOW', 'MEDIUM', 'HIGH', 'URGENT']);
@@ -191,5 +196,94 @@ export function validateMoveTaskCardInput(
     ),
     destinationIndex: body.destinationIndex as number,
     expectedUpdatedAt,
+  };
+}
+
+const MAX_COLLABORATION_CONTENT_LENGTH = 10_000;
+
+function collaborationContent(value: unknown, field = 'content'): string {
+  const content = requiredString(value, field);
+  if (content.length > MAX_COLLABORATION_CONTENT_LENGTH) {
+    throw new TaskValidationError(
+      `${field} must be ${MAX_COLLABORATION_CONTENT_LENGTH} characters or fewer.`,
+    );
+  }
+  return content;
+}
+
+export function validateCreateChecklistItemInput(
+  cardId: string,
+  value: unknown,
+): CreateTaskChecklistItemInput {
+  const body = requireObject(value);
+  return {
+    cardId: requiredString(cardId, 'cardId'),
+    content: collaborationContent(body.content),
+  };
+}
+
+export function validateUpdateChecklistItemInput(
+  cardId: string,
+  itemId: string,
+  value: unknown,
+): UpdateTaskChecklistItemInput {
+  const body = requireObject(value);
+  if (!Object.hasOwn(body, 'content') && !Object.hasOwn(body, 'isCompleted')) {
+    throw new TaskValidationError('content or isCompleted is required.');
+  }
+  if (
+    Object.hasOwn(body, 'isCompleted') &&
+    typeof body.isCompleted !== 'boolean'
+  ) {
+    throw new TaskValidationError('isCompleted must be a boolean.');
+  }
+  return {
+    cardId: requiredString(cardId, 'cardId'),
+    itemId: requiredString(itemId, 'itemId'),
+    content: Object.hasOwn(body, 'content')
+      ? collaborationContent(body.content)
+      : undefined,
+    isCompleted: body.isCompleted as boolean | undefined,
+  };
+}
+
+export function validateReorderChecklistInput(
+  cardId: string,
+  value: unknown,
+): ReorderTaskChecklistInput {
+  const body = requireObject(value);
+  if (
+    !Array.isArray(body.itemIds) ||
+    body.itemIds.some((id) => typeof id !== 'string' || !id.trim()) ||
+    new Set(body.itemIds).size !== body.itemIds.length
+  ) {
+    throw new TaskValidationError('itemIds must contain unique non-empty IDs.');
+  }
+  return {
+    cardId: requiredString(cardId, 'cardId'),
+    itemIds: body.itemIds,
+  };
+}
+
+export function validateCreateCommentInput(
+  cardId: string,
+  value: unknown,
+): CreateTaskCommentInput {
+  const body = requireObject(value);
+  return {
+    cardId: requiredString(cardId, 'cardId'),
+    content: collaborationContent(body.content),
+  };
+}
+
+export function validateUpdateCommentInput(
+  cardId: string,
+  commentId: string,
+  value: unknown,
+): UpdateTaskCommentInput {
+  const input = validateCreateCommentInput(cardId, value);
+  return {
+    ...input,
+    commentId: requiredString(commentId, 'commentId'),
   };
 }
