@@ -7,6 +7,7 @@ type TaskCardProps = {
   card: KanbanCard;
   dragHandle?: ReactNode;
   isDragging?: boolean;
+  onOpen?: () => void;
 };
 
 const priorityStyles = {
@@ -20,6 +21,7 @@ export default function TaskCard({
   card,
   dragHandle,
   isDragging = false,
+  onOpen,
 }: TaskCardProps) {
   const [renderedAt] = useState(Date.now);
   const dueDate = card.dueDate ? new Date(card.dueDate) : null;
@@ -37,9 +39,19 @@ export default function TaskCard({
       }`}
     >
       <div className="flex items-start gap-2">
-        <h3 className="min-w-0 flex-1 text-sm font-semibold text-slate-100">
-          {card.title}
-        </h3>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="min-w-0 flex-1 text-left text-sm font-semibold text-slate-100 hover:text-blue-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          >
+            {card.title}
+          </button>
+        ) : (
+          <h3 className="min-w-0 flex-1 text-sm font-semibold text-slate-100">
+            {card.title}
+          </h3>
+        )}
         {dragHandle}
       </div>
 
@@ -59,8 +71,17 @@ export default function TaskCard({
           {card.status.replaceAll('_', ' ')}
         </span>
         {card.assignedTo && (
-          <span className="max-w-full truncate text-slate-300">
-            Assigned: {card.assignedTo}
+          <span
+            title={card.assignedTo}
+            aria-label={`Assigned to ${card.assignedTo}`}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-violet-500/20 font-bold text-violet-200"
+          >
+            {card.assignedTo
+              .split(/\s+/)
+              .map((part) => part[0])
+              .join('')
+              .slice(0, 2)
+              .toUpperCase()}
           </span>
         )}
         {dueDate && (
