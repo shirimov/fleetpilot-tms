@@ -5,6 +5,8 @@ test('company-owned APIs reject unauthenticated requests consistently', async ({
 }) => {
   const responses = await Promise.all([
     request.get('/api/tasks'),
+    request.get('/api/tasks/cards/spoofed-card/checklist'),
+    request.get('/api/tasks/cards/spoofed-card/comments'),
     request.get('/api/companies'),
     request.get('/api/dashboard'),
     request.get('/api/trucks'),

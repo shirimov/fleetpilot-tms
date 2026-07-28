@@ -69,6 +69,7 @@ model User {
   memberships    CompanyMembership[]
   taskComments   TaskComment[]
   taskActivities TaskActivity[]
+  taskChecklistItems TaskChecklistItem[]
 
   @@index([activeCompanyId])
 }
@@ -446,6 +447,15 @@ enum TaskActivityAction {
   ASSIGNEE_CHANGED
   DUE_DATE_CHANGED
   ORDER_CHANGED
+  CHECKLIST_ITEM_CREATED
+  CHECKLIST_ITEM_UPDATED
+  CHECKLIST_ITEM_COMPLETED
+  CHECKLIST_ITEM_REOPENED
+  CHECKLIST_ITEM_REORDERED
+  CHECKLIST_ITEM_DELETED
+  COMMENT_ADDED
+  COMMENT_EDITED
+  COMMENT_DELETED
   TASK_DELETED
 }
 
@@ -509,6 +519,7 @@ model TaskCard {
   dueDate DateTime?
   labels TaskLabel[]
   comments TaskComment[]
+  checklistItems TaskChecklistItem[]
   attachments TaskAttachment[]
   activities TaskActivity[]
   startDate DateTime?
@@ -538,6 +549,22 @@ model TaskComment {
   updatedAt DateTime @updatedAt
 
   @@index([authorUserId])
+}
+
+model TaskChecklistItem {
+  id String @id @default(cuid())
+  cardId String
+  card TaskCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  content String
+  isCompleted Boolean @default(false)
+  order Int @default(0)
+  createdByUserId String?
+  createdByUser User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cardId, order, id])
+  @@index([createdByUserId])
 }
 
 model TaskActivity {

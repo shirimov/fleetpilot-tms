@@ -35,6 +35,7 @@ export default function TaskTableView({ project, onOpenCard }: Props) {
             <th className="border-b border-white/8 px-4 py-3">Status</th>
             <th className="border-b border-white/8 px-4 py-3">Assignee</th>
             <th className="border-b border-white/8 px-4 py-3">Priority</th>
+            <th className="border-b border-white/8 px-4 py-3">Checklist</th>
             <th className="border-b border-white/8 px-4 py-3">Due date</th>
             <th className="border-b border-white/8 px-4 py-3">Last updated</th>
           </tr>
@@ -64,7 +65,7 @@ function TaskTableGroup({
     <>
       <tr>
         <th
-          colSpan={6}
+          colSpan={7}
           className="border-b border-white/8 bg-[#11131b] px-4 py-2.5 text-left"
         >
           <span className="inline-flex items-center gap-2 font-semibold text-white">
@@ -85,7 +86,7 @@ function TaskTableGroup({
       </tr>
       {board.cards.length === 0 ? (
         <tr>
-          <td colSpan={6} className="border-b border-white/6 px-4 py-6 text-center text-slate-500">
+          <td colSpan={7} className="border-b border-white/6 px-4 py-6 text-center text-slate-500">
             No tasks match this view
           </td>
         </tr>
@@ -108,6 +109,11 @@ function TaskTableGroup({
               >
                 {card.status.replaceAll('_', ' ')}
               </span>
+            </td>
+            <td className="border-b border-white/6 px-4 py-3 text-slate-400">
+              {(card.checklistItems?.length ?? 0) > 0
+                ? `${card.checklistItems?.filter(({ isCompleted }) => isCompleted).length}/${card.checklistItems?.length}`
+                : '—'}
             </td>
             <td className="border-b border-white/6 px-4 py-3 text-slate-300">
               {card.assignedTo ? (

@@ -1,13 +1,31 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { KanbanCard, KanbanColumn } from '@/lib/tasks/kanban-types';
+
+type ChecklistItem = {
+  id: string;
+  content: string;
+  isCompleted: boolean;
+  order: number;
+};
+
+type Comment = {
+  id: string;
+  author: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  canEdit: boolean;
+  authorUser: { displayName: string; image: string | null } | null;
+};
 
 type Activity = {
   id: string;
   action: string;
   actorType: string;
-  entityTitle: string | null;
+  actorId: string | null;
+  actorUser: { displayName: string; image: string | null } | null;
   metadata: unknown;
   occurredAt: string;
 };
@@ -19,70 +37,286 @@ type Props = {
 };
 
 const actionLabels: Record<string, string> = {
-  TASK_CREATED: 'Task created',
-  TITLE_CHANGED: 'Title changed',
-  DESCRIPTION_CHANGED: 'Description changed',
-  STATUS_CHANGED: 'Status changed',
-  BOARD_CHANGED: 'Moved to another group',
-  PRIORITY_CHANGED: 'Priority changed',
-  ASSIGNEE_CHANGED: 'Assignee changed',
-  DUE_DATE_CHANGED: 'Due date changed',
-  ORDER_CHANGED: 'Task reordered',
-  TASK_DELETED: 'Task deleted',
+  TASK_CREATED: 'created the task',
+  TITLE_CHANGED: 'changed the title',
+  DESCRIPTION_CHANGED: 'changed the description',
+  STATUS_CHANGED: 'changed the status',
+  BOARD_CHANGED: 'moved the task',
+  PRIORITY_CHANGED: 'changed the priority',
+  ASSIGNEE_CHANGED: 'changed the assignee',
+  DUE_DATE_CHANGED: 'changed the due date',
+  ORDER_CHANGED: 'reordered the task',
+  CHECKLIST_ITEM_CREATED: 'added a checklist item',
+  CHECKLIST_ITEM_UPDATED: 'edited a checklist item',
+  CHECKLIST_ITEM_COMPLETED: 'completed a checklist item',
+  CHECKLIST_ITEM_REOPENED: 'reopened a checklist item',
+  CHECKLIST_ITEM_REORDERED: 'reordered the checklist',
+  CHECKLIST_ITEM_DELETED: 'deleted a checklist item',
+  COMMENT_ADDED: 'added a comment',
+  COMMENT_EDITED: 'edited a comment',
+  COMMENT_DELETED: 'deleted a comment',
+  TASK_DELETED: 'deleted the task',
 };
 
-function PlaceholderPanel({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.02] p-4">
-      <p className="text-sm font-semibold text-slate-200">{title}</p>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
-    </div>
-  );
+async function responseJson<ResponseBody>(response: Response): Promise<ResponseBody> {
+  const body = (await response.json()) as ResponseBody & { error?: string };
+  if (!response.ok) throw new Error(body.error ?? 'The request could not be completed.');
+  return body;
+}
+
+function activityDetails(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const values = metadata as Record<string, unknown>;
+  if ('from' in values || 'to' in values) {
+    return `${String(values.from ?? 'None')} → ${String(values.to ?? 'None')}`;
+  }
+  return typeof values.content === 'string' ? values.content : null;
 }
 
 export default function TaskDetailDrawer({ card, board, onClose }: Props) {
+  const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
+  const [comments, setComments] = useState<Comment[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
-  const [activityLoading, setActivityLoading] = useState(true);
-  const [activityError, setActivityError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [newItem, setNewItem] = useState('');
+  const [newComment, setNewComment] = useState('');
+  const [editingItem, setEditingItem] = useState<string | null>(null);
+  const [editingComment, setEditingComment] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
 
-  useEffect(() => {
-    let active = true;
-    fetch(`/api/tasks/cards/${card.id}/activity`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Activity could not be loaded.');
-        return (await response.json()) as Activity[];
-      })
-      .then((timeline) => {
-        if (active) setActivities(timeline);
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setActivityError(
-            error instanceof Error ? error.message : 'Activity could not be loaded.',
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setActivityLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+  const loadCollaboration = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [checklistResponse, commentsResponse, activityResponse] =
+        await Promise.all([
+          fetch(`/api/tasks/cards/${card.id}/checklist`),
+          fetch(`/api/tasks/cards/${card.id}/comments`),
+          fetch(`/api/tasks/cards/${card.id}/activity`),
+        ]);
+      const [items, thread, timeline] = await Promise.all([
+        responseJson<ChecklistItem[]>(checklistResponse),
+        responseJson<Comment[]>(commentsResponse),
+        responseJson<Activity[]>(activityResponse),
+      ]);
+      setChecklist(items);
+      setComments(thread);
+      setActivities(timeline);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Task collaboration details could not be loaded.',
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [card.id]);
+
+  const refreshActivity = useCallback(async () => {
+    const response = await fetch(`/api/tasks/cards/${card.id}/activity`);
+    setActivities(await responseJson<Activity[]>(response));
   }, [card.id]);
 
   useEffect(() => {
+    void loadCollaboration();
+  }, [loadCollaboration]);
+
+  useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
+      if (
+        event.key === 'Escape' &&
+        !document.querySelector('[data-task-inline-editor="true"]')
+      ) {
+        onClose();
+      }
     }
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [onClose]);
+
+  const completedCount = useMemo(
+    () => checklist.filter(({ isCompleted }) => isCompleted).length,
+    [checklist],
+  );
+
+  async function mutate(action: () => Promise<void>) {
+    setPending(true);
+    setError(null);
+    try {
+      await action();
+      await refreshActivity();
+    } catch (mutationError) {
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : 'The change could not be saved.',
+      );
+      throw mutationError;
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function addChecklistItem() {
+    const content = newItem.trim();
+    if (!content || pending) return;
+    await mutate(async () => {
+      const response = await fetch(`/api/tasks/cards/${card.id}/checklist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      const created = await responseJson<ChecklistItem>(response);
+      setChecklist((current) => [...current, created]);
+      setNewItem('');
+    });
+  }
+
+  async function toggleChecklistItem(item: ChecklistItem) {
+    if (pending) return;
+    const snapshot = checklist;
+    setChecklist((current) =>
+      current.map((candidate) =>
+        candidate.id === item.id
+          ? { ...candidate, isCompleted: !candidate.isCompleted }
+          : candidate,
+      ),
+    );
+    try {
+      await mutate(async () => {
+        const response = await fetch(
+          `/api/tasks/cards/${card.id}/checklist/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isCompleted: !item.isCompleted }),
+          },
+        );
+        const saved = await responseJson<ChecklistItem>(response);
+        setChecklist((current) =>
+          current.map((candidate) => (candidate.id === saved.id ? saved : candidate)),
+        );
+      });
+    } catch {
+      setChecklist(snapshot);
+    }
+  }
+
+  async function saveChecklistItem(item: ChecklistItem) {
+    const content = editValue.trim();
+    if (!content || pending) return;
+    await mutate(async () => {
+      const response = await fetch(
+        `/api/tasks/cards/${card.id}/checklist/${item.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        },
+      );
+      const saved = await responseJson<ChecklistItem>(response);
+      setChecklist((current) =>
+        current.map((candidate) => (candidate.id === saved.id ? saved : candidate)),
+      );
+      setEditingItem(null);
+    });
+  }
+
+  async function deleteChecklistItem(item: ChecklistItem) {
+    if (pending) return;
+    await mutate(async () => {
+      const response = await fetch(
+        `/api/tasks/cards/${card.id}/checklist/${item.id}`,
+        { method: 'DELETE' },
+      );
+      await responseJson<{ success: true }>(response);
+      setChecklist((current) =>
+        current
+          .filter(({ id }) => id !== item.id)
+          .map((candidate, order) => ({ ...candidate, order })),
+      );
+      if (editingItem === item.id) {
+        setEditingItem(null);
+      }
+    });
+  }
+
+  async function moveChecklistItem(index: number, offset: number) {
+    const destination = index + offset;
+    if (destination < 0 || destination >= checklist.length || pending) return;
+    const snapshot = checklist;
+    const reordered = [...checklist];
+    const [item] = reordered.splice(index, 1);
+    reordered.splice(destination, 0, item);
+    setChecklist(reordered.map((candidate, order) => ({ ...candidate, order })));
+    try {
+      await mutate(async () => {
+        const response = await fetch(`/api/tasks/cards/${card.id}/checklist`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ itemIds: reordered.map(({ id }) => id) }),
+        });
+        setChecklist(await responseJson<ChecklistItem[]>(response));
+      });
+    } catch {
+      setChecklist(snapshot);
+    }
+  }
+
+  async function addComment() {
+    const content = newComment.trim();
+    if (!content || pending) return;
+    await mutate(async () => {
+      const response = await fetch(`/api/tasks/cards/${card.id}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      const comment = await responseJson<Comment>(response);
+      setComments((current) => [...current, { ...comment, canEdit: true }]);
+      setNewComment('');
+    });
+  }
+
+  async function saveComment(comment: Comment) {
+    const content = editValue.trim();
+    if (!content || pending) return;
+    await mutate(async () => {
+      const response = await fetch(
+        `/api/tasks/cards/${card.id}/comments/${comment.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        },
+      );
+      const saved = await responseJson<Comment>(response);
+      setComments((current) =>
+        current.map((candidate) =>
+          candidate.id === saved.id ? { ...saved, canEdit: true } : candidate,
+        ),
+      );
+      setEditingComment(null);
+    });
+  }
+
+  async function deleteComment(comment: Comment) {
+    if (pending) return;
+    await mutate(async () => {
+      const response = await fetch(
+        `/api/tasks/cards/${card.id}/comments/${comment.id}`,
+        { method: 'DELETE' },
+      );
+      await responseJson<{ success: true }>(response);
+      setComments((current) => current.filter(({ id }) => id !== comment.id));
+      if (editingComment === comment.id) {
+        setEditingComment(null);
+      }
+    });
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -96,7 +330,7 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="task-drawer-title"
-        className="relative h-full w-full max-w-xl overflow-y-auto border-l border-white/10 bg-[#12141c] shadow-2xl"
+        className="relative h-full w-full max-w-2xl overflow-y-auto border-l border-white/10 bg-[#12141c] shadow-2xl"
       >
         <header className="sticky top-0 z-10 flex items-start gap-4 border-b border-white/8 bg-[#12141c]/95 px-5 py-5 backdrop-blur">
           <div className="min-w-0 flex-1">
@@ -107,86 +341,114 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
               {card.title}
             </h2>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded-lg p-2 text-xl text-slate-400 hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-          >
-            ×
-          </button>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-xl text-slate-400 hover:bg-white/5 hover:text-white">×</button>
         </header>
 
-        <div className="space-y-6 p-5">
+        <div className="space-y-7 p-5">
+          {error && (
+            <div role="alert" className="rounded-lg bg-rose-400/10 p-3 text-sm text-rose-200">
+              {error}
+              {loading === false && (
+                <button type="button" onClick={() => void loadCollaboration()} className="ml-2 underline">Retry</button>
+              )}
+            </div>
+          )}
+
           <section aria-labelledby="overview-heading">
-            <h3 id="overview-heading" className="mb-3 text-sm font-semibold text-white">
-              Overview
-            </h3>
+            <h3 id="overview-heading" className="mb-3 text-sm font-semibold text-white">Overview</h3>
             <dl className="grid grid-cols-2 gap-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm">
-              <div>
-                <dt className="text-xs text-slate-500">Status</dt>
-                <dd className="mt-1 font-medium text-slate-200">{card.status.replaceAll('_', ' ')}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-slate-500">Priority</dt>
-                <dd className="mt-1 font-medium text-slate-200">{card.priority}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-slate-500">Assignee</dt>
-                <dd className="mt-1 font-medium text-slate-200">{card.assignedTo ?? 'Unassigned'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs text-slate-500">Due date</dt>
-                <dd className="mt-1 font-medium text-slate-200">
-                  {card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date'}
-                </dd>
-              </div>
+              <div><dt className="text-xs text-slate-500">Status</dt><dd className="mt-1 font-medium text-slate-200">{card.status.replaceAll('_', ' ')}</dd></div>
+              <div><dt className="text-xs text-slate-500">Priority</dt><dd className="mt-1 font-medium text-slate-200">{card.priority}</dd></div>
+              <div><dt className="text-xs text-slate-500">Assignee</dt><dd className="mt-1 font-medium text-slate-200">{card.assignedTo ?? 'Unassigned'}</dd></div>
+              <div><dt className="text-xs text-slate-500">Due date</dt><dd className="mt-1 font-medium text-slate-200">{card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date'}</dd></div>
             </dl>
-            <p className="mt-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm leading-6 text-slate-300">
-              {card.description || 'No description has been added.'}
-            </p>
+            <p className="mt-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm leading-6 text-slate-300">{card.description || 'No description has been added.'}</p>
+          </section>
+
+          <section aria-labelledby="checklist-heading">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 id="checklist-heading" className="text-sm font-semibold text-white">Checklist</h3>
+              <span className="text-xs text-slate-400">{completedCount}/{checklist.length} complete</span>
+            </div>
+            <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-white/8">
+              <div className="h-full bg-emerald-400 transition-all" style={{ width: checklist.length ? `${(completedCount / checklist.length) * 100}%` : '0%' }} />
+            </div>
+            {loading ? <div className="h-20 animate-pulse rounded-xl bg-white/5" /> : checklist.length === 0 ? <p className="mb-3 text-sm text-slate-500">No checklist items yet.</p> : (
+              <ul className="space-y-2">
+                {checklist.map((item, index) => (
+                  <li key={item.id} className="flex items-center gap-2 rounded-lg border border-white/8 bg-[#181b25] p-2">
+                    <input aria-label={`Complete ${item.content}`} type="checkbox" checked={item.isCompleted} onChange={() => void toggleChecklistItem(item)} disabled={pending} />
+                    {editingItem === item.id ? (
+                      <input data-task-inline-editor="true" aria-label={`Edit ${item.content}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
+                        if (event.key === 'Enter') void saveChecklistItem(item);
+                        if (event.key === 'Escape') {
+                          event.stopPropagation();
+                          setEditingItem(null);
+                        }
+                      }} className="min-w-0 flex-1 rounded bg-[#10121a] px-2 py-1 text-sm outline-none ring-1 ring-blue-400" />
+                    ) : <span className={`min-w-0 flex-1 text-sm ${item.isCompleted ? 'text-slate-500 line-through' : 'text-slate-200'}`}>{item.content}</span>}
+                    {editingItem === item.id ? <button type="button" onClick={() => void saveChecklistItem(item)} className="text-xs text-blue-300">Save</button> : <button type="button" onClick={() => { setEditingItem(item.id); setEditValue(item.content); }} className="text-xs text-slate-400">Edit</button>}
+                    <button type="button" aria-label={`Move ${item.content} up`} disabled={index === 0 || pending} onClick={() => void moveChecklistItem(index, -1)} className="text-slate-500 disabled:opacity-20">↑</button>
+                    <button type="button" aria-label={`Move ${item.content} down`} disabled={index === checklist.length - 1 || pending} onClick={() => void moveChecklistItem(index, 1)} className="text-slate-500 disabled:opacity-20">↓</button>
+                    <button type="button" aria-label={`Delete ${item.content}`} onClick={() => void deleteChecklistItem(item)} className="text-rose-300">×</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form className="mt-3 flex gap-2" onSubmit={(event) => { event.preventDefault(); void addChecklistItem(); }}>
+              <input aria-label="New checklist item" value={newItem} onChange={(event) => setNewItem(event.target.value)} placeholder="Add a checklist item" className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#181b25] px-3 py-2 text-sm outline-none focus:border-blue-400" />
+              <button disabled={!newItem.trim() || pending} className="rounded-lg bg-blue-500 px-3 py-2 text-sm font-semibold disabled:opacity-40">Add</button>
+            </form>
+          </section>
+
+          <section aria-labelledby="comments-heading">
+            <h3 id="comments-heading" className="mb-3 text-sm font-semibold text-white">Comments</h3>
+            {!loading && comments.length === 0 && <p className="mb-3 text-sm text-slate-500">Start the conversation.</p>}
+            <ol className="space-y-3">
+              {comments.map((comment) => (
+                <li key={comment.id} className="rounded-xl border border-white/8 bg-[#181b25] p-3">
+                  <div className="flex justify-between gap-3 text-xs text-slate-500">
+                    <span className="font-medium text-slate-300">{comment.authorUser?.displayName ?? comment.author}</span>
+                    <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
+                  </div>
+                  {editingComment === comment.id ? (
+                    <textarea data-task-inline-editor="true" aria-label={`Edit comment by ${comment.authorUser?.displayName ?? comment.author}`} autoFocus value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.stopPropagation();
+                        setEditingComment(null);
+                      }
+                    }} className="mt-2 min-h-20 w-full rounded-lg bg-[#10121a] p-2 text-sm outline-none ring-1 ring-blue-400" />
+                  ) : <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-200">{comment.content}</p>}
+                  {comment.canEdit && <div className="mt-2 flex gap-3 text-xs">
+                    {editingComment === comment.id ? <button type="button" onClick={() => void saveComment(comment)} className="text-blue-300">Save</button> : <button type="button" onClick={() => { setEditingComment(comment.id); setEditValue(comment.content); }} className="text-slate-400">Edit</button>}
+                    <button type="button" onClick={() => void deleteComment(comment)} className="text-rose-300">Delete</button>
+                  </div>}
+                </li>
+              ))}
+            </ol>
+            <form className="mt-3" onSubmit={(event) => { event.preventDefault(); void addComment(); }}>
+              <textarea aria-label="New comment" value={newComment} onChange={(event) => setNewComment(event.target.value)} placeholder="Write a comment…" className="min-h-24 w-full rounded-lg border border-white/10 bg-[#181b25] p-3 text-sm outline-none focus:border-blue-400" />
+              <div className="mt-2 flex justify-end"><button disabled={!newComment.trim() || pending} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold disabled:opacity-40">Comment</button></div>
+            </form>
           </section>
 
           <section aria-labelledby="activity-heading">
-            <h3 id="activity-heading" className="mb-3 text-sm font-semibold text-white">
-              Activity
-            </h3>
-            {activityLoading ? (
-              <div className="h-24 animate-pulse rounded-xl bg-white/5" />
-            ) : activityError ? (
-              <p className="rounded-lg bg-rose-400/10 p-3 text-sm text-rose-200">{activityError}</p>
-            ) : activities.length === 0 ? (
-              <p className="text-sm text-slate-500">No activity recorded yet.</p>
-            ) : (
+            <h3 id="activity-heading" className="mb-3 text-sm font-semibold text-white">Activity</h3>
+            {loading ? <div className="h-24 animate-pulse rounded-xl bg-white/5" /> : activities.length === 0 ? <p className="text-sm text-slate-500">No activity recorded yet.</p> : (
               <ol className="space-y-3">
-                {activities.map((activity) => (
-                  <li key={activity.id} className="flex gap-3 text-sm">
+                {activities.map((activity) => {
+                  const details = activityDetails(activity.metadata);
+                  return <li key={activity.id} className="flex gap-3 text-sm">
                     <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-blue-400" />
                     <div>
-                      <p className="font-medium text-slate-200">
-                        {actionLabels[activity.action] ?? activity.action.replaceAll('_', ' ')}
-                      </p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {activity.actorType.toLocaleLowerCase()} ·{' '}
-                        {new Date(activity.occurredAt).toLocaleString()}
-                      </p>
+                      <p className="text-slate-200"><strong>{activity.actorUser?.displayName ?? (activity.actorType === 'UNATTRIBUTED' ? 'Legacy user' : activity.actorType.toLocaleLowerCase())}</strong> {actionLabels[activity.action] ?? activity.action.replaceAll('_', ' ').toLocaleLowerCase()}</p>
+                      {details && <p className="mt-0.5 text-xs text-slate-400">{details}</p>}
+                      <time dateTime={activity.occurredAt} className="mt-0.5 block text-xs text-slate-500">{new Date(activity.occurredAt).toLocaleString()}</time>
                     </div>
-                  </li>
-                ))}
+                  </li>;
+                })}
               </ol>
             )}
-          </section>
-
-          <section aria-labelledby="coming-soon-heading">
-            <h3 id="coming-soon-heading" className="mb-3 text-sm font-semibold text-white">
-              Connected work
-            </h3>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <PlaceholderPanel title="Comments" description="Team discussion will appear here in a future sprint." />
-              <PlaceholderPanel title="Files" description="Task documents and attachments are coming soon." />
-              <PlaceholderPanel title="AI assistance" description="Recommendations will remain reviewable before action." />
-              <PlaceholderPanel title="Telegram" description="Linked operational messages will appear here." />
-            </div>
           </section>
         </div>
       </aside>
