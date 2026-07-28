@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { KanbanCard, KanbanColumn } from '@/lib/tasks/kanban-types';
+import MarkdownContent from './MarkdownContent';
+import TaskAttachments from './TaskAttachments';
+import TaskDescriptionEditor, {
+  extractMentionUserIds,
+} from './TaskDescriptionEditor';
 
 type ChecklistItem = {
   id: string;
@@ -55,6 +60,10 @@ const actionLabels: Record<string, string> = {
   COMMENT_ADDED: 'added a comment',
   COMMENT_EDITED: 'edited a comment',
   COMMENT_DELETED: 'deleted a comment',
+  ATTACHMENT_ADDED: 'added an attachment',
+  ATTACHMENT_REMOVED: 'removed an attachment',
+  MENTION_ADDED: 'mentioned a teammate',
+  MENTION_RESOLVED: 'resolved a mention',
   TASK_DELETED: 'deleted the task',
 };
 
@@ -85,6 +94,9 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
   const [editingItem, setEditingItem] = useState<string | null>(null);
   const [editingComment, setEditingComment] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [commentMentionCandidates, setCommentMentionCandidates] = useState<
+    Array<{ id: string; displayName: string }>
+  >([]);
 
   const loadCollaboration = useCallback(async () => {
     setLoading(true);
@@ -136,6 +148,24 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [onClose]);
+
+  useEffect(() => {
+    const query = newComment.match(/(?:^|\s)@([\w .-]{0,40})$/)?.[1];
+    if (query === undefined) {
+      setCommentMentionCandidates([]);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`/api/tasks/mentions?q=${encodeURIComponent(query)}`, {
+      signal: controller.signal,
+    })
+      .then((response) => response.ok ? response.json() : [])
+      .then((users: Array<{ id: string; displayName: string }>) =>
+        setCommentMentionCandidates(users),
+      )
+      .catch(() => {});
+    return () => controller.abort();
+  }, [newComment]);
 
   const completedCount = useMemo(
     () => checklist.filter(({ isCompleted }) => isCompleted).length,
@@ -273,7 +303,10 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
       const response = await fetch(`/api/tasks/cards/${card.id}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content,
+          mentionUserIds: extractMentionUserIds(content),
+        }),
       });
       const comment = await responseJson<Comment>(response);
       setComments((current) => [...current, { ...comment, canEdit: true }]);
@@ -290,7 +323,10 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({
+            content,
+            mentionUserIds: extractMentionUserIds(content),
+          }),
         },
       );
       const saved = await responseJson<Comment>(response);
@@ -362,8 +398,13 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
               <div><dt className="text-xs text-slate-500">Assignee</dt><dd className="mt-1 font-medium text-slate-200">{card.assignedTo ?? 'Unassigned'}</dd></div>
               <div><dt className="text-xs text-slate-500">Due date</dt><dd className="mt-1 font-medium text-slate-200">{card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date'}</dd></div>
             </dl>
-            <p className="mt-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm leading-6 text-slate-300">{card.description || 'No description has been added.'}</p>
           </section>
+
+          <TaskDescriptionEditor
+            cardId={card.id}
+            initialMarkdown={card.description ?? ''}
+            initialUpdatedAt={card.updatedAt}
+          />
 
           <section aria-labelledby="checklist-heading">
             <div className="mb-3 flex items-center justify-between">
@@ -418,7 +459,7 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
                         setEditingComment(null);
                       }
                     }} className="mt-2 min-h-20 w-full rounded-lg bg-[#10121a] p-2 text-sm outline-none ring-1 ring-blue-400" />
-                  ) : <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-200">{comment.content}</p>}
+                  ) : <div className="mt-2"><MarkdownContent markdown={comment.content} /></div>}
                   {comment.canEdit && <div className="mt-2 flex gap-3 text-xs">
                     {editingComment === comment.id ? <button type="button" onClick={() => void saveComment(comment)} className="text-blue-300">Save</button> : <button type="button" onClick={() => { setEditingComment(comment.id); setEditValue(comment.content); }} className="text-slate-400">Edit</button>}
                     <button type="button" onClick={() => void deleteComment(comment)} className="text-rose-300">Delete</button>
@@ -428,9 +469,39 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
             </ol>
             <form className="mt-3" onSubmit={(event) => { event.preventDefault(); void addComment(); }}>
               <textarea aria-label="New comment" value={newComment} onChange={(event) => setNewComment(event.target.value)} placeholder="Write a comment…" className="min-h-24 w-full rounded-lg border border-white/10 bg-[#181b25] p-3 text-sm outline-none focus:border-blue-400" />
+              {commentMentionCandidates.length > 0 && (
+                <ul role="listbox" aria-label="Comment mention suggestions" className="mt-1 rounded-lg border border-white/10 bg-slate-900 p-1">
+                  {commentMentionCandidates.map((candidate) => (
+                    <li key={candidate.id}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected="false"
+                        onClick={() => {
+                          setNewComment((current) =>
+                            current.replace(
+                              /@[\w .-]{0,40}$/,
+                              `@[${candidate.displayName}](user:${candidate.id}) `,
+                            ),
+                          );
+                          setCommentMentionCandidates([]);
+                        }}
+                        className="w-full rounded px-3 py-2 text-left text-sm hover:bg-white/10"
+                      >
+                        {candidate.displayName}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <div className="mt-2 flex justify-end"><button disabled={!newComment.trim() || pending} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold disabled:opacity-40">Comment</button></div>
             </form>
           </section>
+
+          <TaskAttachments
+            cardId={card.id}
+            onActivityChanged={refreshActivity}
+          />
 
           <section aria-labelledby="activity-heading">
             <h3 id="activity-heading" className="mb-3 text-sm font-semibold text-white">Activity</h3>

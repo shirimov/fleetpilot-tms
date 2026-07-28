@@ -29,7 +29,12 @@ export async function PATCH(req: NextRequest) {
   try {
     const input = validateUpdateTaskCardInput(await parseTaskRequestBody(req));
     const context = await taskAuthorizationService.requireCard(input.id);
-    const card = await taskService.updateCard(input, { userId: context.user.id });
+    const card = await taskService.updateCard(input, {
+      userId: context.user.id,
+      displayName: context.user.displayName,
+      companyId: context.companyId,
+      role: context.role,
+    });
 
     return NextResponse.json(card);
   } catch (error) {
