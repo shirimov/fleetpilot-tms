@@ -2,19 +2,23 @@ import { NextResponse } from 'next/server';
 import { authorizationService } from '@/lib/auth/authorization';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
-import { validateId, validateLoadInput } from '@/lib/dispatch/dispatch-validation';
+import {
+  validateId,
+  validateTrailerInput,
+} from '@/lib/dispatch/dispatch-validation';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany();
-    const load = await dispatchService.updateLoad(
-      validateId((await params).id, 'Load ID'),
-      validateLoadInput(await request.json()),
-      context,
+    const context = await authorizationService.requireActiveCompany('ADMIN');
+    return NextResponse.json(
+      await dispatchService.updateTrailer(
+        validateId((await params).id, 'Trailer ID'),
+        validateTrailerInput(await request.json()),
+        context,
+      ),
     );
-    return NextResponse.json(load);
   } catch (error) {
     return dispatchRouteErrorResponse(error);
   }
@@ -23,8 +27,8 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 export async function DELETE(_request: Request, { params }: RouteContext) {
   try {
     const context = await authorizationService.requireActiveCompany('ADMIN');
-    await dispatchService.deleteLoad(
-      validateId((await params).id, 'Load ID'),
+    await dispatchService.deleteTrailer(
+      validateId((await params).id, 'Trailer ID'),
       context,
     );
     return NextResponse.json({ ok: true });
@@ -32,3 +36,4 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return dispatchRouteErrorResponse(error);
   }
 }
+

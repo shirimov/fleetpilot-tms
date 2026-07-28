@@ -2,23 +2,17 @@ import { NextResponse } from 'next/server';
 import { authorizationService } from '@/lib/auth/authorization';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
-import {
-  validateLoadInput,
-  validateOptionalLoadStatus,
-} from '@/lib/dispatch/dispatch-validation';
+import { validateCustomerInput } from '@/lib/dispatch/dispatch-validation';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
     const context = await authorizationService.requireActiveCompany();
-    const url = new URL(request.url);
-    const loads = await dispatchService.getLoads(context.companyId, {
-      query: url.searchParams.get('q')?.slice(0, 100) || undefined,
-      status: validateOptionalLoadStatus(url.searchParams.get('status') || undefined),
-      exception: url.searchParams.get('exception') || undefined,
-    });
-    return NextResponse.json(loads);
+    const query = new URL(request.url).searchParams.get('q')?.slice(0, 100) ?? '';
+    return NextResponse.json(
+      await dispatchService.getCustomers(context.companyId, query),
+    );
   } catch (error) {
     return dispatchRouteErrorResponse(error);
   }
@@ -27,12 +21,13 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const context = await authorizationService.requireActiveCompany();
-    const load = await dispatchService.createLoad(
-      validateLoadInput(await request.json()),
+    const customer = await dispatchService.createCustomer(
+      validateCustomerInput(await request.json()),
       context,
     );
-    return NextResponse.json(load, { status: 201 });
+    return NextResponse.json(customer, { status: 201 });
   } catch (error) {
     return dispatchRouteErrorResponse(error);
   }
 }
+
