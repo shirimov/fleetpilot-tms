@@ -46,10 +46,29 @@ prefix="${BACKUP_DIR}/${timestamp}-${safe_reason:-backup}"
 database_backup="${prefix}-database.dump.age"
 attachment_backup="${prefix}-attachments.tar.gz.age"
 manifest="${prefix}.sha256"
+completion_marker="${prefix}.complete"
 partial_database="${database_backup}.partial"
 partial_attachments="${attachment_backup}.partial"
 partial_manifest="${manifest}.partial"
-trap 'rm -f "${partial_database}" "${partial_attachments}" "${partial_manifest}"' EXIT
+partial_completion="${completion_marker}.partial"
+
+cleanup_incomplete_set() {
+  local exit_status=$?
+
+  if [[ ! -f "${completion_marker}" ]]; then
+    rm -f \
+      "${partial_database}" \
+      "${partial_attachments}" \
+      "${partial_manifest}" \
+      "${partial_completion}" \
+      "${database_backup}" \
+      "${attachment_backup}" \
+      "${manifest}"
+  fi
+
+  exit "${exit_status}"
+}
+trap cleanup_incomplete_set EXIT
 compose=(docker compose --env-file "${ENV_FILE}" -f "${REPO_ROOT}/docker-compose.staging.yml")
 
 echo "Writing encrypted PostgreSQL backup..."
@@ -58,7 +77,6 @@ echo "Writing encrypted PostgreSQL backup..."
   -U "${POSTGRES_USER}" "${POSTGRES_DB}" \
   | age --encrypt --recipient "${BACKUP_AGE_RECIPIENT}" \
   > "${partial_database}"
-mv "${partial_database}" "${database_backup}"
 
 private_volume="$(
   docker volume ls \
@@ -74,23 +92,48 @@ fi
 
 echo "Writing encrypted attachment backup..."
 docker run --rm \
+  --user 1001:1001 \
   --read-only \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
   -v "${private_volume}:/private:ro" \
-  alpine:3.22 tar -C /private -czf - . \
+  alpine:3.22 sh -ec 'test "$(id -u):$(id -g)" = "1001:1001"; exec tar -C /private -czf - .' \
   | age --encrypt --recipient "${BACKUP_AGE_RECIPIENT}" \
   > "${partial_attachments}"
+
+mv "${partial_database}" "${database_backup}"
 mv "${partial_attachments}" "${attachment_backup}"
 
-sha256sum "${database_backup}" "${attachment_backup}" > "${partial_manifest}"
+(
+  cd "${BACKUP_DIR}"
+  sha256sum "$(basename "${database_backup}")" "$(basename "${attachment_backup}")"
+) > "${partial_manifest}"
 mv "${partial_manifest}" "${manifest}"
 
-find "${BACKUP_DIR}" -maxdepth 1 -type f \
-  \( -name '*-database.dump.age' -o -name '*-attachments.tar.gz.age' -o -name '*.sha256' \) \
-  -mtime "+${BACKUP_RETENTION_DAYS}" -delete
+(
+  cd "${BACKUP_DIR}"
+  sha256sum --check "$(basename "${manifest}")"
+)
+
+printf 'complete\n' > "${partial_completion}"
+mv "${partial_completion}" "${completion_marker}"
+
+while IFS= read -r -d '' expired_marker; do
+  expired_prefix="${expired_marker%.complete}"
+  expiring_marker="${expired_marker}.expiring"
+  mv "${expired_marker}" "${expiring_marker}"
+  rm -f \
+    "${expired_prefix}-database.dump.age" \
+    "${expired_prefix}-attachments.tar.gz.age" \
+    "${expired_prefix}.sha256" \
+    "${expiring_marker}"
+done < <(
+  find "${BACKUP_DIR}" -maxdepth 1 -type f -name '*.complete' \
+    -mtime "+${BACKUP_RETENTION_DAYS}" -print0
+)
 
 echo "Backup complete:"
 echo "  ${database_backup}"
 echo "  ${attachment_backup}"
 echo "  ${manifest}"
+echo "  ${completion_marker}"

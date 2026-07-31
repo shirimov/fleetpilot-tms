@@ -69,6 +69,18 @@ done
 
 echo "Creating encrypted pre-migration backups..."
 ENV_FILE="${ENV_FILE}" "${SCRIPT_DIR}/backup-staging.sh" pre-migration
+latest_backup_marker="$(
+  find "${BACKUP_DIR}" -maxdepth 1 -type f -name '*-pre-migration.complete' \
+    -printf '%T@ %p\0' |
+    sort -z -nr |
+    head -z -n 1 |
+    cut -z -d ' ' -f 2-
+)"
+if [[ -z "${latest_backup_marker}" ]]; then
+  echo "Pre-migration backup did not produce a completion marker." >&2
+  exit 1
+fi
+"${SCRIPT_DIR}/verify-staging-backup.sh" "${latest_backup_marker%.complete}"
 
 echo "Applying Prisma migrations as a one-shot release step..."
 if ! "${compose[@]}" --profile release run --rm migrate; then
