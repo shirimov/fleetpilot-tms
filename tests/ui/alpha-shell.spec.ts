@@ -141,6 +141,75 @@ test('exposes every completed module and supports sidebar collapse and mobile na
   ).toHaveCount(0);
 });
 
+test('keeps mobile navigation modal and restores its trigger', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  const trigger = page.getByRole('button', { name: 'Open navigation' });
+  await trigger.click();
+
+  const navigationDialog = page.getByRole('dialog', {
+    name: 'FleetPilot navigation',
+  });
+  const closeButton = navigationDialog.getByRole('button', {
+    name: 'Close navigation',
+  });
+  await expect(closeButton).toBeFocused();
+
+  await expect(
+    page.locator('body > [inert][aria-hidden="true"]').first(),
+  ).toBeAttached();
+  const backgroundAction = page.locator('[aria-label="Open profile menu"]');
+  await backgroundAction.evaluate((element) =>
+    (element as HTMLButtonElement).focus(),
+  );
+  await expect(closeButton).toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(closeButton).not.toBeFocused();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.querySelector('[role="dialog"]')?.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
+  await page.keyboard.press('Tab');
+  await expect(closeButton).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(navigationDialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await navigationDialog
+    .getByRole('link', { name: 'Task Manager', exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/tasks$/);
+  await expect(navigationDialog).toBeHidden();
+});
+
+test('dismisses and keyboard-navigates the profile menu accessibly', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const trigger = page.getByRole('button', { name: 'Open profile menu' });
+  await trigger.click();
+
+  const menu = page.getByRole('menu', { name: 'Profile' });
+  const signOut = menu.getByRole('menuitem', { name: 'Sign out' });
+  await expect(signOut).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(signOut).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(menu).toBeVisible();
+  await page.getByRole('heading', { name: 'Good morning, dispatch' }).click();
+  await expect(menu).toBeHidden();
+});
+
 test('captures desktop and mobile Internal Alpha shell references', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');

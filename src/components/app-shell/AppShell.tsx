@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
@@ -26,6 +26,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [companyContext, setCompanyContext] = useState<CompanyContext | null>(null);
   const [companyError, setCompanyError] = useState('');
+  const profileTriggerRef = useRef<HTMLButtonElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -44,6 +46,30 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      profileMenuRef.current
+        ?.querySelector<HTMLElement>('[role="menuitem"]')
+        ?.focus();
+    });
+    function dismissOutside(event: PointerEvent) {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !profileMenuRef.current?.contains(target) &&
+        !profileTriggerRef.current?.contains(target)
+      ) {
+        setProfileOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', dismissOutside);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('pointerdown', dismissOutside);
+    };
+  }, [profileOpen]);
 
   if (pathname === '/login') return children;
 
@@ -71,6 +97,42 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
   const userInitial =
     companyContext?.user.displayName.trim().charAt(0).toUpperCase() || 'F';
+
+  function closeProfileMenu({ restoreFocus = false } = {}) {
+    setProfileOpen(false);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => profileTriggerRef.current?.focus());
+    }
+  }
+
+  function navigateProfileMenu(event: KeyboardEvent<HTMLDivElement>) {
+    const items = Array.from(
+      profileMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ??
+        [],
+    );
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeProfileMenu({ restoreFocus: true });
+      return;
+    }
+    if (event.key === 'Tab') {
+      closeProfileMenu();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (items.length === 0) return;
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowUp'
+            ? (currentIndex - 1 + items.length) % items.length
+            : (currentIndex + 1) % items.length;
+    items[nextIndex]?.focus();
+  }
 
   return (
     <div className="alpha-shell min-h-screen bg-[var(--alpha-canvas)] text-slate-100">
@@ -135,11 +197,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
             <div className="relative">
               <button
+                ref={profileTriggerRef}
                 type="button"
                 onClick={() => setProfileOpen((current) => !current)}
                 className="flex h-10 items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-1.5 pr-2 text-left hover:border-slate-700"
                 aria-label="Open profile menu"
                 aria-expanded={profileOpen}
+                aria-haspopup="menu"
+                aria-controls="profile-menu"
               >
                 <span className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-blue-500 to-cyan-400 text-xs font-bold text-white">
                   {userInitial}
@@ -150,7 +215,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="text-[10px] text-slate-500">▾</span>
               </button>
               {profileOpen && (
-                <div className="absolute right-0 top-12 w-64 rounded-xl border border-slate-800 bg-slate-950 p-2 shadow-2xl shadow-black/40">
+                <div
+                  ref={profileMenuRef}
+                  id="profile-menu"
+                  role="menu"
+                  aria-label="Profile"
+                  onKeyDown={navigateProfileMenu}
+                  className="absolute right-0 top-12 w-64 rounded-xl border border-slate-800 bg-slate-950 p-2 shadow-2xl shadow-black/40"
+                >
                   <div className="border-b border-slate-800 px-3 py-2">
                     <p className="truncate text-sm font-semibold text-white">
                       {companyContext?.user.displayName ?? 'FleetPilot user'}
@@ -169,6 +241,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                   <Link
                     href="/api/auth/signout"
+                    role="menuitem"
                     className="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white"
                   >
                     Sign out

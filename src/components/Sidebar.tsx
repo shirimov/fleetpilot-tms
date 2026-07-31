@@ -2,11 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useRef } from 'react';
 import {
   alphaNavigation,
   navigationItemIsActive,
   type NavigationIconName,
 } from '@/components/app-shell/navigation';
+import ModalLayer from '@/components/ui/ModalLayer';
 
 type SidebarProps = {
   collapsed?: boolean;
@@ -52,6 +54,7 @@ function NavigationIcon({ name }: { name: NavigationIconName }) {
 
 export default function Sidebar(props: SidebarProps = {}) {
   const pathname = usePathname();
+  const mobileCloseRef = useRef<HTMLButtonElement>(null);
   if (!props.onCollapse || !props.onMobileClose) return null;
   const {
     collapsed = false,
@@ -176,15 +179,32 @@ export default function Sidebar(props: SidebarProps = {}) {
         {content}
       </aside>
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <ModalLayer
+          className="fixed inset-0 z-50 lg:hidden"
+          labelledBy="mobile-navigation-title"
+          describedBy="mobile-navigation-description"
+          initialFocusRef={mobileCloseRef}
+          onClose={onMobileClose}
+        >
           <button
             type="button"
+            tabIndex={-1}
             aria-label="Dismiss navigation"
             onClick={onMobileClose}
             className="absolute inset-0 bg-black/65 backdrop-blur-sm"
           />
-          <aside className="relative flex h-full w-[min(19rem,86vw)] flex-col border-r border-slate-800 bg-slate-950 shadow-2xl">
+          <aside
+            aria-label="Mobile navigation"
+            className="relative flex h-full w-[min(19rem,86vw)] flex-col border-r border-slate-800 bg-slate-950 shadow-2xl"
+          >
+            <h2 id="mobile-navigation-title" className="sr-only">
+              FleetPilot navigation
+            </h2>
+            <p id="mobile-navigation-description" className="sr-only">
+              Navigate between completed Internal Alpha modules.
+            </p>
             <button
+              ref={mobileCloseRef}
               type="button"
               onClick={onMobileClose}
               aria-label="Close navigation"
@@ -194,7 +214,7 @@ export default function Sidebar(props: SidebarProps = {}) {
             </button>
             {content}
           </aside>
-        </div>
+        </ModalLayer>
       )}
     </>
   );

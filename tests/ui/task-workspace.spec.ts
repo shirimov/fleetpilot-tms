@@ -403,6 +403,53 @@ test('supports checklist and comment collaboration in the task drawer', async ({
   await expect(drawer).toBeHidden();
 });
 
+test('keeps task drawer focus modal and restores the exact task trigger', async ({
+  page,
+}) => {
+  const trigger = page.getByRole('button', {
+    name: 'Complete trailer inspection',
+    exact: true,
+  });
+  await trigger.click();
+
+  const drawer = page.getByRole('dialog', {
+    name: 'Complete trailer inspection',
+  });
+  const closeButton = drawer.getByRole('button', { name: 'Close', exact: true });
+  await expect(closeButton).toBeFocused();
+  await expect(drawer).toHaveAttribute(
+    'aria-describedby',
+    'task-drawer-description',
+  );
+
+  await expect(
+    page.locator('body > [inert][aria-hidden="true"]').first(),
+  ).toBeAttached();
+  await page.evaluate(() => {
+    const backgroundViewButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.trim() === 'Table');
+    backgroundViewButton?.focus();
+  });
+  await expect(closeButton).toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(closeButton).not.toBeFocused();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.querySelector('[role="dialog"]')?.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
+  await page.keyboard.press('Tab');
+  await expect(closeButton).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
 test('autosaves rich Markdown, scopes mentions, and uploads attachments', async ({
   page,
 }) => {
