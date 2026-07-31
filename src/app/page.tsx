@@ -1,196 +1,232 @@
-'use client'
-import { useEffect, useState } from 'react'
-import Sidebar from '@/components/Sidebar'
-import Link from 'next/link'
+'use client';
 
-const statusColor: Record<string, string> = {
-  PENDING: 'bg-yellow-900/50 text-yellow-300',
-  IN_TRANSIT: 'bg-blue-900/50 text-blue-300',
-  DELIVERED: 'bg-green-900/50 text-green-300',
-  CANCELLED: 'bg-red-900/50 text-red-300',
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import {
+  EmptyState,
+  MetricCard,
+  PageHeader,
+  PanelSkeleton,
+  StatusBadge,
+} from '@/components/ui/alpha';
+
+type DashboardSnapshot = {
+  activeLoads: number;
+  unassignedLoads: number;
+  availableTrucks: number;
+  availableTrailers: number;
+  activeDrivers: number;
+  loadsAtRisk: number;
+  overdueTasks: number;
+  pendingSettlements: number;
+  loadsThisWeek: number;
+  revenueThisWeek: number;
+  recentLoads: Array<{
+    id: string;
+    loadNumber: string;
+    origin: string;
+    destination: string;
+    rate: number;
+    status: string;
+    truck: { unitNumber: string } | null;
+    driver: { firstName: string; lastName: string } | null;
+  }>;
+  recentActivity: Array<{
+    id: string;
+    type: 'task' | 'load';
+    action: string;
+    title: string;
+    actor: string;
+    occurredAt: string;
+  }>;
+};
+
+function statusTone(status: string): 'neutral' | 'blue' | 'green' | 'yellow' | 'red' | 'violet' {
+  if (status === 'PAID' || status === 'DELIVERED') return 'green';
+  if (status === 'IN_TRANSIT' || status === 'DISPATCHED') return 'blue';
+  if (status === 'CANCELLED') return 'red';
+  if (status === 'POD_UPLOADED' || status === 'INVOICED') return 'violet';
+  return 'yellow';
+}
+
+function formatAction(action: string) {
+  return action.toLowerCase().replaceAll('_', ' ');
 }
 
 export default function Home() {
-  const [stats, setStats] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-  const [qmStats, setQmStats] = useState<any>(null)
-  const [qmLoading, setQmLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch('/api/dashboard')
-      .then(r => r.json())
-      .then(d => { setStats(d); setLoading(false) })
+    let active = true;
+    fetch('/api/dashboard', { cache: 'no-store' })
+      .then(async (response) => {
+        const body = (await response.json()) as DashboardSnapshot | { error?: string };
+        if (!response.ok) {
+          throw new Error('error' in body ? body.error : 'Dashboard unavailable');
+        }
+        return body as DashboardSnapshot;
+      })
+      .then((nextSnapshot) => {
+        if (active) setSnapshot(nextSnapshot);
+      })
+      .catch((caught: Error) => {
+        if (active) setError(caught.message || 'Dashboard unavailable');
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-    fetch('/api/qm-stats')
-      .then(r => r.json())
-      .then(d => { setQmStats(d); setQmLoading(false) })
-      .catch(() => setQmLoading(false))
-  }, [])
+  const metrics = [
+    ['Active loads', snapshot?.activeLoads, 'Moving through operations', 'blue'],
+    ['Unassigned', snapshot?.unassignedLoads, 'Need equipment or driver', 'amber'],
+    ['Available trucks', snapshot?.availableTrucks, 'Ready for assignment', 'cyan'],
+    ['Available trailers', snapshot?.availableTrailers, 'Ready for assignment', 'emerald'],
+    ['Active drivers', snapshot?.activeDrivers, 'Company driver roster', 'violet'],
+    ['Loads at risk', snapshot?.loadsAtRisk, 'Late or incomplete assignment', 'rose'],
+    ['Overdue tasks', snapshot?.overdueTasks, 'Open past their due date', 'amber'],
+    ['Pending settlements', snapshot?.pendingSettlements, 'Awaiting payment', 'blue'],
+  ] as const;
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      <div className="flex h-screen">
-        <Sidebar />
-        <main className="flex-1 overflow-auto">
-          <div className="p-8">
-            <div className="mb-8">
-              <h2 className="text-2xl font-bold">Dashboard</h2>
-              <p className="text-gray-400 text-sm mt-1">Welcome back, Sha</p>
-            </div>
+    <main className="alpha-page">
+      <PageHeader
+        eyebrow="Operations command center"
+        title="Good morning, dispatch"
+        description="A live view of the work, equipment, and exceptions that need attention across your active company."
+        actions={
+          <>
+            <Link href="/tasks" className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:border-slate-600 hover:bg-slate-800">
+              Open tasks
+            </Link>
+            <Link href="/loads?view=loads" className="rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 hover:bg-blue-400">
+              + New load
+            </Link>
+          </>
+        }
+      />
 
-            {/* Stats cards */}
-            <div className="grid grid-cols-4 gap-4 mb-8">
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Active Trucks</p>
-                <p className="text-3xl font-bold mt-2">{loading ? '...' : stats?.activeTrucks ?? 0}</p>
-                <p className="text-gray-500 text-xs mt-1">of {loading ? '...' : stats?.totalTrucks ?? 0} total</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Loads This Week</p>
-                <p className="text-3xl font-bold mt-2">{loading ? '...' : stats?.loadsThisWeek ?? 0}</p>
-                <p className="text-gray-500 text-xs mt-1">since Sunday</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Revenue This Week</p>
-                <p className="text-3xl font-bold mt-2 text-green-400">
-                  {loading ? '...' : `$${(stats?.revenueThisWeek ?? 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
-                </p>
-                <p className="text-gray-500 text-xs mt-1">gross</p>
-              </div>
-              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <p className="text-gray-400 text-xs uppercase tracking-wide">Pending Settlements</p>
-                <p className="text-3xl font-bold mt-2 text-yellow-400">{loading ? '...' : stats?.pendingSettlements ?? 0}</p>
-                <p className="text-gray-500 text-xs mt-1">drivers unpaid</p>
-              </div>
-            </div>
+      {error && (
+        <div role="alert" className="mt-6 rounded-xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
+          {error}. Confirm your session and active-company membership, then refresh.
+        </div>
+      )}
 
-            {/* QuickManage Live Gross */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-8">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-white">📊 QuickManage — Live Gross</h3>
-                <div className="flex items-center gap-3">
-                  {qmStats?.stale && <span className="text-xs text-yellow-500">⚠ stale data</span>}
-                  {qmStats?.updatedAt && <span className="text-xs text-gray-500">Updated {new Date(qmStats.updatedAt).toLocaleTimeString()}</span>}
-                  <button
-                    onClick={() => { setQmLoading(true); fetch('/api/qm-stats?refresh=1').then(r => r.json()).then(d => { setQmStats(d); setQmLoading(false) }) }}
-                    className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded"
-                  >
-                    {qmLoading ? '⏳ Loading...' : '🔄 Refresh'}
-                  </button>
-                </div>
-              </div>
-              {qmLoading ? (
-                <p className="text-gray-500 text-sm">Pulling data from QuickManage...</p>
-              ) : qmStats?.error ? (
-                <p className="text-red-400 text-sm">Error: {qmStats.error}</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Totals */}
-                  <div className="col-span-2 grid grid-cols-3 gap-4 pb-4 border-b border-gray-800">
-                    <div>
-                      <p className="text-gray-400 text-xs uppercase tracking-wide">This Week (All Companies)</p>
-                      <p className="text-3xl font-bold text-green-400 mt-1">
-                        ${(qmStats?.totals?.currentWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400 text-xs uppercase tracking-wide">Last Week</p>
-                      <p className="text-3xl font-bold text-blue-400 mt-1">
-                        ${(qmStats?.totals?.lastWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400 text-xs uppercase tracking-wide">Active Trips</p>
-                      <p className="text-3xl font-bold text-yellow-400 mt-1">
-                        {qmStats?.totals?.activeTrips || 0}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Per company */}
-                  {(qmStats?.companies || []).map((c: any) => (
-                    <div key={c.name} className="bg-gray-800 rounded-lg p-4">
-                      <p className="text-white font-medium text-sm mb-2">{c.name}</p>
-                      <div className="flex gap-6">
-                        <div>
-                          <p className="text-gray-500 text-xs">This Week</p>
-                          <p className="text-green-400 font-bold">${(c.currentWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
-                        </div>
-                        <div>
-                          <p className="text-gray-500 text-xs">Last Week</p>
-                          <p className="text-blue-400 font-bold">${(c.lastWeekGross || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
-                        </div>
-                        <div>
-                          <p className="text-gray-500 text-xs">Active</p>
-                          <p className="text-yellow-400 font-bold">{c.activeTrips || 0} trips</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+      <section aria-label="Operational metrics" className="mt-7 grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-8">
+        {metrics.map(([label, value, detail, tone]) => (
+          <MetricCard
+            key={label}
+            label={label}
+            value={snapshot ? value ?? 0 : <span className="text-slate-700">—</span>}
+            detail={detail}
+            tone={tone}
+          />
+        ))}
+      </section>
 
-            {/* Quick actions */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
-              <h3 className="font-semibold mb-4">Quick Actions</h3>
-              <div className="flex gap-3">
-                <Link href="/loads" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                  + New Load
-                </Link>
-                <Link href="/trucks" className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                  + Add Truck
-                </Link>
-                <Link href="/drivers" className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                  + Add Driver
-                </Link>
-                <Link href="/settlements" className="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                  Settlements
-                </Link>
-              </div>
+      <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(20rem,0.75fr)]">
+        <section className="alpha-panel min-w-0 p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-white">Recent loads</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                {snapshot?.loadsThisWeek ?? 0} created this week ·{' '}
+                ${(snapshot?.revenueThisWeek ?? 0).toLocaleString()} gross
+              </p>
             </div>
-
-            {/* Recent loads */}
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-              <h3 className="font-semibold mb-4">Recent Loads</h3>
-              {loading ? (
-                <div className="text-center py-12 text-gray-500 text-sm">Loading...</div>
-              ) : !stats?.recentLoads?.length ? (
-                <div className="text-center py-12 text-gray-500">
-                  <p className="text-4xl mb-3">📦</p>
-                  <p className="text-sm">No loads yet. <Link href="/loads" className="text-blue-400 hover:underline">Add your first load</Link> to get started.</p>
-                </div>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="border-b border-gray-800">
-                    <tr className="text-gray-400 text-xs uppercase">
-                      <th className="text-left pb-3">Load #</th>
-                      <th className="text-left pb-3">Route</th>
-                      <th className="text-left pb-3">Truck</th>
-                      <th className="text-left pb-3">Driver</th>
-                      <th className="text-left pb-3">Rate</th>
-                      <th className="text-left pb-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stats.recentLoads.map((l: any) => (
-                      <tr key={l.id} className="border-b border-gray-800/40 hover:bg-gray-800/30">
-                        <td className="py-3 font-mono font-bold text-blue-400">{l.loadNumber}</td>
-                        <td className="py-3 text-gray-300 text-xs">{l.origin} → {l.destination}</td>
-                        <td className="py-3 text-gray-400">{l.truck?.unitNumber || '—'}</td>
-                        <td className="py-3 text-gray-400">{l.driver ? `${l.driver.firstName} ${l.driver.lastName}` : '—'}</td>
-                        <td className="py-3 text-green-400 font-medium">${l.rate.toLocaleString()}</td>
-                        <td className="py-3">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[l.status]}`}>{l.status}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <Link href="/loads?view=dispatch" className="text-xs font-semibold text-blue-300 hover:text-blue-200">
+              Dispatch board →
+            </Link>
           </div>
-        </main>
+
+          {!snapshot ? (
+            <PanelSkeleton rows={5} />
+          ) : snapshot.recentLoads.length === 0 ? (
+            <EmptyState
+              title="No loads yet"
+              description="Create the first load in the dispatch workspace to start tracking operations."
+              action={<Link href="/loads?view=loads" className="text-sm font-semibold text-blue-300">Create a load</Link>}
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[42rem] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-800 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                    <th className="px-2 pb-3">Load</th>
+                    <th className="px-2 pb-3">Route</th>
+                    <th className="px-2 pb-3">Assignment</th>
+                    <th className="px-2 pb-3">Rate</th>
+                    <th className="px-2 pb-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snapshot.recentLoads.map((load) => (
+                    <tr key={load.id} className="border-b border-slate-800/60 last:border-0 hover:bg-slate-800/30">
+                      <td className="px-2 py-3 font-mono text-xs font-bold text-blue-300">{load.loadNumber}</td>
+                      <td className="px-2 py-3">
+                        <p className="max-w-56 truncate text-slate-200">{load.origin} → {load.destination}</p>
+                      </td>
+                      <td className="px-2 py-3 text-xs text-slate-400">
+                        {load.truck?.unitNumber ?? 'No truck'} ·{' '}
+                        {load.driver ? `${load.driver.firstName} ${load.driver.lastName}` : 'No driver'}
+                      </td>
+                      <td className="px-2 py-3 font-medium text-emerald-300">${load.rate.toLocaleString()}</td>
+                      <td className="px-2 py-3"><StatusBadge tone={statusTone(load.status)}>{formatAction(load.status)}</StatusBadge></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <div className="space-y-6">
+          <section className="alpha-panel p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="font-semibold text-white">Recent activity</h2>
+                <p className="mt-1 text-xs text-slate-500">Verified load and task events</p>
+              </div>
+              <Link href="/tasks" className="text-xs font-semibold text-blue-300">View tasks</Link>
+            </div>
+            {!snapshot ? (
+              <PanelSkeleton rows={4} />
+            ) : snapshot.recentActivity.length === 0 ? (
+              <EmptyState title="No recent activity" description="Verified operational events will appear here." />
+            ) : (
+              <ol className="space-y-1">
+                {snapshot.recentActivity.map((activity) => (
+                  <li key={activity.id} className="flex gap-3 rounded-xl px-2 py-2.5 hover:bg-slate-800/35">
+                    <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${activity.type === 'task' ? 'bg-blue-400' : 'bg-emerald-400'}`} />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-200">{activity.title}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {activity.actor} · {formatAction(activity.action)}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-amber-400/15 bg-gradient-to-br from-amber-400/10 to-slate-950/40 p-5">
+            <div className="flex items-start gap-3">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-amber-400/10 text-amber-300">↗</span>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm font-semibold text-slate-200">QuickManage integration</h2>
+                  <StatusBadge tone="yellow">Unavailable</StatusBadge>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  Live gross remains disabled until a reviewed company-to-carrier mapping and tenant-partitioned cache exist.
+                </p>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
-    </div>
-  )
+    </main>
+  );
 }

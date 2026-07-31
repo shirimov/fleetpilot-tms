@@ -10,7 +10,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { useEffect, useMemo, useState } from 'react';
-import Sidebar from '@/components/Sidebar';
+import { useSearchParams } from 'next/navigation';
 
 type Status =
   | 'DRAFT'
@@ -212,6 +212,14 @@ function LoadCard({ load, onOpen }: { load: Load; onOpen: (load: Load) => void }
 }
 
 export default function DispatchWorkspace() {
+  const searchParams = useSearchParams();
+  const requestedView = searchParams.get('view');
+  const initialView =
+    requestedView === 'loads' ||
+    requestedView === 'customers' ||
+    requestedView === 'trailers'
+      ? requestedView
+      : 'dispatch';
   const [board, setBoard] = useState<Board>({ columns: [] });
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
@@ -219,7 +227,7 @@ export default function DispatchWorkspace() {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [query, setQuery] = useState('');
   const [exception, setException] = useState('');
-  const [view, setView] = useState<'dispatch' | 'customers' | 'trailers'>('dispatch');
+  const [view, setView] = useState(initialView);
   const [editingLoad, setEditingLoad] = useState<Load | null>(null);
   const [loadForm, setLoadForm] = useState(emptyLoad);
   const [showLoadForm, setShowLoadForm] = useState(false);
@@ -258,6 +266,10 @@ export default function DispatchWorkspace() {
     // The initial request intentionally excludes the mutable search value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    setView(initialView);
+  }, [initialView]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -434,8 +446,7 @@ export default function DispatchWorkspace() {
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-950 text-white">
-      <Sidebar />
+    <div className="flex min-h-[calc(100vh-4rem)] bg-gray-950 text-white">
       <main className="min-w-0 flex-1 overflow-auto p-4 pb-24 md:p-8">
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -458,12 +469,15 @@ export default function DispatchWorkspace() {
 
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <div role="tablist" aria-label="Dispatch workspace" className="flex rounded-lg bg-gray-900 p-1">
-            {(['dispatch', 'customers', 'trailers'] as const).map((tab) => (
+            {(['dispatch', 'loads', 'customers', 'trailers'] as const).map((tab) => (
               <button
                 key={tab}
                 role="tab"
                 aria-selected={view === tab}
-                onClick={() => setView(tab)}
+                onClick={() => {
+                  setView(tab);
+                  window.history.replaceState(null, '', `/loads?view=${tab}`);
+                }}
                 className={`rounded-md px-3 py-2 text-sm capitalize ${
                   view === tab ? 'bg-blue-600 text-white' : 'text-gray-400'
                 }`}
@@ -472,7 +486,7 @@ export default function DispatchWorkspace() {
               </button>
             ))}
           </div>
-          {view === 'dispatch' && (
+          {(view === 'dispatch' || view === 'loads') && (
             <>
               <input
                 aria-label="Search dispatch loads"
@@ -516,6 +530,64 @@ export default function DispatchWorkspace() {
               ))}
             </div>
           </DndContext>
+        )}
+
+        {view === 'loads' && (
+          <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
+            {allLoads.length === 0 ? (
+              <div className="p-12 text-center">
+                <h2 className="font-semibold text-white">No loads yet</h2>
+                <p className="mt-2 text-sm text-gray-500">
+                  Create a multi-stop load to begin planning dispatch.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => openLoad()}
+                  className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold hover:bg-blue-500"
+                >
+                  + New load
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[52rem] text-left text-sm">
+                  <thead className="border-b border-gray-800 bg-gray-950/45 text-[10px] uppercase tracking-[0.14em] text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3">Load</th>
+                      <th className="px-4 py-3">Customer</th>
+                      <th className="px-4 py-3">Route</th>
+                      <th className="px-4 py-3">Assignment</th>
+                      <th className="px-4 py-3">Stops</th>
+                      <th className="px-4 py-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allLoads.map((load) => (
+                      <tr
+                        key={load.id}
+                        onClick={() => openLoad(load)}
+                        className="cursor-pointer border-b border-gray-800/60 last:border-0 hover:bg-gray-800/45"
+                      >
+                        <td className="px-4 py-3 font-mono font-semibold text-blue-300">{load.loadNumber}</td>
+                        <td className="px-4 py-3 text-gray-300">{load.customer?.name ?? 'Unassigned'}</td>
+                        <td className="max-w-64 truncate px-4 py-3 text-gray-400">{load.origin} → {load.destination}</td>
+                        <td className="px-4 py-3 text-xs text-gray-400">
+                          {load.truck?.unitNumber ?? 'No truck'} ·{' '}
+                          {load.driver ? `${load.driver.firstName} ${load.driver.lastName}` : 'No driver'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400">{load.stops.length}</td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-200">
+                            {statusLabel[load.status as Status] ?? load.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         )}
 
         {view === 'customers' && (

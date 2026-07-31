@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ModalLayer from '@/components/ui/ModalLayer';
 import type { KanbanCard, KanbanColumn } from '@/lib/tasks/kanban-types';
 import MarkdownContent from './MarkdownContent';
 import TaskAttachments from './TaskAttachments';
@@ -83,6 +84,7 @@ function activityDetails(metadata: unknown): string | null {
 }
 
 export default function TaskDetailDrawer({ card, board, onClose }: Props) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -135,19 +137,6 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
   useEffect(() => {
     void loadCollaboration();
   }, [loadCollaboration]);
-
-  useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (
-        event.key === 'Escape' &&
-        !document.querySelector('[data-task-inline-editor="true"]')
-      ) {
-        onClose();
-      }
-    }
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
 
   useEffect(() => {
     const query = newComment.match(/(?:^|\s)@([\w .-]{0,40})$/)?.[1];
@@ -355,17 +344,24 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <ModalLayer
+      className="fixed inset-0 z-50 flex justify-end"
+      labelledBy="task-drawer-title"
+      describedBy="task-drawer-description"
+      initialFocusRef={closeButtonRef}
+      onClose={onClose}
+      canCloseOnEscape={() =>
+        !document.querySelector('[data-task-inline-editor="true"]')
+      }
+    >
       <button
         type="button"
+        tabIndex={-1}
         aria-label="Close task details"
         onClick={onClose}
         className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
       />
       <aside
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="task-drawer-title"
         className="relative h-full w-full max-w-2xl overflow-y-auto border-l border-white/10 bg-[#12141c] shadow-2xl"
       >
         <header className="sticky top-0 z-10 flex items-start gap-4 border-b border-white/8 bg-[#12141c]/95 px-5 py-5 backdrop-blur">
@@ -376,8 +372,11 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
             <h2 id="task-drawer-title" className="text-xl font-semibold text-white">
               {card.title}
             </h2>
+            <p id="task-drawer-description" className="sr-only">
+              Task details, collaboration, attachments, and activity.
+            </p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-xl text-slate-400 hover:bg-white/5 hover:text-white">×</button>
+          <button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-xl text-slate-400 hover:bg-white/5 hover:text-white">×</button>
         </header>
 
         <div className="space-y-7 p-5">
@@ -523,6 +522,6 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
           </section>
         </div>
       </aside>
-    </div>
+    </ModalLayer>
   );
 }

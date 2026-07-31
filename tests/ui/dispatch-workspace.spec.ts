@@ -84,6 +84,21 @@ async function mockDispatch(page: Page) {
       documents: [],
     },
   ];
+  await page.route('**/api/auth/company', (route) =>
+    route.fulfill({
+      json: {
+        user: {
+          displayName: 'Alpha Dispatcher',
+          email: 'dispatch@fleetpilot.test',
+          image: null,
+        },
+        activeCompanyId: 'company-alpha',
+        companies: [
+          { id: 'company-alpha', name: 'Alpha Transport', role: 'OWNER' },
+        ],
+      },
+    }),
+  );
   await page.route('**/api/dispatch/board**', async (route) => {
     await route.fulfill({
       json: {
@@ -140,6 +155,30 @@ test.beforeEach(async ({ page }) => {
   await mockDispatch(page);
   await page.goto('/loads');
   await expect(page.getByRole('heading', { name: 'Dispatch workflow' })).toBeVisible();
+});
+
+test('opens completed dispatch modules from primary navigation', async ({ page }) => {
+  await page.getByRole('link', { name: 'Customers', exact: true }).click();
+  await expect(page).toHaveURL(/\/loads\?view=customers$/);
+  await expect(page.getByRole('tab', { name: 'Customers' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+
+  await page.getByRole('link', { name: 'Trailers', exact: true }).click();
+  await expect(page).toHaveURL(/\/loads\?view=trailers$/);
+  await expect(page.getByRole('tab', { name: 'Trailers' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+
+  await page.getByRole('link', { name: 'Loads', exact: true }).click();
+  await expect(page).toHaveURL(/\/loads\?view=loads$/);
+  await expect(page.getByRole('columnheader', { name: 'Load' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Dispatch Board', exact: true }).click();
+  await expect(page).toHaveURL(/\/loads\?view=dispatch$/);
+  await expect(page.getByRole('region', { name: 'Draft loads' })).toBeVisible();
 });
 
 test('searches, manages customers and trailers, and creates multi-stop loads', async ({
