@@ -164,7 +164,14 @@ export class TaskService {
 
   async createCard(input: CreateTaskCardInput, actor?: TaskMutationActor) {
     return this.database.$transaction(async (transaction) => {
-      await this.validateBoardProject(transaction, input.boardId, input.projectId);
+      const destinationBoard = await this.validateBoardProject(
+        transaction,
+        input.boardId,
+        input.projectId,
+      );
+      if (!destinationBoard.status) {
+        throw new TaskBoardStatusUnmappedError();
+      }
 
       const order =
         input.order ??
@@ -183,6 +190,8 @@ export class TaskService {
           title: input.title,
           description: input.description,
           priority: input.priority || 'MEDIUM',
+          status: destinationBoard.status,
+          dueDate: input.dueDate,
           order: input.order === undefined ? order + 1 : order,
         },
         include: cardInclude,
@@ -201,6 +210,7 @@ export class TaskService {
           order: card.order,
           priority: card.priority,
           status: card.status,
+          dueDate: card.dueDate?.toISOString() ?? null,
         },
       });
 
@@ -1091,10 +1101,10 @@ export class TaskService {
     transaction: Prisma.TransactionClient,
     boardId: string,
     projectId: string,
-  ): Promise<void> {
+  ) {
     const board = await transaction.taskBoard.findUnique({
       where: { id: boardId },
-      select: { projectId: true },
+      select: { projectId: true, status: true },
     });
 
     if (!board) {
@@ -1103,6 +1113,7 @@ export class TaskService {
     if (board.projectId !== projectId) {
       throw new TaskValidationError('boardId must belong to projectId.');
     }
+    return board;
   }
 
   private describeChanges(

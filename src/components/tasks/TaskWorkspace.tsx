@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskPriority, TaskStatus } from '@prisma/client';
 import type { KanbanProject } from '@/lib/tasks/kanban-types';
 import { moveCardInBoardState } from '@/lib/tasks/kanban-state';
@@ -18,6 +18,10 @@ import {
 import TaskBoardView, { type TaskBoardMove } from './TaskBoardView';
 import TaskDetailDrawer from './TaskDetailDrawer';
 import TaskTableView from './TaskTableView';
+import {
+  CreateProjectDialog,
+  CreateTaskDialog,
+} from './TaskCreationDialogs';
 
 type ProjectSummary = {
   id: string;
@@ -81,9 +85,19 @@ export default function TaskWorkspace() {
   const [loadingBoard, setLoadingBoard] = useState(false);
   const [moving, setMoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectCreationError, setProjectCreationError] = useState('');
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>('TODO');
+  const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>('MEDIUM');
+  const [newTaskDueDate, setNewTaskDueDate] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
+  const [taskCreationError, setTaskCreationError] = useState('');
+  const addTaskTriggerRef = useRef<HTMLButtonElement>(null);
+  const createProjectTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -167,6 +181,13 @@ export default function TaskWorkspace() {
   );
   const filtersActive = hasActiveTaskFilters(filters);
   const movementDisabled = filtersActive || sort !== 'board';
+  const selectedProject = projects.find(({ id }) => id === selectedProjectId);
+  const creationStatuses = useMemo(() => {
+    if (!project) return [];
+    return project.boards.flatMap((board) =>
+      board.status ? [{ value: board.status, label: board.name }] : [],
+    );
+  }, [project]);
 
   function updateFilter<Key extends keyof TaskFilters>(
     key: Key,
@@ -219,18 +240,74 @@ export default function TaskWorkspace() {
     }
   }
 
+  function openCreateTask() {
+    if (!project || creationStatuses.length === 0) return;
+    setNewTaskTitle('');
+    setNewTaskStatus(
+      creationStatuses.some(({ value }) => value === 'TODO')
+        ? 'TODO'
+        : creationStatuses[0]!.value,
+    );
+    setNewTaskPriority('MEDIUM');
+    setNewTaskDueDate('');
+    setTaskCreationError('');
+    setShowCreateTask(true);
+  }
+
+  function openCreateProject() {
+    setNewProjectName('');
+    setProjectCreationError('');
+    setShowCreateProject(true);
+  }
+
+  async function createProject() {
+    if (!newProjectName.trim() || creatingProject) return;
+    setCreatingProject(true);
+    setProjectCreationError('');
+    try {
+      const response = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newProjectName.trim() }),
+      });
+      const body = (await response.json()) as ProjectSummary | RequestError;
+      if (!response.ok || !('id' in body)) {
+        throw new Error(
+          'error' in body && body.error
+            ? body.error
+            : 'The project could not be created.',
+        );
+      }
+      const createdProject = body as ProjectSummary;
+      setProjects((current) => [...current, createdProject]);
+      setSelectedProjectId(createdProject.id);
+      setShowCreateProject(false);
+      setNewProjectName('');
+    } catch (createError) {
+      setProjectCreationError(
+        createError instanceof Error
+          ? createError.message
+          : 'The project could not be created.',
+      );
+    } finally {
+      setCreatingProject(false);
+    }
+  }
+
   async function createTask() {
     if (!project || !newTaskTitle.trim() || creatingTask) return;
-    const destination =
-      project.boards.find(({ status }) => status === 'TODO') ??
-      project.boards.find(({ status }) => status !== null);
+    const destination = project.boards.find(
+      ({ status }) => status === newTaskStatus,
+    );
     if (!destination) {
-      setError('A status-mapped group is required before adding a task.');
+      setTaskCreationError(
+        'The selected status is not mapped to a group in this project.',
+      );
       return;
     }
 
     setCreatingTask(true);
-    setError(null);
+    setTaskCreationError('');
     try {
       const response = await fetch('/api/tasks/cards', {
         method: 'POST',
@@ -239,6 +316,8 @@ export default function TaskWorkspace() {
           projectId: project.id,
           boardId: destination.id,
           title: newTaskTitle.trim(),
+          priority: newTaskPriority,
+          dueDate: newTaskDueDate || null,
         }),
       });
       const body = (await response.json()) as RequestError;
@@ -246,10 +325,10 @@ export default function TaskWorkspace() {
         throw new Error(body.error ?? 'The task could not be created.');
       }
       setNewTaskTitle('');
-      setShowCreateTask(false);
       await loadBoard();
+      setShowCreateTask(false);
     } catch (createError) {
-      setError(
+      setTaskCreationError(
         createError instanceof Error
           ? createError.message
           : 'The task could not be created.',
@@ -297,9 +376,12 @@ export default function TaskWorkspace() {
               )}
             </div>
             <button
+              ref={addTaskTriggerRef}
               type="button"
-              onClick={() => setShowCreateTask(true)}
+              onClick={openCreateTask}
               disabled={!project}
+              aria-describedby={!project ? 'add-task-prerequisite' : undefined}
+              title={!project ? 'Create a project before adding tasks' : undefined}
               className="rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/15 hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:opacity-40"
             >
               + Add task
@@ -392,7 +474,17 @@ export default function TaskWorkspace() {
         {projects.length === 0 ? (
           <div className="rounded-xl border border-dashed border-white/10 p-16 text-center">
             <h2 className="text-lg font-semibold">No task projects yet</h2>
-            <p className="mt-2 text-sm text-slate-500">Create a project through the existing task API to start organizing work.</p>
+            <p id="add-task-prerequisite" className="mt-2 text-sm text-slate-500">
+              Create your first project to organize tasks into a shared workspace.
+            </p>
+            <button
+              ref={createProjectTriggerRef}
+              type="button"
+              onClick={openCreateProject}
+              className="mt-5 rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+            >
+              Create project
+            </button>
           </div>
         ) : loadingBoard ? (
           <TaskWorkspaceSkeleton compact />
@@ -418,32 +510,37 @@ export default function TaskWorkspace() {
           onClose={() => setSelectedCardId(null)}
         />
       )}
-      {showCreateTask && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4">
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void createTask();
-            }}
-            className="w-full max-w-md rounded-xl border border-white/10 bg-[#171a24] p-5 shadow-2xl"
-          >
-            <h2 className="text-lg font-semibold">Add a task</h2>
-            <p className="mt-1 text-sm text-slate-500">New tasks are appended to the project&apos;s To do group.</p>
-            <input
-              autoFocus
-              value={newTaskTitle}
-              onChange={(event) => setNewTaskTitle(event.target.value)}
-              placeholder="What needs to be done?"
-              className="mt-5 w-full rounded-lg border border-white/10 bg-[#10121a] px-3 py-2.5 text-sm outline-none focus:border-blue-400"
-            />
-            <div className="mt-5 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowCreateTask(false)} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:bg-white/5">Cancel</button>
-              <button disabled={!newTaskTitle.trim() || creatingTask} className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-semibold disabled:opacity-40">
-                {creatingTask ? 'Adding…' : 'Add task'}
-              </button>
-            </div>
-          </form>
-        </div>
+      {showCreateProject && (
+        <CreateProjectDialog
+          name={newProjectName}
+          pending={creatingProject}
+          error={projectCreationError}
+          onNameChange={setNewProjectName}
+          onSubmit={() => void createProject()}
+          onClose={() => {
+            if (!creatingProject) setShowCreateProject(false);
+          }}
+        />
+      )}
+      {showCreateTask && project && selectedProject && (
+        <CreateTaskDialog
+          project={selectedProject}
+          statuses={creationStatuses}
+          title={newTaskTitle}
+          status={newTaskStatus}
+          priority={newTaskPriority}
+          dueDate={newTaskDueDate}
+          pending={creatingTask}
+          error={taskCreationError}
+          onTitleChange={setNewTaskTitle}
+          onStatusChange={setNewTaskStatus}
+          onPriorityChange={setNewTaskPriority}
+          onDueDateChange={setNewTaskDueDate}
+          onSubmit={() => void createTask()}
+          onClose={() => {
+            if (!creatingTask) setShowCreateTask(false);
+          }}
+        />
       )}
     </main>
   );

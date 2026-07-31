@@ -32,12 +32,19 @@ test('TaskService persists activity atomically and serves a stable timeline', as
   let cardId = '';
 
   await t.test('task creation activity', async () => {
+    const dueDate = new Date('2030-01-10T00:00:00.000Z');
     const card = await taskService.createCard({
       projectId: project.id,
       boardId: firstBoard.id,
       title: `Activity card ${testSuffix}`,
+      priority: 'HIGH',
+      dueDate,
     });
     cardId = card.id;
+
+    assert.equal(card.status, firstBoard.status);
+    assert.equal(card.priority, 'HIGH');
+    assert.equal(card.dueDate?.toISOString(), dueDate.toISOString());
 
     const activity = await prisma.taskActivity.findFirst({
       where: { entityType: 'TASK_CARD', entityId: card.id },
@@ -56,7 +63,7 @@ test('TaskService persists activity atomically and serves a stable timeline', as
         id: cardId,
         status: 'IN_PROGRESS',
         boardId: secondBoard.id,
-        priority: 'HIGH',
+        priority: 'URGENT',
         assignedTo: `employee-${testSuffix}`,
         dueDate,
       });
