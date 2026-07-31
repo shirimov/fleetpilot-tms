@@ -36,11 +36,15 @@ jobs:
           bash -n \
             scripts/deploy-staging.sh \
             scripts/backup-staging.sh \
+            scripts/verify-staging-backup.sh \
+            scripts/test-staging-backup.sh \
             scripts/restore-staging.sh \
             scripts/health-check-staging.sh
           shellcheck \
             scripts/deploy-staging.sh \
             scripts/backup-staging.sh \
+            scripts/verify-staging-backup.sh \
+            scripts/test-staging-backup.sh \
             scripts/restore-staging.sh \
             scripts/health-check-staging.sh
 
@@ -59,6 +63,14 @@ jobs:
             -v "${PWD}/Caddyfile.staging:/etc/caddy/Caddyfile:ro" \
             caddy:2.10-alpine \
             caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Install backup validation dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes age
+
+      - name: Exercise encrypted backup flow
+        run: ./scripts/test-staging-backup.sh
 
       - name: Build application image
         run: |

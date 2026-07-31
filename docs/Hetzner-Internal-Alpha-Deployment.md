@@ -190,13 +190,20 @@ The script:
 2. builds commit-addressed app and migrator images;
 3. starts only PostgreSQL and private-volume initialization;
 4. creates encrypted database and attachment backups;
-5. runs `prisma migrate deploy` once in the migrator container;
-6. refuses to start the release if migration fails;
-7. starts the application and Caddy;
-8. verifies `/api/health` reports the requested commit;
-9. retains and records the previous image for rollback.
+5. requires both archives, their valid checksum manifest, and a completion
+   marker before continuing;
+6. runs `prisma migrate deploy` once in the migrator container;
+7. refuses to start the release if migration fails;
+8. starts the application and Caddy;
+9. verifies `/api/health` reports the requested commit;
+10. retains and records the previous image for rollback.
 
 Migrations are not part of normal web-container startup.
+
+The private file volume is initialized as UID/GID `1001:1001`, mode `0700`.
+The attachment backup container therefore runs as `1001:1001`; it remains
+capability-free, read-only, and protected with `no-new-privileges`. Do not
+change the volume to a broader mode as a backup workaround.
 
 ### 7. One-time administrator bootstrap
 

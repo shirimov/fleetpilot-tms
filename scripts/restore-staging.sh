@@ -34,6 +34,19 @@ for backup in "${DATABASE_BACKUP}" ${ATTACHMENT_BACKUP:+"${ATTACHMENT_BACKUP}"};
   fi
 done
 
+if [[ -n "${ATTACHMENT_BACKUP}" ]]; then
+  if [[ "${DATABASE_BACKUP}" != *-database.dump.age ]]; then
+    echo "Database backup name does not identify a complete backup prefix." >&2
+    exit 1
+  fi
+  backup_prefix="${DATABASE_BACKUP%-database.dump.age}"
+  if [[ "${ATTACHMENT_BACKUP}" != "${backup_prefix}-attachments.tar.gz.age" ]]; then
+    echo "Database and attachment backups do not belong to the same set." >&2
+    exit 1
+  fi
+  "${SCRIPT_DIR}/verify-staging-backup.sh" "${backup_prefix}"
+fi
+
 compose=(docker compose --env-file "${ENV_FILE}" -f "${REPO_ROOT}/docker-compose.staging.yml")
 "${compose[@]}" stop caddy app
 "${compose[@]}" up -d db
@@ -58,12 +71,14 @@ if [[ -n "${ATTACHMENT_BACKUP}" ]]; then
   fi
   echo "Replacing private attachment volume contents..."
   docker run --rm \
+    --user 1001:1001 \
     --security-opt no-new-privileges:true \
     --cap-drop ALL \
     -v "${private_volume}:/private" \
-    alpine:3.22 sh -c 'find /private -mindepth 1 -delete'
+    alpine:3.22 sh -ec 'test "$(id -u):$(id -g)" = "1001:1001"; find /private -mindepth 1 -delete'
   age --decrypt --identity "${BACKUP_AGE_IDENTITY_FILE}" "${ATTACHMENT_BACKUP}" \
     | docker run --rm -i \
+        --user 1001:1001 \
         --security-opt no-new-privileges:true \
         --cap-drop ALL \
         -v "${private_volume}:/private" \
