@@ -116,6 +116,14 @@ test('isolates every dashboard aggregate and recent load by company', async () =
   assert.equal(snapshot.loadsThisWeek, 1);
   assert.equal(snapshot.revenueThisWeek, 1100);
   assert.equal(snapshot.pendingSettlements, 1);
+  assert.equal(snapshot.activeLoads, 0);
+  assert.equal(snapshot.unassignedLoads, 0);
+  assert.equal(snapshot.availableTrucks, 1);
+  assert.equal(snapshot.availableTrailers, 0);
+  assert.equal(snapshot.activeDrivers, 0);
+  assert.equal(snapshot.loadsAtRisk, 0);
+  assert.equal(snapshot.overdueTasks, 0);
+  assert.deepEqual(snapshot.recentActivity, []);
   assert.deepEqual(
     snapshot.recentLoads.map(({ id }) => id),
     [firstLoadId],

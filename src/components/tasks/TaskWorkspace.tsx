@@ -264,14 +264,14 @@ export default function TaskWorkspace() {
   }
 
   return (
-    <main className="min-h-screen bg-[#0e1017] text-white">
-      <div className="mx-auto max-w-[1800px] px-4 py-6 sm:px-6 lg:px-8">
-        <header className="mb-5">
+    <main className="min-h-[calc(100vh-4rem)] bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,0.08),transparent_34%),#090d17] text-white">
+      <div className="mx-auto max-w-[1800px] px-4 py-5 sm:px-6 lg:px-8">
+        <header className="mb-5 rounded-2xl border border-white/8 bg-gradient-to-r from-blue-500/10 via-slate-900/75 to-cyan-400/5 p-4 shadow-xl shadow-black/10 sm:p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-300">
                 <span className="inline-block h-2 w-2 rounded-sm bg-blue-400" />
-                Task workspace
+                Task Manager
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <select
@@ -287,7 +287,7 @@ export default function TaskWorkspace() {
                   ))}
                 </select>
                 <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200">
-                  Live operations
+                  Live workspace
                 </span>
               </div>
               {project?.description && (

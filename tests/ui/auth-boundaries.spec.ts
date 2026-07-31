@@ -8,6 +8,7 @@ test('company-owned APIs reject unauthenticated requests consistently', async ({
     request.get('/api/tasks/cards/spoofed-card/checklist'),
     request.get('/api/tasks/cards/spoofed-card/comments'),
     request.get('/api/companies'),
+    request.get('/api/auth/company'),
     request.get('/api/dashboard'),
     request.get('/api/trucks'),
     request.get('/api/inspections/truck'),

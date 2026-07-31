@@ -10,7 +10,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'npm run dev -- --webpack --hostname 127.0.0.1 --port 3100',
+    command:
+      'PLAYWRIGHT=1 AUTH_SECRET=fleetpilot-playwright-only-not-production AUTH_TRUST_HOST=true npm run build && PLAYWRIGHT=1 AUTH_SECRET=fleetpilot-playwright-only-not-production AUTH_TRUST_HOST=true npm run start -- --hostname 127.0.0.1 --port 3100',
     url: 'http://127.0.0.1:3100/tasks',
     reuseExistingServer: false,
     timeout: 120_000,

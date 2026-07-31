@@ -3,6 +3,7 @@ import withPWA from "@ducanh2912/next-pwa";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  devIndicators: false,
   async headers() {
     return [
       {
@@ -16,7 +17,7 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default withPWA({
+const withProductionPwa = withPWA({
   dest: "public",
   register: true,
   workboxOptions: {
@@ -30,5 +31,8 @@ export default withPWA({
       },
     ],
   },
-  disable: process.env.NODE_ENV === "development",
 })(nextConfig);
+
+export default process.env.NODE_ENV === "development" || process.env.PLAYWRIGHT === "1"
+  ? nextConfig
+  : withProductionPwa;

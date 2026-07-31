@@ -100,6 +100,21 @@ const project = {
 };
 
 async function mockTaskApis(page: Page) {
+  await page.route('**/api/auth/company', (route) =>
+    route.fulfill({
+      json: {
+        user: {
+          displayName: 'Alpha Dispatcher',
+          email: 'dispatch@fleetpilot.test',
+          image: null,
+        },
+        activeCompanyId: 'company-alpha',
+        companies: [
+          { id: 'company-alpha', name: 'Alpha Transport', role: 'OWNER' },
+        ],
+      },
+    }),
+  );
   let attachments: Array<{
     id: string;
     filename: string;
