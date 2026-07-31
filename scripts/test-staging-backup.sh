@@ -56,7 +56,15 @@ mkdir -p "${backup_dir}"
 } > "${env_file}"
 
 "${compose[@]}" up -d db storage-init
-"${compose[@]}" wait storage-init
+storage_init_container="$("${compose[@]}" ps -a -q storage-init)"
+if [[ -z "${storage_init_container}" ]]; then
+  echo "Disposable storage initializer container was not created." >&2
+  exit 1
+fi
+if [[ "$(docker wait "${storage_init_container}")" != "0" ]]; then
+  echo "Disposable storage initialization failed." >&2
+  exit 1
+fi
 for attempt in {1..30}; do
   if "${compose[@]}" exec -T db \
     pg_isready -U fleetpilot -d fleetpilot_backup_test >/dev/null 2>&1; then
