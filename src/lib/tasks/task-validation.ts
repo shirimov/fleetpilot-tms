@@ -105,12 +105,27 @@ export function validateCreateTaskCardInput(value: unknown): CreateTaskCardInput
     throw new TaskValidationError('priority is invalid.');
   }
 
+  let dueDate: Date | null | undefined;
+  if (Object.hasOwn(body, 'dueDate')) {
+    if (body.dueDate === null || body.dueDate === '') {
+      dueDate = null;
+    } else if (typeof body.dueDate === 'string') {
+      dueDate = new Date(body.dueDate);
+      if (Number.isNaN(dueDate.getTime())) {
+        throw new TaskValidationError('dueDate must be a valid date or null.');
+      }
+    } else {
+      throw new TaskValidationError('dueDate must be a valid date or null.');
+    }
+  }
+
   return {
     projectId: requiredString(body.projectId, 'projectId'),
     boardId: requiredString(body.boardId, 'boardId'),
     title: requiredString(body.title, 'title'),
     description: optionalNullableString(body.description, 'description'),
     priority: priority as TaskPriority | undefined,
+    dueDate,
     order: optionalOrder(body.order),
   };
 }

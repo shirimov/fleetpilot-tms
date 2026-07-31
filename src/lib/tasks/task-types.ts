@@ -21,6 +21,7 @@ export type CreateTaskCardInput = {
   title: string;
   description?: string | null;
   priority?: TaskPriority;
+  dueDate?: Date | null;
   order?: number;
 };
 
