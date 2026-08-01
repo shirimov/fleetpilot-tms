@@ -91,6 +91,9 @@ async function mockFirstUseApis(page: Page, options: FirstUseOptions = {}) {
   await page.route('**/api/tasks/projects/project-new/board', (route) =>
     route.fulfill({ json: project }),
   );
+  await page.route('**/api/tasks/assignees', (route) =>
+    route.fulfill({ json: [{ id: 'user-owner', displayName: 'Alpha Owner', image: null }] }),
+  );
   await page.route('**/api/tasks/cards', async (route: Route) => {
     if (route.request().method() !== 'POST') {
       await route.fallback();
@@ -112,9 +115,9 @@ async function mockFirstUseApis(page: Page, options: FirstUseOptions = {}) {
       priority: body.priority,
       status: destination.status,
       assignedTo: null,
-      dueDate: body.dueDate
-        ? `${body.dueDate}T00:00:00.000Z`
-        : null,
+      dueDate: body.dueDate,
+      assigneeUserId: null,
+      assigneeUser: null,
       order: destination.cards.length,
       updatedAt: '2030-01-01T00:00:00.000Z',
       labels: [],
@@ -185,7 +188,7 @@ test('creates one task and reconciles it into board and table views', async ({
   await titleInput.fill('Prepare first dispatch');
   await dialog.getByLabel('Status').selectOption('IN_PROGRESS');
   await dialog.getByLabel('Priority').selectOption('HIGH');
-  await dialog.getByLabel('Due date').fill('2030-01-15');
+  await dialog.getByLabel('Due date and time').fill('2030-01-15T12:30');
 
   const submit = dialog.locator('button[type="submit"]');
   await submit.click();

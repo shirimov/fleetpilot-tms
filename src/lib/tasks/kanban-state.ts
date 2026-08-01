@@ -1,4 +1,21 @@
-import type { KanbanColumn } from './kanban-types';
+import type { KanbanCard, KanbanColumn } from './kanban-types';
+
+export function updateCardInBoardState(
+  boards: KanbanColumn[],
+  cardId: string,
+  update: Partial<KanbanCard>,
+): KanbanColumn[] {
+  let changed = false;
+  const next = boards.map((board) => ({
+    ...board,
+    cards: board.cards.map((card) => {
+      if (card.id !== cardId) return card;
+      changed = true;
+      return { ...card, ...update };
+    }),
+  }));
+  return changed ? next : boards;
+}
 
 export type OptimisticCardMove = {
   cardId: string;

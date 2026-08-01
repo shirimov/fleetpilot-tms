@@ -24,9 +24,12 @@ import { useMemo, useState } from 'react';
 import TaskCard from '@/components/TaskCard';
 import type {
   KanbanCard,
+  KanbanCardFieldUpdate,
   KanbanColumn,
   KanbanProject,
 } from '@/lib/tasks/kanban-types';
+import type { TaskAssignee } from '@/lib/tasks/task-types';
+import type { TaskStatus } from '@prisma/client';
 
 export type TaskBoardMove = {
   cardId: string;
@@ -41,6 +44,12 @@ type TaskBoardViewProps = {
   movementDisabled: boolean;
   onMove: (move: TaskBoardMove) => Promise<void>;
   onOpenCard: (cardId: string) => void;
+  assignees: TaskAssignee[];
+  statuses: Array<{ value: TaskStatus; label: string }>;
+  now: number | null;
+  updatingCardIds: Set<string>;
+  onUpdateCard: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
+  onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
 };
 
 function SortableTaskCard({
@@ -48,11 +57,23 @@ function SortableTaskCard({
   boardId,
   disabled,
   onOpen,
+  assignees,
+  statuses,
+  now,
+  updating,
+  onUpdateCard,
+  onStatusChange,
 }: {
   card: KanbanCard;
   boardId: string;
   disabled: boolean;
   onOpen: () => void;
+  assignees: TaskAssignee[];
+  statuses: Array<{ value: TaskStatus; label: string }>;
+  now: number | null;
+  updating: boolean;
+  onUpdateCard: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
+  onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
 }) {
   const {
     attributes,
@@ -80,6 +101,12 @@ function SortableTaskCard({
         card={card}
         isDragging={isDragging}
         onOpen={onOpen}
+        assignees={assignees}
+        statuses={statuses}
+        now={now}
+        updating={updating}
+        onUpdateCard={onUpdateCard}
+        onStatusChange={onStatusChange}
         dragHandle={
           <button
             type="button"
@@ -101,11 +128,23 @@ function BoardGroup({
   moving,
   movementDisabled,
   onOpenCard,
+  assignees,
+  statuses,
+  now,
+  updatingCardIds,
+  onUpdateCard,
+  onStatusChange,
 }: {
   board: KanbanColumn;
   moving: boolean;
   movementDisabled: boolean;
   onOpenCard: (cardId: string) => void;
+  assignees: TaskAssignee[];
+  statuses: Array<{ value: TaskStatus; label: string }>;
+  now: number | null;
+  updatingCardIds: Set<string>;
+  onUpdateCard: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
+  onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `board:${board.id}`,
@@ -167,6 +206,12 @@ function BoardGroup({
                 boardId={board.id}
                 disabled={moving || movementDisabled || board.status === null}
                 onOpen={() => onOpenCard(card.id)}
+                assignees={assignees}
+                statuses={statuses}
+                now={now}
+                updating={updatingCardIds.has(card.id)}
+                onUpdateCard={onUpdateCard}
+                onStatusChange={onStatusChange}
               />
             ))
           )}
@@ -182,6 +227,12 @@ export default function TaskBoardView({
   movementDisabled,
   onMove,
   onOpenCard,
+  assignees,
+  statuses,
+  now,
+  updatingCardIds,
+  onUpdateCard,
+  onStatusChange,
 }: TaskBoardViewProps) {
   const [activeCard, setActiveCard] = useState<KanbanCard | null>(null);
   const sensors = useSensors(
@@ -274,6 +325,12 @@ export default function TaskBoardView({
             moving={moving}
             movementDisabled={movementDisabled}
             onOpenCard={onOpenCard}
+            assignees={assignees}
+            statuses={statuses}
+            now={now}
+            updatingCardIds={updatingCardIds}
+            onUpdateCard={onUpdateCard}
+            onStatusChange={onStatusChange}
           />
         ))}
       </div>

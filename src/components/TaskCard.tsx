@@ -2,12 +2,23 @@
 
 import { useState, type ReactNode } from 'react';
 import type { KanbanCard } from '@/lib/tasks/kanban-types';
+import type { KanbanCardFieldUpdate } from '@/lib/tasks/kanban-types';
+import type { TaskAssignee } from '@/lib/tasks/task-types';
+import type { TaskStatus } from '@prisma/client';
+import TaskDeadline from '@/components/tasks/TaskDeadline';
+import { AssigneeAvatar, TaskAssigneeSelect, TaskDueDateInput, TaskPrioritySelect, TaskStatusSelect } from '@/components/tasks/TaskFields';
 
 type TaskCardProps = {
   card: KanbanCard;
   dragHandle?: ReactNode;
   isDragging?: boolean;
   onOpen?: () => void;
+  assignees?: TaskAssignee[];
+  statuses?: Array<{ value: TaskStatus; label: string }>;
+  now?: number | null;
+  updating?: boolean;
+  onUpdateCard?: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
+  onStatusChange?: (cardId: string, status: TaskStatus) => Promise<void>;
 };
 
 const priorityStyles = {
@@ -22,6 +33,12 @@ export default function TaskCard({
   dragHandle,
   isDragging = false,
   onOpen,
+  assignees = [],
+  statuses = [],
+  now = null,
+  updating = false,
+  onUpdateCard,
+  onStatusChange,
 }: TaskCardProps) {
   const [renderedAt] = useState(Date.now);
   const dueDate = card.dueDate ? new Date(card.dueDate) : null;
@@ -65,41 +82,37 @@ export default function TaskCard({
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div className="min-w-0">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Assignee</span>
+          {onUpdateCard ? (
+            <TaskAssigneeSelect label={`Assignee for ${card.title}`} value={card.assigneeUserId ?? ''} legacyName={card.assignedTo} assignees={assignees} disabled={updating} onChange={(assigneeUserId) => void onUpdateCard(card.id, { assigneeUserId })} />
+          ) : <AssigneeAvatar assignee={card.assigneeUser} legacyName={card.assignedTo} />}
+        </div>
+        <div>
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Status</span>
+          {onStatusChange ? <TaskStatusSelect label={`Status for ${card.title}`} value={card.status} statuses={statuses} disabled={updating} onChange={(status) => void onStatusChange(card.id, status)} /> : (
+            <span className="rounded-full bg-slate-800 px-2 py-1 text-slate-300">{card.status.replaceAll('_', ' ')}</span>
+          )}
+        </div>
+        <div>
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Priority</span>
+          {onUpdateCard ? <TaskPrioritySelect label={`Priority for ${card.title}`} value={card.priority} disabled={updating} onChange={(priority) => void onUpdateCard(card.id, { priority })} /> : (
         <span
           className={`rounded-full border px-2 py-1 font-semibold ${priorityStyles[card.priority]}`}
         >
           {card.priority}
         </span>
-        <span className="rounded-full bg-slate-800 px-2 py-1 text-slate-300">
-          {card.status.replaceAll('_', ' ')}
-        </span>
-        {card.assignedTo && (
-          <span
-            title={card.assignedTo}
-            aria-label={`Assigned to ${card.assignedTo}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-violet-500/20 font-bold text-violet-200"
-          >
-            {card.assignedTo
-              .split(/\s+/)
-              .map((part) => part[0])
-              .join('')
-              .slice(0, 2)
-              .toUpperCase()}
-          </span>
-        )}
-        {dueDate && (
-          <span
-            className={
-              overdue
-                ? 'font-semibold text-rose-300'
-                : 'text-slate-400'
-            }
-          >
-            {overdue ? 'Overdue: ' : 'Due: '}
-            {dueDate.toLocaleDateString()}
-          </span>
-        )}
+          )}
+        </div>
+        <div className="min-w-0">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Due</span>
+          {onUpdateCard ? <TaskDueDateInput label={`Due date and time for ${card.title}`} value={card.dueDate} disabled={updating} onChange={(dueDate) => void onUpdateCard(card.id, { dueDate })} /> : dueDate ? <span className={overdue ? 'font-semibold text-rose-300' : 'text-slate-400'}>{dueDate.toLocaleString()}</span> : <span className="text-slate-500">No deadline</span>}
+        </div>
+        <div className="col-span-2 flex items-center justify-between border-t border-white/6 pt-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Countdown</span>
+          <TaskDeadline dueDate={card.dueDate} now={now} status={card.status} compact />
+        </div>
       </div>
 
       {card.labels.length > 0 && (

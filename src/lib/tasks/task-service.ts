@@ -39,6 +39,9 @@ import { TaskValidationError } from './task-validation';
 const cardInclude = {
   labels: true,
   comments: true,
+  assigneeUser: {
+    select: { id: true, displayName: true, image: true },
+  },
 } satisfies Prisma.TaskCardInclude;
 
 const projectInclude = {
@@ -62,6 +65,10 @@ const boardCardSelect = {
   priority: true,
   status: true,
   assignedTo: true,
+  assigneeUserId: true,
+  assigneeUser: {
+    select: { id: true, displayName: true, image: true },
+  },
   dueDate: true,
   order: true,
   updatedAt: true,
@@ -162,7 +169,10 @@ export class TaskService {
     });
   }
 
-  async createCard(input: CreateTaskCardInput, actor?: TaskMutationActor) {
+  async createCard(
+    input: CreateTaskCardInput,
+    actor?: TaskMutationActor | TaskCompanyActor,
+  ) {
     return this.database.$transaction(async (transaction) => {
       const destinationBoard = await this.validateBoardProject(
         transaction,
@@ -171,6 +181,14 @@ export class TaskService {
       );
       if (!destinationBoard.status) {
         throw new TaskBoardStatusUnmappedError();
+      }
+      if (input.assigneeUserId !== undefined) {
+        if (!actor || !('companyId' in actor)) throw new AuthorizationDeniedError();
+        await this.validateVerifiedAssignee(
+          transaction,
+          input.assigneeUserId,
+          actor.companyId,
+        );
       }
 
       const order =
@@ -190,6 +208,7 @@ export class TaskService {
           title: input.title,
           description: input.description,
           priority: input.priority || 'MEDIUM',
+          assigneeUserId: input.assigneeUserId,
           status: destinationBoard.status,
           dueDate: input.dueDate,
           order: input.order === undefined ? order + 1 : order,
@@ -211,6 +230,7 @@ export class TaskService {
           priority: card.priority,
           status: card.status,
           dueDate: card.dueDate?.toISOString() ?? null,
+          assigneeUserId: card.assigneeUserId,
         },
       });
 
@@ -387,6 +407,12 @@ export class TaskService {
         input.expectedUpdatedAt &&
         existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()
       ) {
+        if (this.isIdempotentCardUpdate(existing, input)) {
+          return transaction.taskCard.findUniqueOrThrow({
+            where: { id: input.id },
+            include: cardInclude,
+          });
+        }
         throw new TaskMoveConflictError(
           'Task card was updated after the editor was loaded.',
         );
@@ -394,6 +420,14 @@ export class TaskService {
 
       if (input.boardId && input.boardId !== existing.boardId) {
         await this.validateBoardProject(transaction, input.boardId, existing.projectId);
+      }
+      if (input.assigneeUserId !== undefined) {
+        if (!actor || !('companyId' in actor)) throw new AuthorizationDeniedError();
+        await this.validateVerifiedAssignee(
+          transaction,
+          input.assigneeUserId,
+          actor.companyId,
+        );
       }
 
       const card = await transaction.taskCard.update({
@@ -405,6 +439,7 @@ export class TaskService {
           priority: input.priority,
           status: input.status,
           assignedTo: input.assignedTo,
+          assigneeUserId: input.assigneeUserId,
           dueDate: input.dueDate,
           order: input.order,
         },
@@ -794,6 +829,10 @@ export class TaskService {
     }).then((memberships) => memberships.map(({ user }) => user));
   }
 
+  async getAssigneeCandidates(companyId: string) {
+    return this.getMentionCandidates(companyId);
+  }
+
   async getAttachments(cardId: string, actor: TaskCompanyActor) {
     await this.requireCompanyCard(this.database, cardId, actor.companyId);
     const attachments = await this.database.taskAttachment.findMany({
@@ -1116,6 +1155,27 @@ export class TaskService {
     return board;
   }
 
+  private async validateVerifiedAssignee(
+    transaction: Prisma.TransactionClient,
+    assigneeUserId: string | null,
+    companyId: string,
+  ): Promise<void> {
+    if (assigneeUserId === null) return;
+    const membership = await transaction.companyMembership.findFirst({
+      where: {
+        companyId,
+        userId: assigneeUserId,
+        user: { isActive: true },
+      },
+      select: { id: true },
+    });
+    if (!membership) {
+      throw new TaskValidationError(
+        'assigneeUserId must reference an active member of the current company.',
+      );
+    }
+  }
+
   private describeChanges(
     before: TaskCard,
     after: TaskCard,
@@ -1131,6 +1191,7 @@ export class TaskService {
       { field: 'boardId', action: 'BOARD_CHANGED' },
       { field: 'priority', action: 'PRIORITY_CHANGED' },
       { field: 'assignedTo', action: 'ASSIGNEE_CHANGED' },
+      { field: 'assigneeUserId', action: 'ASSIGNEE_CHANGED' },
       { field: 'dueDate', action: 'DUE_DATE_CHANGED' },
       { field: 'order', action: 'ORDER_CHANGED' },
     ];
@@ -1155,6 +1216,39 @@ export class TaskService {
           to: this.serializeActivityValue(after[field]),
         },
       }));
+  }
+
+  private isIdempotentCardUpdate(
+    existing: TaskCard,
+    input: UpdateTaskCardInput,
+  ): boolean {
+    const fields: Array<keyof Pick<
+      UpdateTaskCardInput,
+      | 'boardId'
+      | 'title'
+      | 'description'
+      | 'priority'
+      | 'status'
+      | 'assignedTo'
+      | 'assigneeUserId'
+      | 'dueDate'
+      | 'order'
+    >> = [
+      'boardId',
+      'title',
+      'description',
+      'priority',
+      'status',
+      'assignedTo',
+      'assigneeUserId',
+      'dueDate',
+      'order',
+    ];
+    return fields.every((field) =>
+      input[field] === undefined ||
+      this.serializeActivityValue(input[field]) ===
+        this.serializeActivityValue(existing[field]),
+    );
   }
 
   private activityActor(

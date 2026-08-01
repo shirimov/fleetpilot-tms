@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
-import type { KanbanCard, KanbanColumn } from '@/lib/tasks/kanban-types';
+import type { KanbanCard, KanbanCardFieldUpdate, KanbanColumn } from '@/lib/tasks/kanban-types';
+import type { TaskAssignee } from '@/lib/tasks/task-types';
+import type { TaskStatus } from '@prisma/client';
 import MarkdownContent from './MarkdownContent';
 import TaskAttachments from './TaskAttachments';
 import TaskDescriptionEditor, {
   extractMentionUserIds,
 } from './TaskDescriptionEditor';
+import TaskDeadline from './TaskDeadline';
+import { TaskAssigneeSelect, TaskDueDateInput, TaskPrioritySelect, TaskStatusSelect } from './TaskFields';
 
 type ChecklistItem = {
   id: string;
@@ -40,6 +44,13 @@ type Props = {
   card: KanbanCard;
   board: KanbanColumn;
   onClose: () => void;
+  assignees: TaskAssignee[];
+  statuses: Array<{ value: TaskStatus; label: string }>;
+  now: number | null;
+  updating: boolean;
+  onUpdateCard: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
+  onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
+  onDescriptionSaved: (cardId: string, description: string, updatedAt: string) => void;
 };
 
 const actionLabels: Record<string, string> = {
@@ -83,7 +94,7 @@ function activityDetails(metadata: unknown): string | null {
   return typeof values.content === 'string' ? values.content : null;
 }
 
-export default function TaskDetailDrawer({ card, board, onClose }: Props) {
+export default function TaskDetailDrawer({ card, board, onClose, assignees, statuses, now, updating, onUpdateCard, onStatusChange, onDescriptionSaved }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -160,6 +171,11 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
     () => checklist.filter(({ isCompleted }) => isCompleted).length,
     [checklist],
   );
+
+  async function updateOverview(changes: KanbanCardFieldUpdate) {
+    await onUpdateCard(card.id, changes);
+    await refreshActivity();
+  }
 
   async function mutate(action: () => Promise<void>) {
     setPending(true);
@@ -391,18 +407,23 @@ export default function TaskDetailDrawer({ card, board, onClose }: Props) {
 
           <section aria-labelledby="overview-heading">
             <h3 id="overview-heading" className="mb-3 text-sm font-semibold text-white">Overview</h3>
-            <dl className="grid grid-cols-2 gap-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm">
-              <div><dt className="text-xs text-slate-500">Status</dt><dd className="mt-1 font-medium text-slate-200">{card.status.replaceAll('_', ' ')}</dd></div>
-              <div><dt className="text-xs text-slate-500">Priority</dt><dd className="mt-1 font-medium text-slate-200">{card.priority}</dd></div>
-              <div><dt className="text-xs text-slate-500">Assignee</dt><dd className="mt-1 font-medium text-slate-200">{card.assignedTo ?? 'Unassigned'}</dd></div>
-              <div><dt className="text-xs text-slate-500">Due date</dt><dd className="mt-1 font-medium text-slate-200">{card.dueDate ? new Date(card.dueDate).toLocaleDateString() : 'No due date'}</dd></div>
-            </dl>
+            <div className="grid gap-3 rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm sm:grid-cols-2">
+              <label className="text-xs text-slate-500">Status<span className="mt-1 block"><TaskStatusSelect label="Task status" value={card.status} statuses={statuses} disabled={updating} onChange={(status) => void onStatusChange(card.id, status).then(refreshActivity)} /></span></label>
+              <label className="text-xs text-slate-500">Priority<span className="mt-1 block"><TaskPrioritySelect label="Task priority" value={card.priority} disabled={updating} onChange={(priority) => void updateOverview({ priority })} /></span></label>
+              <label className="text-xs text-slate-500">Assignee<span className="mt-1 block"><TaskAssigneeSelect label="Task assignee" value={card.assigneeUserId ?? ''} legacyName={card.assignedTo} assignees={assignees} disabled={updating} onChange={(assigneeUserId) => void updateOverview({ assigneeUserId })} /></span></label>
+              <label className="text-xs text-slate-500">Due date and time<span className="mt-1 block"><TaskDueDateInput label="Task due date and time" value={card.dueDate} disabled={updating} onChange={(dueDate) => void updateOverview({ dueDate })} /></span></label>
+              <div className="sm:col-span-2 flex items-center justify-between border-t border-white/8 pt-3"><span className="text-xs text-slate-500">Countdown</span><TaskDeadline dueDate={card.dueDate} now={now} status={card.status} /></div>
+            </div>
           </section>
 
           <TaskDescriptionEditor
             cardId={card.id}
             initialMarkdown={card.description ?? ''}
             initialUpdatedAt={card.updatedAt}
+            onSaved={(description, updatedAt) => {
+              onDescriptionSaved(card.id, description, updatedAt);
+              void refreshActivity();
+            }}
           />
 
           <section aria-labelledby="checklist-heading">

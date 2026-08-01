@@ -21,6 +21,7 @@ export type CreateTaskCardInput = {
   title: string;
   description?: string | null;
   priority?: TaskPriority;
+  assigneeUserId?: string | null;
   dueDate?: Date | null;
   order?: number;
 };
@@ -33,10 +34,17 @@ export type UpdateTaskCardInput = {
   priority?: TaskPriority;
   status?: TaskStatus;
   assignedTo?: string | null;
+  assigneeUserId?: string | null;
   dueDate?: Date | null;
   order?: number;
   expectedUpdatedAt?: Date;
   mentionUserIds?: string[];
+};
+
+export type TaskAssignee = {
+  id: string;
+  displayName: string;
+  image: string | null;
 };
 
 export type MoveTaskCardInput = {

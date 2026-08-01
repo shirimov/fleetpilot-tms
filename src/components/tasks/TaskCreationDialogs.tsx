@@ -3,6 +3,7 @@
 import { type FormEvent, useRef } from 'react';
 import type { TaskPriority, TaskStatus } from '@prisma/client';
 import ModalLayer from '@/components/ui/ModalLayer';
+import type { TaskAssignee } from '@/lib/tasks/task-types';
 
 type ProjectSummary = {
   id: string;
@@ -98,12 +99,15 @@ export function CreateTaskDialog({
   status,
   priority,
   dueDate,
+  assigneeUserId,
+  assignees,
   pending,
   error,
   onTitleChange,
   onStatusChange,
   onPriorityChange,
   onDueDateChange,
+  onAssigneeChange,
   onSubmit,
   onClose,
 }: {
@@ -113,12 +117,15 @@ export function CreateTaskDialog({
   status: TaskStatus;
   priority: TaskPriority;
   dueDate: string;
+  assigneeUserId: string;
+  assignees: TaskAssignee[];
   pending: boolean;
   error: string;
   onTitleChange: (title: string) => void;
   onStatusChange: (status: TaskStatus) => void;
   onPriorityChange: (priority: TaskPriority) => void;
   onDueDateChange: (dueDate: string) => void;
+  onAssigneeChange: (assigneeUserId: string) => void;
   onSubmit: () => void;
   onClose: () => void;
 }) {
@@ -199,9 +206,9 @@ export function CreateTaskDialog({
             </select>
           </label>
           <label className="block text-sm font-medium text-slate-200">
-            Due date <span className="text-slate-500">(optional)</span>
+            Due date and time <span className="text-slate-500">(optional)</span>
             <input
-              type="date"
+              type="datetime-local"
               value={dueDate}
               onChange={(event) => onDueDateChange(event.target.value)}
               className={fieldClassName}
@@ -209,11 +216,14 @@ export function CreateTaskDialog({
           </label>
           <label className="block text-sm font-medium text-slate-200 sm:col-span-2">
             Assignee <span className="text-slate-500">(optional)</span>
-            <select disabled value="" className={fieldClassName}>
+            <select value={assigneeUserId} onChange={(event) => onAssigneeChange(event.target.value)} className={fieldClassName}>
               <option value="">Unassigned</option>
+              {assignees.map((assignee) => (
+                <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>
+              ))}
             </select>
             <span className="mt-1 block text-xs text-slate-500">
-              Employee-linked assignment is not available in this first-use flow yet.
+              Only active members of the current company are available.
             </span>
           </label>
         </div>

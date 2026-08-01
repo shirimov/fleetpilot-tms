@@ -1,6 +1,7 @@
 import { expect, test, type Page } from 'playwright/test';
+import type { KanbanProject } from '@/lib/tasks/kanban-types';
 
-const project = {
+const baseProject: KanbanProject = {
   id: 'project-1',
   name: 'Fleet Operations',
   description: 'Coordinate dispatch, safety, and maintenance work.',
@@ -100,6 +101,7 @@ const project = {
 };
 
 async function mockTaskApis(page: Page) {
+  const project = structuredClone(baseProject);
   await page.route('**/api/auth/company', (route) =>
     route.fulfill({
       json: {
@@ -174,18 +176,35 @@ async function mockTaskApis(page: Page) {
       json: [{ id: 'user-maya', displayName: 'Maya Chen', image: null }],
     });
   });
+  await page.route('**/api/tasks/assignees', async (route) => {
+    await route.fulfill({
+      json: [
+        { id: 'user-maya', displayName: 'Maya Chen', image: null },
+        { id: 'user-noah', displayName: 'Noah Williams', image: null },
+      ],
+    });
+  });
   await page.route('**/api/tasks/cards', async (route) => {
     if (route.request().method() === 'PATCH') {
-      const body = route.request().postDataJSON() as {
-        id: string;
-        description: string;
-      };
+      const body = route.request().postDataJSON() as Record<string, string | null> & { id: string };
+      const card = project.boards.flatMap(({ cards }) => cards).find(({ id }) => id === body.id)!;
+      Object.assign(card, {
+        ...(Object.hasOwn(body, 'description') ? { description: body.description } : {}),
+        ...(Object.hasOwn(body, 'priority') ? { priority: body.priority } : {}),
+        ...(Object.hasOwn(body, 'dueDate') ? { dueDate: body.dueDate } : {}),
+        ...(Object.hasOwn(body, 'assigneeUserId')
+          ? {
+              assigneeUserId: body.assigneeUserId,
+              assigneeUser: body.assigneeUserId === 'user-maya'
+                ? { id: 'user-maya', displayName: 'Maya Chen', image: null }
+                : null,
+              assignedTo: null,
+            }
+          : {}),
+        updatedAt: '2026-07-28T13:00:00.000Z',
+      });
       await route.fulfill({
-        json: {
-          ...project.boards[0].cards.find(({ id }) => id === body.id),
-          description: body.description,
-          updatedAt: '2026-07-28T13:00:00.000Z',
-        },
+        json: card,
       });
       return;
     }
@@ -319,23 +338,15 @@ async function mockTaskApis(page: Page) {
     await route.fulfill({ json: comment });
   });
   await page.route('**/api/tasks/cards/*/move', async (route) => {
-    const movedCard = project.boards[0].cards[0];
+    const body = route.request().postDataJSON() as { cardId: string; destinationBoardId: string };
+    const movedCard = project.boards.flatMap(({ cards }) => cards).find(({ id }) => id === body.cardId)!;
+    const destination = project.boards.find(({ id }) => id === body.destinationBoardId)!;
+    project.boards.forEach((board) => {
+      board.cards = board.cards.filter(({ id }) => id !== body.cardId);
+    });
+    destination.cards.push({ ...movedCard, status: destination.status ?? movedCard.status, order: destination.cards.length });
     await route.fulfill({
-      json: {
-        ...project,
-        boards: project.boards.map((board) => {
-          if (board.id === 'board-todo') {
-            return { ...board, cards: board.cards.slice(1) };
-          }
-          if (board.id === 'board-review') {
-            return {
-              ...board,
-              cards: [{ ...movedCard, status: 'IN_REVIEW', order: 0 }],
-            };
-          }
-          return board;
-        }),
-      },
+      json: project,
     });
   });
 }
@@ -467,7 +478,7 @@ test('autosaves rich Markdown, scopes mentions, and uploads attachments', async 
   await editor.fill(
     '# Inspection plan\n\n- [ ] Verify brakes\n\n<script>alert(1)</script>\n\n@Ma',
   );
-  await drawer.getByRole('option', { name: 'Maya Chen' }).click();
+  await drawer.getByRole('listbox', { name: 'Mention suggestions' }).getByRole('option', { name: 'Maya Chen' }).click();
   const request = await saveRequest;
   expect(request.postDataJSON().mentionUserIds).toEqual(['user-maya']);
   await expect(drawer.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible();
@@ -483,6 +494,63 @@ test('autosaves rich Markdown, scopes mentions, and uploads attachments', async 
   });
   await expect(drawer.getByText('Upload complete.')).toBeVisible();
   await expect(drawer.getByRole('link', { name: 'inspection.pdf' })).toBeVisible();
+});
+
+test('reconciles saved descriptions across drawer close and refresh', async ({ page }) => {
+  const trigger = page.getByRole('button', { name: 'Complete trailer inspection', exact: true });
+  await trigger.click();
+  let drawer = page.getByRole('dialog');
+  await drawer.getByRole('button', { name: 'write' }).click();
+  const savedResponse = page.waitForResponse((response) => response.url().endsWith('/api/tasks/cards') && response.request().method() === 'PATCH');
+  await drawer.getByLabel('Task description Markdown').fill('# Persisted dispatch notes');
+  await savedResponse;
+  await expect(drawer.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible();
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(drawer).toBeHidden();
+  await trigger.click();
+  drawer = page.getByRole('dialog');
+  await expect(drawer.getByRole('heading', { name: 'Persisted dispatch notes' })).toBeVisible();
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.reload();
+  await page.getByRole('button', { name: 'Complete trailer inspection', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Persisted dispatch notes' })).toBeVisible();
+});
+
+test('edits verified assignee and deadline inline in Board and Table views', async ({ page }) => {
+  const assignee = page.getByLabel('Assignee for Complete trailer inspection');
+  const assigneeRequest = page.waitForRequest((request) => request.url().endsWith('/api/tasks/cards') && request.method() === 'PATCH' && request.postData()?.includes('assigneeUserId') === true);
+  await assignee.selectOption('user-maya');
+  expect((await assigneeRequest).postDataJSON().assigneeUserId).toBe('user-maya');
+
+  const deadline = page.getByLabel('Due date and time for Complete trailer inspection');
+  await deadline.fill('2030-08-01T16:45');
+  await expect(page.getByRole('timer').first()).toBeVisible();
+
+  await page.getByRole('button', { name: 'Table' }).click();
+  await expect(page.getByRole('columnheader', { name: 'Assignee' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Countdown' })).toBeVisible();
+  await expect(page.getByLabel('Assignee for Complete trailer inspection')).toHaveValue('user-maya');
+  await expect(page.getByLabel('Due date and time for Complete trailer inspection')).toHaveValue('2030-08-01T16:45');
+  const statusRequest = page.waitForRequest((request) => request.url().endsWith('/api/tasks/cards/card-inspection/move') && request.method() === 'POST');
+  await page.getByLabel('Status for Complete trailer inspection').selectOption('IN_PROGRESS');
+  expect((await statusRequest).postDataJSON().destinationBoardId).toBe('board-progress');
+  await expect(page.getByLabel('Status for Complete trailer inspection')).toHaveValue('IN_PROGRESS');
+});
+
+test('shows description autosave failures and permits an explicit retry', async ({ page }) => {
+  await page.route('**/api/tasks/cards', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({ status: 409, json: { error: 'Task changed in another session.' } });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.getByRole('button', { name: 'Complete trailer inspection', exact: true }).click();
+  const drawer = page.getByRole('dialog');
+  await drawer.getByRole('button', { name: 'write' }).click();
+  await drawer.getByLabel('Task description Markdown').fill('Unsaved dispatch change');
+  await expect(drawer.getByRole('alert')).toHaveText('Task changed in another session.');
+  await expect(drawer.getByRole('button', { name: 'Retry' })).toBeVisible();
 });
 
 test('moves a task optimistically and reconciles the canonical response', async ({
@@ -538,6 +606,16 @@ test('captures approved desktop and responsive workspace references', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({
+    path: 'docs/screenshots/task-alpha-board-desktop.png',
+    fullPage: true,
+  });
+  await page.getByRole('button', { name: 'Table' }).click();
+  await page.screenshot({
+    path: 'docs/screenshots/task-alpha-table-desktop.png',
+    fullPage: true,
+  });
+  await page.getByRole('button', { name: 'Board' }).click();
   await page
     .getByRole('button', { name: 'Complete trailer inspection', exact: true })
     .click();
@@ -548,6 +626,10 @@ test('captures approved desktop and responsive workspace references', async ({
   });
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: 'docs/screenshots/task-alpha-mobile.png',
+    fullPage: true,
+  });
   await page.screenshot({
     path: 'docs/screenshots/task-rich-content-responsive.png',
     fullPage: true,
