@@ -51,6 +51,7 @@ let foreignCompanyId = '';
 let userId = '';
 let teammateId = '';
 let foreignUserId = '';
+let inactiveUserId = '';
 let cardId = '';
 let foreignCardId = '';
 let actor: TaskCompanyActor;
@@ -63,19 +64,22 @@ before(async () => {
   ]);
   companyId = company.id;
   foreignCompanyId = foreignCompany.id;
-  const [user, teammate, foreignUser] = await Promise.all([
+  const [user, teammate, foreignUser, inactiveUser] = await Promise.all([
     prisma.user.create({ data: { email: `rich-${suffix}@test.dev`, displayName: 'Rich author' } }),
     prisma.user.create({ data: { email: `mention-${suffix}@test.dev`, displayName: 'Mention teammate' } }),
     prisma.user.create({ data: { email: `foreign-rich-${suffix}@test.dev`, displayName: 'Foreign user' } }),
+    prisma.user.create({ data: { email: `inactive-rich-${suffix}@test.dev`, displayName: 'Inactive teammate', isActive: false } }),
   ]);
   userId = user.id;
   teammateId = teammate.id;
   foreignUserId = foreignUser.id;
+  inactiveUserId = inactiveUser.id;
   await prisma.companyMembership.createMany({
     data: [
       { companyId, userId, role: 'MEMBER' },
       { companyId, userId: teammateId, role: 'MEMBER' },
       { companyId: foreignCompanyId, userId: foreignUserId, role: 'OWNER' },
+      { companyId, userId: inactiveUserId, role: 'MEMBER' },
     ],
   });
   actor = { userId, companyId, displayName: user.displayName, role: 'MEMBER' };
@@ -109,7 +113,7 @@ after(async () => {
     where: { companyId: { in: [companyId, foreignCompanyId] } },
   });
   await prisma.user.deleteMany({
-    where: { id: { in: [userId, teammateId, foreignUserId] } },
+    where: { id: { in: [userId, teammateId, foreignUserId, inactiveUserId] } },
   });
   await prisma.company.deleteMany({
     where: { id: { in: [companyId, foreignCompanyId] } },
@@ -188,6 +192,21 @@ test('description writes are stale-safe, deduplicated, and company-verified', as
     },
     actor,
   );
+  await service.updateCard(
+    {
+      id: cardId,
+      description: `# Dispatch\n@[Mention teammate](user:${teammateId})`,
+      mentionUserIds: [teammateId],
+      expectedUpdatedAt: before.updatedAt,
+    },
+    actor,
+  );
+  assert.equal(
+    await prisma.taskActivity.count({
+      where: { entityId: cardId, action: 'DESCRIPTION_CHANGED' },
+    }),
+    1,
+  );
   await assert.rejects(
     service.updateCard(
       {
@@ -217,6 +236,33 @@ test('description writes are stale-safe, deduplicated, and company-verified', as
       where: { entityId: cardId, action: 'MENTION_ADDED' },
     }),
     1,
+  );
+});
+
+test('verified assignees are active company members and changes are attributable', async () => {
+  assert.deepEqual(
+    (await service.getAssigneeCandidates(companyId)).map(({ id }) => id).sort(),
+    [teammateId, userId].sort(),
+  );
+  const before = await prisma.taskCard.findUniqueOrThrow({ where: { id: cardId } });
+  const assigned = await service.updateCard(
+    { id: cardId, assigneeUserId: teammateId, expectedUpdatedAt: before.updatedAt },
+    actor,
+  );
+  assert.equal(assigned.assigneeUserId, teammateId);
+  assert.equal(assigned.assigneeUser?.displayName, 'Mention teammate');
+  await assert.rejects(
+    service.updateCard({ id: cardId, assigneeUserId: foreignUserId }, actor),
+    /active member/,
+  );
+  await assert.rejects(
+    service.updateCard({ id: cardId, assigneeUserId: inactiveUserId }, actor),
+    /active member/,
+  );
+  await service.updateCard({ id: cardId, assigneeUserId: null }, actor);
+  assert.equal(
+    await prisma.taskActivity.count({ where: { entityId: cardId, action: 'ASSIGNEE_CHANGED' } }),
+    2,
   );
 });
 

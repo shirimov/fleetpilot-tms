@@ -42,6 +42,7 @@ export default function TaskDescriptionEditor({
   const [updatedAt, setUpdatedAt] = useState(initialUpdatedAt);
   const [mode, setMode] = useState<'write' | 'preview'>('preview');
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveError, setSaveError] = useState('');
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestSequence = useRef(0);
@@ -112,16 +113,18 @@ export default function TaskDescriptionEditor({
             requestSequence.current,
           )
         ) {
+          if (requestCardId === activeCardId.current) setSaveState('saved');
           return;
         }
         const canonical = body.description ?? '';
         setSavedMarkdown(canonical);
         setUpdatedAt(body.updatedAt ?? updatedAt);
         setSaveState('saved');
+        setSaveError('');
         if (markdownRef.current === requestMarkdown) {
           onSaved?.(canonical, body.updatedAt ?? updatedAt);
         }
-      } catch {
+      } catch (error) {
         if (
           isCurrentDescriptionSave(
             requestCardId,
@@ -131,6 +134,7 @@ export default function TaskDescriptionEditor({
           )
         ) {
           setSaveState('error');
+          setSaveError(error instanceof Error ? error.message : 'Description could not be saved.');
         }
       }
     }, 800);
@@ -172,6 +176,9 @@ export default function TaskDescriptionEditor({
           <span role="status" className={`text-xs ${saveState === 'error' ? 'text-rose-300' : 'text-slate-500'}`}>
             {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : 'Saved'}
           </span>
+          {saveState === 'error' && (
+            <button type="button" onClick={() => setSaveState('saved')} className="rounded px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/10">Retry</button>
+          )}
           {(['write', 'preview'] as const).map((option) => (
             <button key={option} type="button" onClick={() => setMode(option)} aria-pressed={mode === option} className="rounded px-2 py-1 text-xs capitalize text-slate-300 hover:bg-white/5">{option}</button>
           ))}
@@ -195,8 +202,12 @@ export default function TaskDescriptionEditor({
             data-task-inline-editor={dirty ? 'true' : undefined}
             value={markdown}
             onChange={(event) => {
+              requestSequence.current += 1;
               setMarkdown(event.target.value);
-              if (saveState === 'error') setSaveState('saved');
+              if (saveState === 'error') {
+                setSaveState('saved');
+                setSaveError('');
+              }
             }}
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
@@ -211,6 +222,7 @@ export default function TaskDescriptionEditor({
             className="min-h-48 w-full resize-y bg-transparent p-3 font-mono text-sm text-slate-200 outline-none"
             placeholder="Describe the task with Markdown. Type @ to mention a teammate."
           />
+          {saveState === 'error' && <p role="alert" className="px-3 pb-3 text-xs text-rose-300">{saveError}</p>}
           {mentionCandidates.length > 0 && (
             <ul role="listbox" aria-label="Mention suggestions" className="absolute left-3 top-full z-20 mt-1 max-h-44 w-72 overflow-auto rounded-lg border border-white/10 bg-slate-900 p-1 shadow-xl">
               {mentionCandidates.map((candidate) => (

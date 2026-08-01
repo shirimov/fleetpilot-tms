@@ -68,8 +68,8 @@ export function taskMatchesFilters(
     (filters.status === 'all' || card.status === filters.status) &&
     (filters.assignee === 'all' ||
       (filters.assignee === 'unassigned'
-        ? !card.assignedTo
-        : card.assignedTo === filters.assignee)) &&
+        ? !card.assigneeUserId && !card.assignedTo
+        : (card.assigneeUser?.displayName ?? card.assignedTo) === filters.assignee)) &&
     (filters.priority === 'all' || card.priority === filters.priority) &&
     matchesDueDate(card, filters.dueDate, now)
   );
@@ -136,7 +136,7 @@ export function getTaskAssignees(project: KanbanProject | null): string[] {
     new Set(
       (project?.boards ?? [])
         .flatMap(({ cards }) => cards)
-        .map(({ assignedTo }) => assignedTo)
+        .map(({ assignedTo, assigneeUser }) => assigneeUser?.displayName ?? assignedTo)
         .filter((assignee): assignee is string => Boolean(assignee)),
     ),
   ).sort((left, right) => left.localeCompare(right));

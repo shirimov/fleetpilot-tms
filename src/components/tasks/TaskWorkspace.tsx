@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TaskPriority, TaskStatus } from '@prisma/client';
-import type { KanbanProject } from '@/lib/tasks/kanban-types';
-import { moveCardInBoardState } from '@/lib/tasks/kanban-state';
+import type { KanbanCardFieldUpdate, KanbanProject } from '@/lib/tasks/kanban-types';
+import { moveCardInBoardState, updateCardInBoardState } from '@/lib/tasks/kanban-state';
+import type { TaskAssignee } from '@/lib/tasks/task-types';
+import { localDateTimeToIso } from '@/lib/tasks/task-deadline';
 import {
   EMPTY_TASK_FILTERS,
   deriveVisibleProject,
@@ -84,6 +86,9 @@ export default function TaskWorkspace() {
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [loadingBoard, setLoadingBoard] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [updatingCardIds, setUpdatingCardIds] = useState<Set<string>>(new Set());
+  const [assigneeOptions, setAssigneeOptions] = useState<TaskAssignee[]>([]);
+  const [clockNow, setClockNow] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -94,6 +99,7 @@ export default function TaskWorkspace() {
   const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>('TODO');
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>('MEDIUM');
   const [newTaskDueDate, setNewTaskDueDate] = useState('');
+  const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCreationError, setTaskCreationError] = useState('');
   const addTaskTriggerRef = useRef<HTMLButtonElement>(null);
@@ -126,6 +132,26 @@ export default function TaskWorkspace() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/tasks/assignees')
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Assignees could not be loaded.');
+        return (await response.json()) as TaskAssignee[];
+      })
+      .then((members) => { if (active) setAssigneeOptions(members); })
+      .catch((loadError: unknown) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : 'Assignees could not be loaded.');
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const loadBoard = useCallback(async () => {
@@ -240,6 +266,74 @@ export default function TaskWorkspace() {
     }
   }
 
+  async function updateTaskCard(
+    cardId: string,
+    changes: KanbanCardFieldUpdate,
+  ) {
+    if (!project || updatingCardIds.has(cardId)) return;
+    const current = findTaskCard(project.boards, cardId)?.card;
+    if (!current) return;
+    const snapshot = project;
+    const optimisticChanges = {
+      ...changes,
+      ...(Object.hasOwn(changes, 'assigneeUserId')
+        ? {
+            assignedTo: null,
+            assigneeUser:
+              assigneeOptions.find(({ id }) => id === changes.assigneeUserId) ?? null,
+          }
+        : {}),
+    };
+    setProject({
+      ...project,
+      boards: updateCardInBoardState(project.boards, cardId, optimisticChanges),
+    });
+    setUpdatingCardIds((ids) => new Set(ids).add(cardId));
+    setError(null);
+    try {
+      const response = await fetch('/api/tasks/cards', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: cardId, ...changes, expectedUpdatedAt: current.updatedAt }),
+      });
+      const body = (await response.json()) as KanbanProject['boards'][number]['cards'][number] | RequestError;
+      if (!response.ok || !('id' in body)) throw new Error('error' in body ? body.error : 'Task update failed.');
+      setProject((latest) => latest ? {
+        ...latest,
+        boards: updateCardInBoardState(latest.boards, cardId, body),
+      } : latest);
+    } catch (updateError) {
+      setProject(snapshot);
+      setError(`${updateError instanceof Error ? updateError.message : 'Task update failed.'} The previous value was restored.`);
+    } finally {
+      setUpdatingCardIds((ids) => {
+        const next = new Set(ids);
+        next.delete(cardId);
+        return next;
+      });
+    }
+  }
+
+  async function changeTaskStatus(cardId: string, status: TaskStatus) {
+    if (!project) return;
+    const source = findTaskCard(project.boards, cardId);
+    const destination = project.boards.find((board) => board.status === status);
+    if (!source || !destination || source.board.id === destination.id) return;
+    await moveTask({
+      cardId,
+      sourceBoardId: source.board.id,
+      destinationBoardId: destination.id,
+      destinationIndex: destination.cards.length,
+    });
+  }
+
+  function reconcileDescription(cardId: string, description: string, updatedAt: string) {
+    setProject((current) => current ? {
+      ...current,
+      boards: updateCardInBoardState(current.boards, cardId, { description, updatedAt }),
+    } : current);
+  }
+
   function openCreateTask() {
     if (!project || creationStatuses.length === 0) return;
     setNewTaskTitle('');
@@ -250,6 +344,7 @@ export default function TaskWorkspace() {
     );
     setNewTaskPriority('MEDIUM');
     setNewTaskDueDate('');
+    setNewTaskAssigneeUserId('');
     setTaskCreationError('');
     setShowCreateTask(true);
   }
@@ -317,7 +412,8 @@ export default function TaskWorkspace() {
           boardId: destination.id,
           title: newTaskTitle.trim(),
           priority: newTaskPriority,
-          dueDate: newTaskDueDate || null,
+          dueDate: localDateTimeToIso(newTaskDueDate),
+          assigneeUserId: newTaskAssigneeUserId || null,
         }),
       });
       const body = (await response.json()) as RequestError;
@@ -496,9 +592,15 @@ export default function TaskWorkspace() {
               movementDisabled={movementDisabled}
               onMove={moveTask}
               onOpenCard={setSelectedCardId}
+              assignees={assigneeOptions}
+              statuses={creationStatuses}
+              now={clockNow}
+              updatingCardIds={updatingCardIds}
+              onUpdateCard={updateTaskCard}
+              onStatusChange={changeTaskStatus}
             />
           ) : (
-            <TaskTableView project={visibleProject} onOpenCard={setSelectedCardId} />
+            <TaskTableView project={visibleProject} onOpenCard={setSelectedCardId} assignees={assigneeOptions} statuses={creationStatuses} now={clockNow} updatingCardIds={updatingCardIds} onUpdateCard={updateTaskCard} onStatusChange={changeTaskStatus} />
           )
         ) : null}
       </div>
@@ -508,6 +610,13 @@ export default function TaskWorkspace() {
           card={selectedCard.card}
           board={selectedCard.board}
           onClose={() => setSelectedCardId(null)}
+          assignees={assigneeOptions}
+          statuses={creationStatuses}
+          now={clockNow}
+          updating={updatingCardIds.has(selectedCard.card.id)}
+          onUpdateCard={updateTaskCard}
+          onStatusChange={changeTaskStatus}
+          onDescriptionSaved={reconcileDescription}
         />
       )}
       {showCreateProject && (
@@ -530,12 +639,15 @@ export default function TaskWorkspace() {
           status={newTaskStatus}
           priority={newTaskPriority}
           dueDate={newTaskDueDate}
+          assigneeUserId={newTaskAssigneeUserId}
+          assignees={assigneeOptions}
           pending={creatingTask}
           error={taskCreationError}
           onTitleChange={setNewTaskTitle}
           onStatusChange={setNewTaskStatus}
           onPriorityChange={setNewTaskPriority}
           onDueDateChange={setNewTaskDueDate}
+          onAssigneeChange={setNewTaskAssigneeUserId}
           onSubmit={() => void createTask()}
           onClose={() => {
             if (!creatingTask) setShowCreateTask(false);

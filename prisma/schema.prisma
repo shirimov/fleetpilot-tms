@@ -133,6 +133,7 @@ model User {
   taskActivities           TaskActivity[]
   taskChecklistItems       TaskChecklistItem[]
   taskAttachments          TaskAttachment[]
+  assignedTaskCards        TaskCard[]          @relation("TaskCardAssignee")
   taskMentions             TaskMention[]       @relation("MentionedTaskUser")
   createdTaskMentions      TaskMention[]       @relation("TaskMentionCreator")
   loadActivities           LoadActivity[]
@@ -749,6 +750,8 @@ model TaskCard {
   priority       TaskPriority        @default(MEDIUM)
   status         TaskStatus          @default(TODO)
   assignedTo     String?
+  assigneeUserId String?
+  assigneeUser   User?               @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
   dueDate        DateTime?
   labels         TaskLabel[]
   comments       TaskComment[]
@@ -760,6 +763,8 @@ model TaskCard {
   completedAt    DateTime?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
+
+  @@index([assigneeUserId])
 }
 
 model TaskLabel {

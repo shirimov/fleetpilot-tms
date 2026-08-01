@@ -13,6 +13,12 @@ export type KanbanCard = {
   priority: TaskPriority;
   status: TaskStatus;
   assignedTo: string | null;
+  assigneeUserId?: string | null;
+  assigneeUser?: {
+    id: string;
+    displayName: string;
+    image: string | null;
+  } | null;
   dueDate: string | null;
   order: number;
   updatedAt: string;
@@ -28,6 +34,10 @@ export type KanbanColumn = {
   status: TaskStatus | null;
   cards: KanbanCard[];
 };
+
+export type KanbanCardFieldUpdate = Partial<
+  Pick<KanbanCard, 'description' | 'priority' | 'assigneeUserId' | 'dueDate'>
+>;
 
 export type KanbanProject = {
   id: string;

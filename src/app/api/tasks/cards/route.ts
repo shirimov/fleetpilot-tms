@@ -17,7 +17,12 @@ export async function POST(req: NextRequest) {
   try {
     const input = validateCreateTaskCardInput(await parseTaskRequestBody(req));
     const context = await taskAuthorizationService.requireProject(input.projectId);
-    const card = await taskService.createCard(input, { userId: context.user.id });
+    const card = await taskService.createCard(input, {
+      userId: context.user.id,
+      displayName: context.user.displayName,
+      companyId: context.companyId,
+      role: context.role,
+    });
 
     return NextResponse.json(card, { status: 201 });
   } catch (error) {
