@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import MarkdownContent from './MarkdownContent';
 
 type MentionCandidate = {
@@ -47,19 +47,131 @@ export default function TaskDescriptionEditor({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestSequence = useRef(0);
   const activeCardId = useRef(cardId);
-  const markdownRef = useRef(markdown);
+  const latestDraftRef = useRef({ cardId, markdown: initialMarkdown, sequence: 0 });
+  const latestCommittedRef = useRef({ markdown: initialMarkdown, updatedAt: initialUpdatedAt });
+
   if (activeCardId.current !== cardId) {
     activeCardId.current = cardId;
-    requestSequence.current += 1;
+    latestDraftRef.current = { cardId, markdown: initialMarkdown, sequence: 0 };
+    requestSequence.current = 0;
   }
-  markdownRef.current = markdown;
+
   const dirty = markdown !== savedMarkdown;
 
   useEffect(() => {
+    latestCommittedRef.current = {
+      markdown: initialMarkdown,
+      updatedAt: initialUpdatedAt,
+    };
+    latestDraftRef.current = { cardId, markdown: initialMarkdown, sequence: 0 };
+    requestSequence.current = 0;
     setMarkdown(initialMarkdown);
     setSavedMarkdown(initialMarkdown);
     setUpdatedAt(initialUpdatedAt);
+    setSaveError('');
+    setSaveState('saved');
   }, [cardId, initialMarkdown, initialUpdatedAt]);
+
+  const triggerSave = useCallback(
+    (forced = false) => {
+      if (!dirty) return;
+      if (saveState === 'saving' && !forced) return;
+
+      const sequence = ++requestSequence.current;
+      const requestCardId = cardId;
+      const requestMarkdown = markdown;
+      const requestUpdatedAt = updatedAt;
+
+      latestDraftRef.current = {
+        cardId: requestCardId,
+        markdown: requestMarkdown,
+        sequence,
+      };
+
+      const timer = window.setTimeout(async () => {
+        setSaveState('saving');
+
+        try {
+          const response = await fetch('/api/tasks/cards', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: cardId,
+              description: requestMarkdown || null,
+              expectedUpdatedAt: requestUpdatedAt,
+              mentionUserIds: extractMentionUserIds(requestMarkdown),
+            }),
+          });
+
+          const body = (await response.json()) as {
+            error?: string;
+            description?: string | null;
+            updatedAt?: string;
+          };
+
+          if (!response.ok) {
+            throw new Error(body.error ?? 'Description could not be saved.');
+          }
+
+          if (
+            !isCurrentDescriptionSave(
+              requestCardId,
+              activeCardId.current,
+              sequence,
+              requestSequence.current,
+            )
+          ) {
+            return;
+          }
+
+          const canonical = body.description ?? '';
+          const nextUpdatedAt = body.updatedAt ?? requestUpdatedAt;
+
+          latestCommittedRef.current = {
+            markdown: canonical,
+            updatedAt: nextUpdatedAt,
+          };
+          setSavedMarkdown(canonical);
+          setUpdatedAt(nextUpdatedAt);
+          setSaveState('saved');
+          setSaveError('');
+
+          if (
+            latestDraftRef.current.cardId === requestCardId &&
+            latestDraftRef.current.sequence === sequence &&
+            latestDraftRef.current.markdown === requestMarkdown
+          ) {
+            onSaved?.(canonical, nextUpdatedAt);
+          }
+        } catch (error) {
+          if (
+            isCurrentDescriptionSave(
+              requestCardId,
+              activeCardId.current,
+              sequence,
+              requestSequence.current,
+            )
+          ) {
+            setSaveState('error');
+            setSaveError(
+              error instanceof Error
+                ? error.message
+                : 'Description could not be saved.',
+            );
+          }
+        }
+      }, forced ? 0 : 800);
+
+      return () => window.clearTimeout(timer);
+    },
+    [cardId, dirty, markdown, onSaved, saveState, updatedAt],
+  );
+
+  useEffect(() => {
+    if (!dirty || saveState === 'saving') return;
+    const cleanup = triggerSave();
+    return cleanup;
+  }, [dirty, saveState, triggerSave]);
 
   const mentionQuery = useMemo(() => {
     const beforeCursor = markdown.slice(0, textareaRef.current?.selectionStart ?? markdown.length);
@@ -80,66 +192,6 @@ export default function TaskDescriptionEditor({
       .catch(() => {});
     return () => controller.abort();
   }, [mentionQuery, mode]);
-
-  useEffect(() => {
-    if (!dirty || saveState === 'saving' || saveState === 'error') return;
-    const sequence = ++requestSequence.current;
-    const requestCardId = cardId;
-    const requestMarkdown = markdown;
-    const timer = window.setTimeout(async () => {
-      setSaveState('saving');
-      try {
-        const response = await fetch('/api/tasks/cards', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: cardId,
-            description: requestMarkdown || null,
-            expectedUpdatedAt: updatedAt,
-            mentionUserIds: extractMentionUserIds(requestMarkdown),
-          }),
-        });
-        const body = (await response.json()) as {
-          error?: string;
-          description?: string | null;
-          updatedAt?: string;
-        };
-        if (!response.ok) throw new Error(body.error ?? 'Description could not be saved.');
-        if (
-          !isCurrentDescriptionSave(
-            requestCardId,
-            activeCardId.current,
-            sequence,
-            requestSequence.current,
-          )
-        ) {
-          if (requestCardId === activeCardId.current) setSaveState('saved');
-          return;
-        }
-        const canonical = body.description ?? '';
-        setSavedMarkdown(canonical);
-        setUpdatedAt(body.updatedAt ?? updatedAt);
-        setSaveState('saved');
-        setSaveError('');
-        if (markdownRef.current === requestMarkdown) {
-          onSaved?.(canonical, body.updatedAt ?? updatedAt);
-        }
-      } catch (error) {
-        if (
-          isCurrentDescriptionSave(
-            requestCardId,
-            activeCardId.current,
-            sequence,
-            requestSequence.current,
-          )
-        ) {
-          setSaveState('error');
-          setSaveError(error instanceof Error ? error.message : 'Description could not be saved.');
-        }
-      }
-    }, 800);
-    return () => window.clearTimeout(timer);
-  }, [cardId, dirty, markdown, onSaved, saveState, updatedAt]);
 
   function wrap(prefix: string, suffix = prefix) {
     const textarea = textareaRef.current;
@@ -177,7 +229,16 @@ export default function TaskDescriptionEditor({
             {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : 'Saved'}
           </span>
           {saveState === 'error' && (
-            <button type="button" onClick={() => setSaveState('saved')} className="rounded px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/10">Retry</button>
+            <button
+              type="button"
+              onClick={() => {
+                setSaveError('');
+                triggerSave(true);
+              }}
+              className="rounded px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/10"
+            >
+              Retry
+            </button>
           )}
           {(['write', 'preview'] as const).map((option) => (
             <button key={option} type="button" onClick={() => setMode(option)} aria-pressed={mode === option} className="rounded px-2 py-1 text-xs capitalize text-slate-300 hover:bg-white/5">{option}</button>
@@ -202,8 +263,14 @@ export default function TaskDescriptionEditor({
             data-task-inline-editor={dirty ? 'true' : undefined}
             value={markdown}
             onChange={(event) => {
-              requestSequence.current += 1;
-              setMarkdown(event.target.value);
+              const nextMarkdown = event.target.value;
+              setMarkdown(nextMarkdown);
+              latestDraftRef.current = {
+                cardId,
+                markdown: nextMarkdown,
+                sequence: requestSequence.current + 1,
+              };
+              requestSequence.current = latestDraftRef.current.sequence;
               if (saveState === 'error') {
                 setSaveState('saved');
                 setSaveError('');
