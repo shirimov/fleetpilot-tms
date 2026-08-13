@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import type { ActivityService } from './task-activity-service';
 import { prisma } from '@/lib/prisma';
+import { isCurrentDescriptionSave } from '@/components/tasks/TaskDescriptionEditor';
 import { TaskService } from './task-service';
 
 const taskService = new TaskService();
@@ -166,4 +167,40 @@ test('TaskService persists activity atomically and serves a stable timeline', as
     const deletedCardTimeline = await taskService.getCardActivity(cardId);
     assert.ok(deletedCardTimeline.length > 0);
   });
+});
+
+test('description autosave race guard ignores stale responses', () => {
+  assert.equal(isCurrentDescriptionSave('card-a', 'card-a', 3, 3), true);
+  assert.equal(isCurrentDescriptionSave('card-a', 'card-a', 2, 3), false);
+  assert.equal(isCurrentDescriptionSave('card-a', 'card-b', 3, 3), false);
+});
+
+test('re-saving the same description does not create duplicate description activity', async () => {
+  const project = await taskService.createProject({
+    name: `Duplicate description ${testSuffix}-repeat`,
+  });
+  const card = await taskService.createCard({
+    projectId: project.id,
+    boardId: project.boards[0].id,
+    title: `Duplicate description card ${testSuffix}`,
+    description: 'Same description',
+  });
+
+  await taskService.updateCard({
+    id: card.id,
+    description: 'Same description',
+  });
+
+  const descriptionActivities = await prisma.taskActivity.count({
+    where: {
+      entityType: 'TASK_CARD',
+      entityId: card.id,
+      action: 'DESCRIPTION_CHANGED',
+    },
+  });
+
+  assert.equal(descriptionActivities, 0);
+
+  await prisma.taskActivity.deleteMany({ where: { projectId: project.id } });
+  await prisma.taskProject.deleteMany({ where: { id: project.id } });
 });
