@@ -22,17 +22,24 @@ export async function GET(request: Request) {
     let startOfDay: Date | null = null;
     let nextDay: Date | null = null;
     const now = new Date();
-    if (startIso && endIso) {
-      const s = new Date(startIso);
-      const e = new Date(endIso);
-      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime()) && s < e) {
-        startOfDay = s;
-        nextDay = e;
-      }
-    }
 
-    // Fallback to UTC calendar day if client didn't supply valid bounds.
-    if (!startOfDay || !nextDay) {
+    // Strict validation rules per PR: if either start or end provided alone -> 400; if provided but invalid -> 400; if start >= end -> 400.
+    if (startIso || endIso) {
+      if (!startIso || !endIso) {
+        return NextResponse.json({ error: 'both start and end are required when specifying boundaries.' }, { status: 400 });
+      }
+      const s = new Date(startIso as string);
+      const e = new Date(endIso as string);
+      if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+        return NextResponse.json({ error: 'invalid start or end datetime.' }, { status: 400 });
+      }
+      if (s.getTime() >= e.getTime()) {
+        return NextResponse.json({ error: 'start must be before end.' }, { status: 400 });
+      }
+      startOfDay = s;
+      nextDay = e;
+    } else {
+      // Neither supplied -> explicit UTC-day fallback
       const utcNow = new Date();
       const utcStart = new Date(Date.UTC(utcNow.getUTCFullYear(), utcNow.getUTCMonth(), utcNow.getUTCDate()));
       const utcNext = new Date(utcStart);
