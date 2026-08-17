@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authorizationService } from '@/lib/auth/authorization';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
@@ -199,6 +198,12 @@ export async function PATCH(request: Request) {
       }
       if (membership.role === 'OWNER' && context.role !== 'OWNER') {
         return NextResponse.json({ error: 'only OWNER may modify an OWNER membership.' }, { status: 403 });
+      }
+      if (membership.role === 'OWNER' && role !== 'OWNER') {
+        const ownerCount = await prisma.companyMembership.count({ where: { companyId, role: 'OWNER' } });
+        if (ownerCount <= 1) {
+          return NextResponse.json({ error: 'cannot demote the last owner from the company.' }, { status: 400 });
+        }
       }
     }
 

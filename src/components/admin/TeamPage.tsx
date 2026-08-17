@@ -2,9 +2,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
 
+type MemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+
 type Member = {
   id: string;
-  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  role: MemberRole;
   user: { id: string; displayName: string; email: string; image?: string | null; isActive: boolean };
   openTasks: number;
   overdueTasks: number;
@@ -12,13 +14,23 @@ type Member = {
   telegramStatus: string;
 };
 
+function canManageMember(actorRole: MemberRole, targetRole: MemberRole) {
+  return actorRole === 'OWNER' || (actorRole === 'ADMIN' && targetRole !== 'OWNER');
+}
+
+function assignableRoles(actorRole: MemberRole) {
+  return actorRole === 'OWNER'
+    ? (['OWNER', 'ADMIN', 'MEMBER'] satisfies MemberRole[])
+    : (['ADMIN', 'MEMBER'] satisfies MemberRole[]);
+}
+
 export default function TeamPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [currentUserRole, setCurrentUserRole] = useState<'OWNER' | 'ADMIN' | 'MEMBER'>('MEMBER');
+  const [currentUserRole, setCurrentUserRole] = useState<MemberRole>('MEMBER');
 
   async function load() {
     setLoading(true);
@@ -38,7 +50,7 @@ export default function TeamPage() {
       const data = await resp.json();
       setMembers(data.members ?? []);
       setCurrentUserRole(data.currentUserRole ?? 'MEMBER');
-    } catch (err) {
+    } catch {
       setError('Failed to load team.');
     } finally {
       setLoading(false);
@@ -62,7 +74,9 @@ export default function TeamPage() {
         <h1 className="text-2xl font-semibold">Team</h1>
         <div className="flex items-center gap-2">
           <input placeholder="Search name or email" value={query} onChange={(e) => setQuery(e.target.value)} className="px-2 py-1 rounded border bg-slate-900/20" />
-          <button onClick={() => setShowAdd(true)} className="btn btn-primary">Add Member</button>
+          {currentUserRole !== 'MEMBER' ? (
+            <button onClick={() => setShowAdd(true)} className="btn btn-primary">Add Member</button>
+          ) : null}
         </div>
       </div>
 
@@ -90,7 +104,10 @@ export default function TeamPage() {
                 <td className="p-2 align-middle">
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-sm">
-                      {m.user.image ? <img src={m.user.image} alt="avatar" className="w-8 h-8 rounded-full" /> : (m.user.displayName || m.user.email).slice(0,2).toUpperCase()}
+                      {m.user.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- remote avatar sources are user-provided and not configured for next/image
+                        <img src={m.user.image} alt="" className="w-8 h-8 rounded-full" />
+                      ) : (m.user.displayName || m.user.email).slice(0,2).toUpperCase()}
                     </div>
                     <div>
                       <div className="font-medium">{m.user.displayName}</div>
@@ -106,10 +123,10 @@ export default function TeamPage() {
                 <td className="p-2">{m.telegramStatus}</td>
                 <td className="p-2">
                   <div className="flex gap-2">
-                    {currentUserRole !== 'MEMBER' ? (
-                      <RoleControl member={m} reload={load} />
+                    {canManageMember(currentUserRole, m.role) ? (
+                      <RoleControl member={m} actorRole={currentUserRole} reload={load} />
                     ) : null}
-                    {currentUserRole !== 'MEMBER' ? (
+                    {canManageMember(currentUserRole, m.role) ? (
                       <RemoveControl member={m} reload={load} />
                     ) : null}
                   </div>
@@ -120,14 +137,15 @@ export default function TeamPage() {
         </table>
       </div>
 
-      {showAdd ? <AddMemberModal onClose={() => { setShowAdd(false); void load(); }} /> : null}
+      {showAdd ? <AddMemberModal actorRole={currentUserRole} onClose={() => { setShowAdd(false); void load(); }} /> : null}
     </div>
   );
 }
 
-function RoleControl({ member, reload }: { member: Member; reload: () => void }) {
+function RoleControl({ member, actorRole, reload }: { member: Member; actorRole: MemberRole; reload: () => void }) {
   const [changing, setChanging] = useState(false);
   const [role, setRole] = useState(member.role);
+  const roles = assignableRoles(actorRole);
 
   async function save() {
     if (role === member.role) return;
@@ -136,7 +154,7 @@ function RoleControl({ member, reload }: { member: Member; reload: () => void })
       const resp = await fetch('/api/company/team', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: member.user.id, role }) });
       if (!resp.ok) throw new Error('failed');
       await reload();
-    } catch (err) {
+    } catch {
       // TODO show error
     } finally {
       setChanging(false);
@@ -146,9 +164,9 @@ function RoleControl({ member, reload }: { member: Member; reload: () => void })
   return (
     <div className="flex items-center gap-1">
       <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="px-2 py-1 rounded bg-slate-900/10">
-        <option value="OWNER">OWNER</option>
-        <option value="ADMIN">ADMIN</option>
-        <option value="MEMBER">MEMBER</option>
+        {roles.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
       </select>
       <button disabled={changing || role === member.role} onClick={save} className="btn btn-sm">Save</button>
     </div>
@@ -166,7 +184,7 @@ function RemoveControl({ member, reload }: { member: Member; reload: () => void 
       const resp = await fetch('/api/company/team', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: member.user.id }) });
       if (!resp.ok) throw new Error('failed');
       await reload();
-    } catch (err) {
+    } catch {
       // TODO handle error
     } finally {
       setBusy(false);
@@ -179,13 +197,14 @@ function RemoveControl({ member, reload }: { member: Member; reload: () => void 
   );
 }
 
-function AddMemberModal({ onClose }: { onClose: () => void }) {
+function AddMemberModal({ actorRole, onClose }: { actorRole: MemberRole; onClose: () => void }) {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'OWNER'|'ADMIN'|'MEMBER'>('MEMBER');
+ const [role, setRole] = useState<MemberRole>('MEMBER');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const emailRef = useRef<HTMLInputElement | null>(null);
+ const roles = assignableRoles(actorRole);
 
   async function submit(e?: React.FormEvent) {
     e?.preventDefault();
@@ -200,7 +219,7 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
         return;
       }
       onClose();
-    } catch (err) {
+    } catch {
       setError('Failed to add member');
     } finally {
       setBusy(false);
@@ -235,9 +254,9 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
         </label>
         <label className="block mb-2">Role
           <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="w-full px-2 py-1 rounded bg-slate-800/40">
-            <option value="OWNER">OWNER</option>
-            <option value="ADMIN">ADMIN</option>
-            <option value="MEMBER">MEMBER</option>
+            {roles.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
           </select>
         </label>
         <div className="flex justify-end gap-2 mt-4">

@@ -8,7 +8,6 @@ import * as TeamRoute from '../../app/api/company/team/route';
 
 let companyId: string;
 let ownerUserId: string;
-let ownerMembershipId: string;
 let otherUserId: string;
 
 const originalRequire = authorizationService.requireActiveCompany.bind(authorizationService as any);
@@ -20,8 +19,7 @@ before(async () => {
   ownerUserId = owner.id;
   const other = await prisma.user.create({ data: { email: `other-${Date.now()}@example.test`, displayName: 'Member' } });
   otherUserId = other.id;
-  const m = await prisma.companyMembership.create({ data: { userId: ownerUserId, companyId, role: 'OWNER' } });
-  ownerMembershipId = m.id;
+  await prisma.companyMembership.create({ data: { userId: ownerUserId, companyId, role: 'OWNER' } });
 
   // create some tasks with various dueDates
   const project = await prisma.taskProject.create({ data: { name: 'p', companyId } });
@@ -39,7 +37,7 @@ before(async () => {
   await prisma.taskCard.create({ data: { projectId: project.id, boardId: board.id, title: 'open', assigneeUserId: ownerUserId } });
 
   // Make requireActiveCompany return owner context by default
-  (authorizationService as any).requireActiveCompany = async (_minRole?: any) => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
+  (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
 });
 
 after(async () => {
@@ -87,7 +85,7 @@ test('GET with valid start/end returns members and counts', async () => {
 
 test('POST creates user and membership, rejects duplicate membership', async () => {
   // as ADMIN
-  (authorizationService as any).requireActiveCompany = async (_minRole?: any) => ({ user: { id: ownerUserId }, companyId, role: 'ADMIN' });
+  (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'ADMIN' });
   const payload = { displayName: 'New', email: `new-${Date.now()}@example.test`, role: 'MEMBER' };
   let req = new Request('https://example.test/api/company/team', { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } });
   let res = await (TeamRoute as any).POST(req as any);
@@ -103,10 +101,21 @@ test('POST creates user and membership, rejects duplicate membership', async () 
 
 test('DELETE prevents removing last owner', async () => {
   // run as OWNER
-  (authorizationService as any).requireActiveCompany = async (_minRole?: any) => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
+  (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
   const req = new Request('https://example.test/api/company/team', { method: 'DELETE', body: JSON.stringify({ userId: ownerUserId }), headers: { 'Content-Type': 'application/json' } });
   const res = await (TeamRoute as any).DELETE(req as any);
   // should be 400 because can't remove last owner
+  assert.equal(res.status, 400);
+});
+
+test('PATCH prevents demoting the last owner', async () => {
+  (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
+  const req = new Request('https://example.test/api/company/team', {
+    method: 'PATCH',
+    body: JSON.stringify({ userId: ownerUserId, role: 'ADMIN' }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const res = await (TeamRoute as any).PATCH(req as any);
   assert.equal(res.status, 400);
 });
 
@@ -152,7 +161,7 @@ test('GET returns 400 for malformed start or end', async () => {
 test('POST reuses existing user by normalized email and does not create password', async () => {
   (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
   // create a user with normalized email to test reuse
-  const { normalizeEmail } = await import('@/lib/auth/account-linking');
+  const { normalizeEmail } = await import('../auth/account-linking');
   const baseEmail = `reuse-${Date.now()}@example.test`;
   const existing = await prisma.user.create({ data: { email: normalizeEmail(baseEmail), displayName: 'Reuse' } });
   const payload = { displayName: 'Reuse', email: baseEmail.toUpperCase(), role: 'MEMBER' };
@@ -206,7 +215,7 @@ test('ADMIN cannot create OWNER but OWNER can', async () => {
 
 test('MEMBER cannot POST/PATCH/DELETE', async () => {
   (authorizationService as any).requireActiveCompany = async (minRole?: any) => {
-    const { AuthorizationDeniedError } = await import('@/lib/auth/auth-errors');
+    const { AuthorizationDeniedError } = await import('../auth/auth-errors');
     if (minRole) throw new AuthorizationDeniedError();
     return { user: { id: ownerUserId }, companyId, role: 'MEMBER' };
   };
@@ -243,7 +252,7 @@ test('remove membership preserves user and historical assignment but blocks futu
   // create a new member, assign a task, remove membership, then test assignment rejection
   (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
   const user = await prisma.user.create({ data: { email: `assign-${Date.now()}@example.test`, displayName: 'Assign' } });
-  const membership = await prisma.companyMembership.create({ data: { userId: user.id, companyId, role: 'MEMBER' } });
+  await prisma.companyMembership.create({ data: { userId: user.id, companyId, role: 'MEMBER' } });
   // create a new task assigned to this user
   const project = await prisma.taskProject.findFirst({ where: { companyId } });
   const board = await prisma.taskBoard.findFirst({ where: { projectId: project!.id } });
@@ -263,7 +272,7 @@ test('remove membership preserves user and historical assignment but blocks futu
   assert.equal(loadedCard!.assigneeUserId, user.id);
 
   // attempt to create a new task assigned to removed member via TaskService should fail validation
-  const { TaskService } = await import('@/lib/tasks/task-service');
+  const { TaskService } = await import('../tasks/task-service');
   const svc = new TaskService(prisma as any);
   let threw = false;
   try {

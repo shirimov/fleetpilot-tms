@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from 'playwright/test';
 
 const companyId = process.env.TEST_COMPANY_ID as string;
 const ownerId = process.env.TEST_OWNER_ID as string;
@@ -10,11 +10,6 @@ if (!companyId || !ownerId) {
 let currentUserRole = 'OWNER';
 
 test.beforeEach(async ({ page }) => {
-  // log browser console to help diagnose failures
-  page.on('console', (msg) => {
-    // eslint-disable-next-line no-console
-    console.log('PW-CONSOLE:', msg.type(), msg.text());
-  });
   // Mock auth/company endpoint to return owner context
   await page.route('**/api/auth/company', async (route) => {
     if (route.request().method() === 'PATCH') {
@@ -26,13 +21,6 @@ test.beforeEach(async ({ page }) => {
   // Mock auth session endpoint to avoid unauthorized responses during UI tests
   await page.route('**/api/auth/session', async (route) => {
     await route.fulfill({ json: { user: { name: 'Playwright Owner', email: 'pw-owner@example.test' } } });
-  });
-  // Log responses to diagnose unexpected 401s during UI tests (temporary)
-  page.on('response', (resp) => {
-    if (resp.status() === 401 || resp.status() === 403) {
-      // eslint-disable-next-line no-console
-      console.log('PW-RESP', resp.status(), resp.url());
-    }
   });
 
   // Mock the team API to return a deterministic seeded member for UI tests, mutable so tests can simulate updates.
