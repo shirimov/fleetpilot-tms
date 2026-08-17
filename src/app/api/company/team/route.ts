@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { authorizationService } from '@/lib/auth/authorization';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
