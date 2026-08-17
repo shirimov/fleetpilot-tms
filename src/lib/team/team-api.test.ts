@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
