@@ -150,9 +150,11 @@ test('GET returns 400 for malformed start or end', async () => {
 
 test('POST reuses existing user by normalized email and does not create password', async () => {
   (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'OWNER' });
-  // create a user with uppercase email to test normalization
-  const existing = await prisma.user.create({ data: { email: `Reuse-${Date.now()}@Example.Test`, displayName: 'Reuse' } });
-  const payload = { displayName: 'Reuse', email: existing.email.toUpperCase(), role: 'MEMBER' };
+  // create a user with normalized email to test reuse
+  const { normalizeEmail } = await import('@/lib/auth/account-linking');
+  const baseEmail = `reuse-${Date.now()}@example.test`;
+  const existing = await prisma.user.create({ data: { email: normalizeEmail(baseEmail), displayName: 'Reuse' } });
+  const payload = { displayName: 'Reuse', email: baseEmail.toUpperCase(), role: 'MEMBER' };
   const req = new Request('https://example.test/api/company/team', { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } });
   const res = await (TeamRoute as any).POST(req as any);
   assert.equal(res.status, 201);
@@ -202,7 +204,11 @@ test('ADMIN cannot create OWNER but OWNER can', async () => {
 // MEMBER cannot administer
 
 test('MEMBER cannot POST/PATCH/DELETE', async () => {
-  (authorizationService as any).requireActiveCompany = async () => ({ user: { id: ownerUserId }, companyId, role: 'MEMBER' });
+  (authorizationService as any).requireActiveCompany = async (minRole?: any) => {
+    const { AuthorizationDeniedError } = await import('@/lib/auth/auth-errors');
+    if (minRole) throw new AuthorizationDeniedError();
+    return { user: { id: ownerUserId }, companyId, role: 'MEMBER' };
+  };
   let req = new Request('https://example.test/api/company/team', { method: 'POST', body: JSON.stringify({ displayName: 'Nope', email: `nope-${Date.now()}@example.test`, role: 'MEMBER' }), headers: { 'Content-Type': 'application/json' } });
   let res = await (TeamRoute as any).POST(req as any);
   assert.equal(res.status, 403);
