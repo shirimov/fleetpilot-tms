@@ -160,8 +160,9 @@ export async function POST(request: Request) {
         throw new Error('MEMBERSHIP_EXISTS');
       }
 
-      // role is validated earlier against VALID_ROLES; cast to the Prisma enum type
-      const membership = await tx.companyMembership.create({ data: { userId: user.id, companyId, role: role as unknown as Prisma.CompanyMembershipRole } });
+      // role is validated earlier against VALID_ROLES; use a safe cast for the Prisma enum
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const membership = await tx.companyMembership.create({ data: { userId: user.id, companyId, role: role as any } });
       return { membership, user };
     });
 
