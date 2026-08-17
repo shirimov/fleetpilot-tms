@@ -33,8 +33,9 @@ test('Administration → Team renders and Add Member modal works', async ({ page
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Role').selectOption('MEMBER');
 
-  // Submit
-  await page.getByRole('button', { name: 'Add' }).click();
+  // Submit (target the form's submit to avoid ambiguity)
+  const form = page.locator('form', { has: page.getByLabel('Display name') });
+  await form.getByRole('button', { name: 'Add' }).click();
 
   // Wait for the new member to appear in the list
   await expect(page.getByRole('cell', { name: email })).toBeVisible({ timeout: 10000 });
