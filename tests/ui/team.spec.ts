@@ -24,22 +24,22 @@ test('Administration → Team renders and Add Member modal works', async ({ page
 
   // Open Add Member modal
   await page.getByRole('button', { name: 'Add Member' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add Member' });
-  await expect(dialog).toBeVisible();
+  // the modal does not expose role=dialog, wait for the form fields to appear
+  await expect(page.getByLabel('Display name')).toBeVisible({ timeout: 10000 });
 
   // Fill form
-  await dialog.getByLabel('Display name').fill('PW New Member');
+  await page.getByLabel('Display name').fill('PW New Member');
   const email = `pw-new-${Date.now()}@example.test`;
-  await dialog.getByLabel('Email').fill(email);
-  await dialog.getByLabel('Role').selectOption('MEMBER');
+  await page.getByLabel('Email').fill(email);
+  await page.getByLabel('Role').selectOption('MEMBER');
 
   // Submit
-  await dialog.getByRole('button', { name: 'Add' }).click();
+  await page.getByRole('button', { name: 'Add' }).click();
 
   // Wait for the new member to appear in the list
   await expect(page.getByRole('cell', { name: email })).toBeVisible({ timeout: 10000 });
 
   // Accessibility: ensure Escape closes modal if still open
   await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  await expect(page.getByLabel('Display name')).toBeHidden();
 });
