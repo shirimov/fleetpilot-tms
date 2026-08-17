@@ -232,7 +232,7 @@ export async function DELETE(request: Request) {
     if (membership.role === 'OWNER') {
       const ownerCount = await prisma.companyMembership.count({ where: { companyId, role: 'OWNER' } });
       if (ownerCount <= 1) {
-        if (actor.user.id === userId) {
+        if (actor.id === userId) {
           return NextResponse.json({ error: 'cannot remove the last owner from the company.' }, { status: 400 });
         }
         return NextResponse.json({ error: 'company must have at least one owner.' }, { status: 400 });
@@ -242,6 +242,7 @@ export async function DELETE(request: Request) {
     await prisma.companyMembership.delete({ where: { id: membership.id } });
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
+    console.error('[team DELETE] error:', error);
     return (
       authorizationErrorResponse(error) ??
       NextResponse.json({ error: 'Team delete failed.' }, { status: 500 })
