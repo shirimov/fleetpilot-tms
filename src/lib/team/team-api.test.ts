@@ -2,9 +2,9 @@
 import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { before, after, test } from 'node:test';
-import { prisma } from '@/lib/prisma';
-import { authorizationService } from '@/lib/auth/authorization';
-import * as TeamRoute from '@/app/api/company/team/route';
+import { prisma } from '../prisma';
+import { authorizationService } from '../auth/authorization';
+import * as TeamRoute from '../../app/api/company/team/route';
 
 let companyId: string;
 let ownerUserId: string;

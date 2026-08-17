@@ -145,7 +145,7 @@ function RoleControl({ member, reload }: { member: Member; reload: () => void })
 
   return (
     <div className="flex items-center gap-1">
-      <select value={role} onChange={(e) => setRole(e.target.value as any)} className="px-2 py-1 rounded bg-slate-900/10">
+      <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="px-2 py-1 rounded bg-slate-900/10">
         <option value="OWNER">OWNER</option>
         <option value="ADMIN">ADMIN</option>
         <option value="MEMBER">MEMBER</option>
@@ -234,7 +234,7 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
           <input ref={emailRef} required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" />
         </label>
         <label className="block mb-2">Role
-          <select value={role} onChange={(e) => setRole(e.target.value as any)} className="w-full px-2 py-1 rounded bg-slate-800/40">
+          <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="w-full px-2 py-1 rounded bg-slate-800/40">
             <option value="OWNER">OWNER</option>
             <option value="ADMIN">ADMIN</option>
             <option value="MEMBER">MEMBER</option>
