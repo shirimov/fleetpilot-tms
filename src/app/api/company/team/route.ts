@@ -8,15 +8,38 @@ export const dynamic = 'force-dynamic';
 
 const VALID_ROLES = new Set(['OWNER', 'ADMIN', 'MEMBER']);
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const context = await authorizationService.requireActiveCompany();
     const { companyId } = context;
+
+    // Allow the client to supply start/end ISO datetimes that define "today" in the user's timezone.
+    // This avoids using the server's local timezone and lets the UI compute day boundaries in the browser.
+    const url = new URL(request.url);
+    const startIso = url.searchParams.get('start') ?? null;
+    const endIso = url.searchParams.get('end') ?? null;
+
+    let startOfDay: Date | null = null;
+    let nextDay: Date | null = null;
     const now = new Date();
-    const startOfDay = new Date(now);
-    startOfDay.setHours(0, 0, 0, 0);
-    const nextDay = new Date(startOfDay);
-    nextDay.setDate(startOfDay.getDate() + 1);
+    if (startIso && endIso) {
+      const s = new Date(startIso);
+      const e = new Date(endIso);
+      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime()) && s < e) {
+        startOfDay = s;
+        nextDay = e;
+      }
+    }
+
+    // Fallback to UTC calendar day if client didn't supply valid bounds.
+    if (!startOfDay || !nextDay) {
+      const utcNow = new Date();
+      const utcStart = new Date(Date.UTC(utcNow.getUTCFullYear(), utcNow.getUTCMonth(), utcNow.getUTCDate()));
+      const utcNext = new Date(utcStart);
+      utcNext.setUTCDate(utcStart.getUTCDate() + 1);
+      startOfDay = utcStart;
+      nextDay = utcNext;
+    }
 
     const [memberships, openGroups, overdueGroups, dueTodayGroups] =
       await Promise.all([
@@ -113,6 +136,11 @@ export async function POST(request: Request) {
     if (!email) return NextResponse.json({ error: 'invalid email.' }, { status: 400 });
     if (!VALID_ROLES.has(role)) return NextResponse.json({ error: 'invalid role.' }, { status: 400 });
 
+    // Enforce OWNER-only creation of OWNER memberships.
+    if (role === 'OWNER' && context.role !== 'OWNER') {
+      return NextResponse.json({ error: 'only OWNER may create OWNER membership.' }, { status: 403 });
+    }
+
     const created = await prisma.$transaction(async (tx) => {
       let user = await tx.user.findUnique({ where: { email } });
       if (!user) {
@@ -154,6 +182,16 @@ export async function PATCH(request: Request) {
     const membership = await prisma.companyMembership.findUnique({ where: { userId_companyId: { userId, companyId } } });
     if (!membership) return NextResponse.json({ error: 'membership not found.' }, { status: 404 });
 
+    // Only OWNER may promote to OWNER or demote an OWNER.
+    if (role !== undefined) {
+      if (role === 'OWNER' && context.role !== 'OWNER') {
+        return NextResponse.json({ error: 'only OWNER may assign OWNER role.' }, { status: 403 });
+      }
+      if (membership.role === 'OWNER' && context.role !== 'OWNER') {
+        return NextResponse.json({ error: 'only OWNER may modify an OWNER membership.' }, { status: 403 });
+      }
+    }
+
     const updates: Record<string, unknown> = {};
     if (role !== undefined) updates.role = role;
 
@@ -178,11 +216,15 @@ export async function DELETE(request: Request) {
     const membership = await prisma.companyMembership.findUnique({ where: { userId_companyId: { userId, companyId } } });
     if (!membership) return NextResponse.json({ error: 'membership not found.' }, { status: 404 });
 
+    // Only OWNER may remove an OWNER membership.
+    if (membership.role === 'OWNER' && context.role !== 'OWNER') {
+      return NextResponse.json({ error: 'only OWNER may remove an OWNER membership.' }, { status: 403 });
+    }
+
     // Prevent removing the last OWNER
     if (membership.role === 'OWNER') {
       const ownerCount = await prisma.companyMembership.count({ where: { companyId, role: 'OWNER' } });
       if (ownerCount <= 1) {
-        // If actor is trying to remove self and they're the last owner, block
         if (actor.user.id === userId) {
           return NextResponse.json({ error: 'cannot remove the last owner from the company.' }, { status: 400 });
         }
