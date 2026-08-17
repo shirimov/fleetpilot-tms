@@ -23,6 +23,7 @@ export type NavigationIconName =
   | 'settlements'
   | 'finance'
   | 'companies'
+  | 'team'
   | 'hr'
   | 'inbox';
 
@@ -60,6 +61,7 @@ export const alphaNavigation: NavigationSection[] = [
     label: 'Administration',
     items: [
       { href: '/companies', label: 'Companies', icon: 'companies' },
+      { href: '/administration', label: 'Team', icon: 'team' },
       { href: '/hr/employees', label: 'HR', icon: 'hr' },
       { href: '/inbox', label: 'Inbox', icon: 'inbox', unavailable: true },
     ],

@@ -31,6 +31,7 @@ const iconPaths: Record<NavigationIconName, string> = {
   settlements: 'M4 6h16v12H4V6Zm3 3h10M8 14h3',
   finance: 'M3 20h18M5 20V9m5 11V9m5 11V9m5 11V9M3 7l9-4 9 4H3Z',
   companies: 'M4 21V5h10v16M14 9h6v12M7 8h3m-3 4h3m-3 4h3m10-3h-3m3 4h-3',
+  team: 'M16 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM2 21v-2a6 6 0 0 1 6-6h1a6 6 0 0 1 6 6v2M13 21v-2a6 6 0 0 1 6-6h1',
   hr: 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm6-1a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM2 21v-2a6 6 0 0 1 12 0v2m2-8a5 5 0 0 1 5 5v3',
   inbox: 'M3 5h18v14H3V5Zm0 2 9 7 9-7',
 };
