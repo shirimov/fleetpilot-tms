@@ -1,5 +1,6 @@
 "use client";
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import ModalLayer from '@/components/ui/ModalLayer';
 
 type Member = {
   id: string;
@@ -184,6 +185,7 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<'OWNER'|'ADMIN'|'MEMBER'>('MEMBER');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const emailRef = useRef<HTMLInputElement | null>(null);
 
   async function submit(e?: React.FormEvent) {
     e?.preventDefault();
@@ -206,18 +208,43 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black/50">
-      <form onSubmit={submit} className="bg-slate-900 p-4 rounded w-[480px]">
-        <h2 className="text-lg font-medium mb-2">Add Member</h2>
+    <ModalLayer
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      labelledBy="add-member-title"
+      describedBy="add-member-desc"
+      initialFocusRef={emailRef}
+      onClose={onClose}
+    >
+      {/* Backdrop */}
+      <button
+        type="button"
+        aria-hidden="true"
+        tabIndex={-1}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/50"
+      />
+      <form id="add-member-form" onSubmit={submit} aria-labelledby="add-member-title" aria-describedby="add-member-desc" className="relative bg-slate-900 p-4 rounded w-[480px] z-10">
+        <h2 id="add-member-title" className="text-lg font-medium mb-2">Add Member</h2>
+        <p id="add-member-desc" className="sr-only">Add a member to the company with role and email.</p>
         {error ? <div className="text-rose-400 mb-2">{error}</div> : null}
-        <label className="block mb-2">Display name<input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" /></label>
-        <label className="block mb-2">Email<input required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" /></label>
-        <label className="block mb-2">Role<select value={role} onChange={(e) => setRole(e.target.value as any)} className="w-full px-2 py-1 rounded bg-slate-800/40"><option value="OWNER">OWNER</option><option value="ADMIN">ADMIN</option><option value="MEMBER">MEMBER</option></select></label>
+        <label className="block mb-2">Display name
+          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" />
+        </label>
+        <label className="block mb-2">Email
+          <input ref={emailRef} required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" />
+        </label>
+        <label className="block mb-2">Role
+          <select value={role} onChange={(e) => setRole(e.target.value as any)} className="w-full px-2 py-1 rounded bg-slate-800/40">
+            <option value="OWNER">OWNER</option>
+            <option value="ADMIN">ADMIN</option>
+            <option value="MEMBER">MEMBER</option>
+          </select>
+        </label>
         <div className="flex justify-end gap-2 mt-4">
           <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
           <button type="submit" disabled={busy} className="btn btn-primary">Add</button>
         </div>
       </form>
-    </div>
+    </ModalLayer>
   );
 }
