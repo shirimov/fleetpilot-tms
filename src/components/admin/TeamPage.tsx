@@ -23,7 +23,16 @@ export default function TeamPage() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch('/api/company/team');
+      // Compute local day boundaries in browser timezone and pass to server so "Due Today" matches the user.
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const end = new Date(start);
+      end.setDate(start.getDate() + 1);
+      const params = new URLSearchParams();
+      params.set('start', start.toISOString());
+      params.set('end', end.toISOString());
+
+      const resp = await fetch(`/api/company/team?${params.toString()}`);
       if (!resp.ok) throw new Error(`Status ${resp.status}`);
       const data = await resp.json();
       setMembers(data.members ?? []);
