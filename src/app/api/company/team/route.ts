@@ -242,7 +242,6 @@ export async function DELETE(request: Request) {
     await prisma.companyMembership.delete({ where: { id: membership.id } });
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error('[team DELETE] error:', error);
     return (
       authorizationErrorResponse(error) ??
       NextResponse.json({ error: 'Team delete failed.' }, { status: 500 })
