@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { authorizationService } from '@/lib/auth/authorization';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
 import { normalizeEmail } from '@/lib/auth/account-linking';
+import { getTelegramConfig } from '@/lib/integrations/telegram-config';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +13,7 @@ export async function GET(request: Request) {
   try {
     const context = await authorizationService.requireActiveCompany();
     const { companyId } = context;
+    const telegramAvailable = Boolean(getTelegramConfig());
 
     // Allow the client to supply start/end ISO datetimes that define "today" in the user's timezone.
     // This avoids using the server's local timezone and lets the UI compute day boundaries in the browser.
@@ -48,7 +50,7 @@ export async function GET(request: Request) {
       nextDay = utcNext;
     }
 
-    const [memberships, openGroups, overdueGroups, dueTodayGroups] =
+    const [memberships, openGroups, overdueGroups, dueTodayGroups, telegramLinks] =
       await Promise.all([
         prisma.companyMembership.findMany({
           where: { companyId },
@@ -86,6 +88,13 @@ export async function GET(request: Request) {
           },
           _count: { _all: true },
         }),
+        prisma.telegramUserLink.findMany({
+          where: { companyId, enabled: true },
+          select: {
+            userId: true,
+            telegramUsername: true,
+          },
+        }),
       ]);
 
     const openMap = new Map<string, number>();
@@ -99,6 +108,13 @@ export async function GET(request: Request) {
     const dueTodayMap = new Map<string, number>();
     for (const g of dueTodayGroups) {
       if (g.assigneeUserId) dueTodayMap.set(g.assigneeUserId, g._count._all);
+    }
+    const telegramMap = new Map<string, { connected: boolean; username: string | null }>();
+    for (const link of telegramLinks) {
+      telegramMap.set(link.userId, {
+        connected: true,
+        username: link.telegramUsername,
+      });
     }
 
     const result = memberships.map((m) => ({
@@ -116,10 +132,18 @@ export async function GET(request: Request) {
       openTasks: openMap.get(m.user.id) ?? 0,
       overdueTasks: overdueMap.get(m.user.id) ?? 0,
       dueToday: dueTodayMap.get(m.user.id) ?? 0,
-      telegramStatus: 'Not connected',
+      telegram: telegramMap.get(m.user.id) ?? { connected: false, username: null },
     }));
 
-    return NextResponse.json({ members: result, currentUserRole: context.role }, { headers: { 'Cache-Control': 'private, no-store' } });
+    return NextResponse.json(
+      {
+        members: result,
+        currentUserRole: context.role,
+        currentUserId: context.user.id,
+        telegramAvailable,
+      },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
   } catch (error) {
     return (
       authorizationErrorResponse(error) ??

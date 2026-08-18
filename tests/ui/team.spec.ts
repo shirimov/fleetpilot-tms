@@ -41,7 +41,7 @@ test.beforeEach(async ({ page }) => {
       openTasks: 1,
       overdueTasks: 0,
       dueToday: 0,
-      telegramStatus: 'Not connected',
+      telegram: { connected: true, username: 'pwowner' },
     },
     {
       id: 'seed-member-1',
@@ -58,12 +58,16 @@ test.beforeEach(async ({ page }) => {
       openTasks: 0,
       overdueTasks: 0,
       dueToday: 0,
-      telegramStatus: 'Not connected',
+      telegram: { connected: false, username: null },
     },
   ];
 
   // Intercept GET/POST/PATCH/DELETE to mutate the in-memory members array for UI updates
   await page.route('**/api/company/team**', async (route) => {
+    if (route.request().url().includes('/telegram-link')) {
+      await route.fallback();
+      return;
+    }
     const req = route.request();
     if (req.method() === 'POST') {
       const body = JSON.parse(String(await req.postData()));
@@ -76,7 +80,7 @@ test.beforeEach(async ({ page }) => {
         openTasks: 0,
         overdueTasks: 0,
         dueToday: 0,
-        telegramStatus: 'Not connected',
+        telegram: { connected: false, username: null },
       };
       members.push(newMember);
       await route.fulfill({ status: 201, json: { membership: { id: newMember.id, role: newMember.role }, user: newMember.user } });
@@ -97,7 +101,30 @@ test.beforeEach(async ({ page }) => {
       return;
     }
     // GET fallback
-    await route.fulfill({ json: { members, currentUserRole } });
+    await route.fulfill({
+      json: {
+        members,
+        currentUserRole,
+        currentUserId: ownerId,
+        telegramAvailable: true,
+      },
+    });
+  });
+  await page.route('**/api/company/team/*/telegram-link', async (route) => {
+    const memberUserId = route.request().url().split('/').at(-2);
+    if (route.request().method() === 'POST') {
+      await route.fulfill({
+        status: 200,
+        json: {
+          deepLink: 'https://t.me/fleetpilot_test_bot?start=one-time-token',
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        },
+      });
+      return;
+    }
+    const member = members.find((candidate) => candidate.user.id === memberUserId);
+    if (member) member.telegram = { connected: false, username: null };
+    await route.fulfill({ status: 200, json: { disconnected: true } });
   });
 });
 
@@ -111,8 +138,60 @@ test('Team page renders members, columns and Telegram status', async ({ page }) 
   await expect(page.getByRole('cell', { name: 'pw-seed-member@example.test' })).toBeVisible();
   // Telegram shows Not connected
   await expect(page.getByRole('cell', { name: 'Not connected' }).first()).toBeVisible();
+  await expect(page.getByText('@pwowner')).toBeVisible();
   // workload columns present for owner (at least one '1' visible)
   await expect(page.getByRole('cell', { name: '1' }).first()).toBeVisible();
+});
+
+test('Connect Telegram presents a one-time deep link and Disconnect updates the UI', async ({ page }) => {
+  await page.goto('/administration');
+  await page.getByRole('button', { name: 'Connect Telegram' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Connect Telegram' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('https://t.me/fleetpilot_test_bot?start=one-time-token')).toBeVisible();
+  await expect(dialog.getByRole('link', { name: 'Open Telegram' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toBeHidden();
+
+  const ownerRow = page.getByRole('cell', { name: 'pw-owner@example.test' }).locator('xpath=ancestor::tr');
+  await ownerRow.getByRole('button', { name: 'Disconnect' }).click();
+  await ownerRow.getByRole('button', { name: 'Confirm Disconnect' }).click();
+  await expect(page.getByText('@pwowner')).toHaveCount(0);
+});
+
+test('Team page presents Telegram as unavailable when integration is disabled', async ({ page }) => {
+  await page.unroute('**/api/company/team**');
+  await page.route('**/api/company/team**', async (route) => {
+    await route.fulfill({
+      json: {
+        members: [
+          {
+            id: 'disabled-membership',
+            role: 'OWNER',
+            user: {
+              id: ownerId,
+              displayName: 'Playwright Owner',
+              email: 'pw-owner@example.test',
+              image: null,
+              isActive: true,
+            },
+            openTasks: 1,
+            overdueTasks: 0,
+            dueToday: 0,
+            telegram: { connected: true, username: 'pwowner' },
+          },
+        ],
+        currentUserRole: 'OWNER',
+        currentUserId: ownerId,
+        telegramAvailable: false,
+      },
+    });
+  });
+
+  await page.goto('/administration');
+  await expect(page.getByRole('cell', { name: 'Unavailable' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Disconnect' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Connect Telegram' })).toHaveCount(0);
 });
 
 test('Search filters members by name and email', async ({ page }) => {
@@ -155,7 +234,7 @@ test('Add Member success and error handling (mocked API)', async ({ page }) => {
       await route.fulfill({ status: 409, json: { error: 'membership already exists' } });
       return;
     }
-    await route.fulfill({ json: { members: [], currentUserRole: 'OWNER' } });
+    await route.fulfill({ json: { members: [], currentUserRole: 'OWNER', currentUserId: ownerId } });
   });
   await page.getByRole('button', { name: 'Add' }).click();
   await expect(page.getByText('membership already exists')).toBeVisible();
@@ -190,7 +269,7 @@ test('Role controls visibility for OWNER vs MEMBER', async ({ page }) => {
       openTasks: 1,
       overdueTasks: 0,
       dueToday: 0,
-      telegramStatus: 'Not connected',
+      telegram: { connected: false, username: null },
     },
     {
       id: 'seed-member-1',
@@ -207,12 +286,12 @@ test('Role controls visibility for OWNER vs MEMBER', async ({ page }) => {
       openTasks: 0,
       overdueTasks: 0,
       dueToday: 0,
-      telegramStatus: 'Not connected',
+      telegram: { connected: false, username: null },
     },
   ];
 
   await page.route('**/api/company/team**', async (route) => {
-    await route.fulfill({ json: { members, currentUserRole: 'MEMBER' } });
+    await route.fulfill({ json: { members, currentUserRole: 'MEMBER', currentUserId: 'member-id' } });
   });
 
   await page.goto('/administration');

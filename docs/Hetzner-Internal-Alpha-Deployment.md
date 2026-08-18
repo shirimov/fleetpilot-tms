@@ -175,6 +175,46 @@ docker compose --env-file .env.staging \
 
 The `grep` command must return no placeholder values.
 
+### Telegram staging bot configuration
+
+Internal Alpha uses a staging-only Telegram bot. Do not reuse the production bot.
+
+Add these environment variables to `.env.staging` without committing real values:
+
+```bash
+TELEGRAM_ENABLED=false
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=
+TELEGRAM_BOT_USERNAME=
+```
+
+Setup flow:
+
+1. Create a dedicated staging bot with BotFather.
+2. Record the bot token in `TELEGRAM_BOT_TOKEN`.
+3. Generate a long random `TELEGRAM_WEBHOOK_SECRET`.
+4. Set `TELEGRAM_BOT_USERNAME` to the bot username without the `@`.
+5. Enable the integration by setting `TELEGRAM_ENABLED=true`.
+6. Point Telegram at the Alpha webhook:
+
+```bash
+curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  --data-urlencode "url=https://alpha.example.com/api/integrations/telegram/webhook" \
+  --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+```
+
+Verify the webhook:
+
+```bash
+curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+```
+
+Rotation / disable:
+
+- rotate by issuing a new BotFather token, updating `.env.staging`, and resetting the webhook;
+- disable by setting `TELEGRAM_ENABLED=false` and redeploying;
+- if rollback is required, redeploy the previous application image and keep the staging bot/token separate from production.
+
 ### 6. First controlled release
 
 After the DNS record resolves and the OAuth callback is configured:

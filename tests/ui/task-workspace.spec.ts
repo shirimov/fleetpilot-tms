@@ -20,6 +20,8 @@ const baseProject: KanbanProject = {
           priority: 'URGENT',
           status: 'TODO',
           assignedTo: 'Maya Chen',
+          assigneeUserId: 'user-maya',
+          assigneeUser: { id: 'user-maya', displayName: 'Maya Chen', image: null },
           dueDate: '2026-08-01T00:00:00.000Z',
           order: 0,
           updatedAt: '2026-07-28T09:00:00.000Z',
@@ -153,6 +155,18 @@ async function mockTaskApis(page: Page) {
       canEdit: false,
     },
   ];
+  let telegramSummary = {
+    telegramAvailable: true,
+    assigneeTelegramConnected: true,
+    assigneeTelegramUsername: 'maya_ops',
+    canRequestUpdate: true,
+    latestRequest: null as null | {
+      id: string;
+      status: string;
+      createdAt: string;
+      respondedAt: string | null;
+    },
+  };
   await page.route('**/api/tasks', async (route) => {
     if (route.request().method() === 'GET') {
       await route.fulfill({
@@ -179,10 +193,26 @@ async function mockTaskApis(page: Page) {
   await page.route('**/api/tasks/assignees', async (route) => {
     await route.fulfill({
       json: [
-        { id: 'user-maya', displayName: 'Maya Chen', image: null },
-        { id: 'user-noah', displayName: 'Noah Williams', image: null },
+        { id: 'user-maya', displayName: 'Maya Chen', image: null, telegram: { connected: true, username: 'maya_ops' } },
+        { id: 'user-noah', displayName: 'Noah Williams', image: null, telegram: { connected: false, username: null } },
       ],
     });
+  });
+  await page.route('**/api/tasks/cards/*/telegram', async (route) => {
+  if (route.request().method() === 'POST') {
+    telegramSummary = {
+      ...telegramSummary,
+      latestRequest: {
+        id: 'request-1',
+        status: 'PENDING',
+        createdAt: '2026-07-28T12:15:00.000Z',
+        respondedAt: null,
+      },
+    };
+    await route.fulfill({ json: { success: true } });
+    return;
+  }
+  await route.fulfill({ json: telegramSummary });
   });
   await page.route('**/api/tasks/cards', async (route) => {
     if (route.request().method() === 'PATCH') {
@@ -412,6 +442,71 @@ test('supports checklist and comment collaboration in the task drawer', async ({
   await expect(drawer.getByText('Inspection is complete.')).toBeVisible();
   await drawer.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(drawer).toBeHidden();
+});
+
+test('shows Telegram collaboration state and requests an update for a connected assignee', async ({
+  page,
+}) => {
+  await page
+    .getByRole('button', { name: 'Complete trailer inspection', exact: true })
+    .click();
+  const drawer = page.getByRole('dialog');
+  await expect(drawer.getByRole('heading', { name: 'Telegram' })).toBeVisible();
+  await expect(drawer.getByText('Connected @maya_ops')).toBeVisible();
+  await drawer.getByRole('button', { name: 'Request update' }).click();
+  await expect(drawer.getByText('Update request: pending')).toBeVisible();
+  await expect(drawer.getByText(/^Requested /)).toBeVisible();
+});
+
+test('shows the responded Telegram update state', async ({ page }) => {
+  await page.unroute('**/api/tasks/cards/*/telegram');
+  await page.route('**/api/tasks/cards/*/telegram', async (route) => {
+    await route.fulfill({
+      json: {
+        telegramAvailable: true,
+        assigneeTelegramConnected: true,
+        assigneeTelegramUsername: 'maya_ops',
+        canRequestUpdate: true,
+        latestRequest: {
+          id: 'request-responded',
+          status: 'RESPONDED',
+          createdAt: '2026-07-28T12:15:00.000Z',
+          respondedAt: '2026-07-28T12:30:00.000Z',
+        },
+      },
+    });
+  });
+
+  await page
+    .getByRole('button', { name: 'Complete trailer inspection', exact: true })
+    .click();
+  const drawer = page.getByRole('dialog');
+  await expect(drawer.getByText('Connected @maya_ops')).toBeVisible();
+  await expect(drawer.getByText('Update request: responded')).toBeVisible();
+  await expect(drawer.getByText(/^Responded /)).toBeVisible();
+});
+
+test('shows Telegram collaboration as unavailable when disabled', async ({ page }) => {
+  await page.unroute('**/api/tasks/cards/*/telegram');
+  await page.route('**/api/tasks/cards/*/telegram', async (route) => {
+    await route.fulfill({
+      json: {
+        telegramAvailable: false,
+        assigneeTelegramConnected: false,
+        assigneeTelegramUsername: null,
+        canRequestUpdate: false,
+        latestRequest: null,
+      },
+    });
+  });
+
+  await page
+    .getByRole('button', { name: 'Complete trailer inspection', exact: true })
+    .click();
+  const drawer = page.getByRole('dialog');
+  await expect(drawer.getByText('Unavailable')).toBeVisible();
+  await expect(drawer.getByText('Telegram collaboration is disabled.')).toBeVisible();
+  await expect(drawer.getByRole('button', { name: 'Request update' })).toHaveCount(0);
 });
 
 test('keeps task drawer focus modal and restores the exact task trigger', async ({
