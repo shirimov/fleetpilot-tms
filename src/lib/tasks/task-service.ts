@@ -35,6 +35,7 @@ import {
   TaskProjectNotFoundError,
 } from './task-errors';
 import { TaskValidationError } from './task-validation';
+import { telegramDeliveryService } from '@/lib/integrations/telegram-delivery-service';
 
 const cardInclude = {
   labels: true,
@@ -215,6 +216,10 @@ export class TaskService {
         },
         include: cardInclude,
       });
+      const project = await transaction.taskProject.findUniqueOrThrow({
+        where: { id: card.projectId },
+        select: { name: true },
+      });
 
       await this.activityService.record(transaction, {
         action: 'TASK_CREATED',
@@ -233,6 +238,20 @@ export class TaskService {
           assigneeUserId: card.assigneeUserId,
         },
       });
+      if (card.assigneeUserId && actor && 'companyId' in actor) {
+        await telegramDeliveryService.queueAssignmentDelivery(transaction, {
+          companyId: actor.companyId,
+          userId: card.assigneeUserId,
+          taskCardId: card.id,
+          title: card.title,
+          description: card.description,
+          priority: card.priority,
+          status: card.status,
+          dueDate: card.dueDate,
+          projectName: project.name,
+          dedupeKey: `assignment:${card.id}:${card.assigneeUserId}:${card.updatedAt.toISOString()}`,
+        });
+      }
 
       return card;
     });
@@ -445,9 +464,32 @@ export class TaskService {
         },
         include: cardInclude,
       });
+      const project = await transaction.taskProject.findUniqueOrThrow({
+        where: { id: card.projectId },
+        select: { name: true },
+      });
 
       for (const activity of this.describeChanges(existing, card, actor)) {
         await this.activityService.record(transaction, activity);
+      }
+      if (
+        actor &&
+        'companyId' in actor &&
+        card.assigneeUserId &&
+        existing.assigneeUserId !== card.assigneeUserId
+      ) {
+        await telegramDeliveryService.queueAssignmentDelivery(transaction, {
+          companyId: actor.companyId,
+          userId: card.assigneeUserId,
+          taskCardId: card.id,
+          title: card.title,
+          description: card.description,
+          priority: card.priority,
+          status: card.status,
+          dueDate: card.dueDate,
+          projectName: project.name,
+          dedupeKey: `assignment:${card.id}:${card.assigneeUserId}:${card.updatedAt.toISOString()}`,
+        });
       }
       if (input.mentionUserIds !== undefined) {
         if (!actor || !('companyId' in actor)) {
@@ -830,7 +872,38 @@ export class TaskService {
   }
 
   async getAssigneeCandidates(companyId: string) {
-    return this.getMentionCandidates(companyId);
+    return this.database.companyMembership.findMany({
+      where: {
+        companyId,
+        user: { isActive: true },
+      },
+      orderBy: [{ user: { displayName: 'asc' } }, { userId: 'asc' }],
+      take: 50,
+      select: {
+        user: {
+          select: {
+            id: true,
+            displayName: true,
+            image: true,
+            telegramUserLinks: {
+              where: { companyId, enabled: true },
+              select: { telegramUsername: true },
+              take: 1,
+            },
+          },
+        },
+      },
+    }).then((memberships) =>
+      memberships.map(({ user }) => ({
+        id: user.id,
+        displayName: user.displayName,
+        image: user.image,
+        telegram: {
+          connected: user.telegramUserLinks.length > 0,
+          username: user.telegramUserLinks[0]?.telegramUsername ?? null,
+        },
+      })),
+    );
   }
 
   async getAttachments(cardId: string, actor: TaskCompanyActor) {
@@ -1100,6 +1173,8 @@ export class TaskService {
       entityTitle: card.title,
       actorType: 'USER',
       actorUserId: actor.userId,
+      sourceType: actor.sourceType,
+      sourceId: actor.sourceId,
       metadata: event.metadata,
     });
   }
@@ -1210,6 +1285,8 @@ export class TaskService {
         entityId: after.id,
         entityTitle: after.title,
         ...this.activityActor(actor),
+        sourceType: actor?.sourceType,
+        sourceId: actor?.sourceId,
         metadata: {
           field,
           from: this.serializeActivityValue(before[field]),
@@ -1257,6 +1334,66 @@ export class TaskService {
     return actor
       ? { actorType: 'USER' as const, actorUserId: actor.userId }
       : {};
+  }
+
+  async startCardFromIntegration(
+    cardId: string,
+    actor: TaskCompanyActor,
+  ) {
+    return this.transitionCardForIntegration(cardId, actor, 'IN_PROGRESS');
+  }
+
+  async completeCardFromIntegration(
+    cardId: string,
+    actor: TaskCompanyActor,
+  ) {
+    return this.transitionCardForIntegration(cardId, actor, 'DONE');
+  }
+
+  private async transitionCardForIntegration(
+    cardId: string,
+    actor: TaskCompanyActor,
+    status: 'IN_PROGRESS' | 'DONE',
+  ) {
+    return this.database.$transaction(async (transaction) => {
+      const existing = await transaction.taskCard.findFirst({
+        where: {
+          id: cardId,
+          assigneeUserId: actor.userId,
+          project: { companyId: actor.companyId },
+        },
+      });
+      if (!existing) throw new TaskNotFoundError();
+      if (existing.status === status) {
+        return transaction.taskCard.findUniqueOrThrow({
+          where: { id: cardId },
+          include: cardInclude,
+        });
+      }
+      const destinationBoard = await transaction.taskBoard.findFirst({
+        where: {
+          projectId: existing.projectId,
+          status,
+        },
+        orderBy: [{ order: 'asc' }, { id: 'asc' }],
+        select: { id: true, status: true },
+      });
+      if (!destinationBoard?.status) {
+        throw new TaskBoardStatusUnmappedError();
+      }
+      const updated = await transaction.taskCard.update({
+        where: { id: existing.id },
+        data: {
+          boardId: destinationBoard.id,
+          status: destinationBoard.status,
+        },
+        include: cardInclude,
+      });
+      for (const activity of this.describeChanges(existing, updated, actor)) {
+        await this.activityService.record(transaction, activity);
+      }
+      return updated;
+    });
   }
 
   private serializeActivityValue(value: unknown): string | number | boolean | null {

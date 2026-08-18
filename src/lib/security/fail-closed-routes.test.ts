@@ -23,19 +23,19 @@ test('ownership-blocked routes authenticate and cannot access data', async () =>
   }
 });
 
-test('QuickManage and Telegram stay fail closed without data access', async () => {
+test('QuickManage stays fail closed without data access and Telegram verifies before routing', async () => {
   const quickManage = await readFile('src/app/api/qm-stats/route.ts', 'utf8');
   assert.match(quickManage, /requireActiveCompany\(\)/);
   assert.match(quickManage, /status:\s*503/);
   assert.doesNotMatch(quickManage, /\bprisma\b|readFile|writeFile|exec/);
 
   const telegram = await readFile(
-    'src/app/api/telegram/webhook/route.ts',
+    'src/app/api/integrations/telegram/webhook/route.ts',
     'utf8',
   );
   assert.match(telegram, /verifyTelegramWebhook/);
-  assert.match(telegram, /status:\s*503/);
-  assert.doesNotMatch(telegram, /\bprisma\b|request\.json\(/);
+  assert.match(telegram, /x-telegram-bot-api-secret-token/);
+  assert.doesNotMatch(telegram, /\bprisma\b/);
 });
 
 test('fail-closed responses cannot be cached', async () => {

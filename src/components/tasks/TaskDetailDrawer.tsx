@@ -40,6 +40,19 @@ type Activity = {
   occurredAt: string;
 };
 
+type TelegramSummary = {
+  telegramAvailable: boolean;
+  assigneeTelegramConnected: boolean;
+  assigneeTelegramUsername: string | null;
+  canRequestUpdate: boolean;
+  latestRequest: {
+    id: string;
+    status: string;
+    createdAt: string;
+    respondedAt: string | null;
+  } | null;
+} | null;
+
 type Props = {
   card: KanbanCard;
   board: KanbanColumn;
@@ -110,25 +123,29 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
   const [commentMentionCandidates, setCommentMentionCandidates] = useState<
     Array<{ id: string; displayName: string }>
   >([]);
+  const [telegramSummary, setTelegramSummary] = useState<TelegramSummary>(null);
 
   const loadCollaboration = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [checklistResponse, commentsResponse, activityResponse] =
+      const [checklistResponse, commentsResponse, activityResponse, telegramResponse] =
         await Promise.all([
           fetch(`/api/tasks/cards/${card.id}/checklist`),
           fetch(`/api/tasks/cards/${card.id}/comments`),
           fetch(`/api/tasks/cards/${card.id}/activity`),
+          fetch(`/api/tasks/cards/${card.id}/telegram`),
         ]);
-      const [items, thread, timeline] = await Promise.all([
+      const [items, thread, timeline, telegram] = await Promise.all([
         responseJson<ChecklistItem[]>(checklistResponse),
         responseJson<Comment[]>(commentsResponse),
         responseJson<Activity[]>(activityResponse),
+        responseJson<TelegramSummary>(telegramResponse),
       ]);
       setChecklist(items);
       setComments(thread);
       setActivities(timeline);
+      setTelegramSummary(telegram);
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -171,6 +188,11 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
     () => checklist.filter(({ isCompleted }) => isCompleted).length,
     [checklist],
   );
+  const selectedAssignee = useMemo(
+    () =>
+      assignees.find((assignee) => assignee.id === (card.assigneeUserId ?? '')) ?? null,
+    [assignees, card.assigneeUserId],
+  );
 
   async function updateOverview(changes: KanbanCardFieldUpdate) {
     await onUpdateCard(card.id, changes);
@@ -193,6 +215,18 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
     } finally {
       setPending(false);
     }
+  }
+
+  async function requestTelegramUpdate() {
+    if (pending) return;
+    await mutate(async () => {
+      const response = await fetch(`/api/tasks/cards/${card.id}/telegram`, {
+        method: 'POST',
+      });
+      await responseJson<{ success: true }>(response);
+      const refreshed = await fetch(`/api/tasks/cards/${card.id}/telegram`);
+      setTelegramSummary(await responseJson<TelegramSummary>(refreshed));
+    });
   }
 
   async function addChecklistItem() {
@@ -413,6 +447,56 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
               <label className="text-xs text-slate-500">Assignee<span className="mt-1 block"><TaskAssigneeSelect label="Task assignee" value={card.assigneeUserId ?? ''} legacyName={card.assignedTo} assignees={assignees} disabled={updating} onChange={(assigneeUserId) => void updateOverview({ assigneeUserId })} /></span></label>
               <label className="text-xs text-slate-500">Due date and time<span className="mt-1 block"><TaskDueDateInput label="Task due date and time" value={card.dueDate} disabled={updating} onChange={(dueDate) => void updateOverview({ dueDate })} /></span></label>
               <div className="sm:col-span-2 flex items-center justify-between border-t border-white/8 pt-3"><span className="text-xs text-slate-500">Countdown</span><TaskDeadline dueDate={card.dueDate} now={now} status={card.status} /></div>
+            </div>
+          </section>
+
+          <section aria-labelledby="telegram-heading">
+            <h3 id="telegram-heading" className="mb-3 text-sm font-semibold text-white">Telegram</h3>
+            <div className="rounded-xl border border-white/8 bg-[#181b25] p-4 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-slate-200">
+                    {!telegramSummary?.telegramAvailable
+                      ? 'Unavailable'
+                      : telegramSummary.assigneeTelegramConnected
+                        ? 'Connected'
+                        : 'Not connected'}
+                    {telegramSummary?.telegramAvailable && telegramSummary.assigneeTelegramUsername
+                      ? ` @${telegramSummary.assigneeTelegramUsername}`
+                      : ''}
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    {!telegramSummary?.telegramAvailable
+                      ? 'Telegram collaboration is disabled.'
+                      : selectedAssignee
+                      ? `${selectedAssignee.displayName} ${
+                          telegramSummary?.assigneeTelegramConnected
+                            ? 'can receive Telegram collaboration messages.'
+                            : 'has not linked Telegram.'
+                        }`
+                      : 'Assign this task to enable Telegram collaboration.'}
+                  </p>
+                </div>
+                {telegramSummary?.canRequestUpdate ? (
+                  <button
+                    type="button"
+                    onClick={() => void requestTelegramUpdate()}
+                    disabled={pending}
+                    className="btn btn-sm"
+                  >
+                    Request update
+                  </button>
+                ) : null}
+              </div>
+              {telegramSummary?.latestRequest ? (
+                <div className="mt-3 text-xs text-slate-400">
+                  <div>Update request: {telegramSummary.latestRequest.status.toLowerCase()}</div>
+                  <div>Requested {new Date(telegramSummary.latestRequest.createdAt).toLocaleString()}</div>
+                  {telegramSummary.latestRequest.respondedAt ? (
+                    <div>Responded {new Date(telegramSummary.latestRequest.respondedAt).toLocaleString()}</div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </section>
 

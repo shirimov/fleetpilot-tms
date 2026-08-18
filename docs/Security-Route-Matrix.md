@@ -238,11 +238,12 @@ Plaid transaction reads; those selectors must be scoped before use.
 | `/api/inbox/accounts` | DELETE | account/email tree | yes | unavailable | ADMIN | C/M/S | U/X/I/R | blocked |
 | `/api/inbox/sync` | POST | IMAP sync | yes | unavailable | ADMIN | C/M/S | U/X/I/R | blocked |
 | `/api/uploads/[...path]` | GET | inspection files | yes | inspection truck | MEMBER | C/S | U/X/I/F | protected |
-| `/api/telegram/webhook` | POST | Telegram/task integration | verified secret | unavailable | Integration | C/M/S/A | webhook/X/I/G | blocked |
+| `/api/integrations/telegram/webhook` | POST | Telegram/task integration | verified secret | linked company/user | Integration | C/M/S/A | webhook/X/I/G | protected |
 
 Email accounts need additive company ownership. Upload access needs a
-database-backed ownership lookup rather than path authorization. Telegram needs
-verified webhook authenticity and an explicit integration-to-company mapping.
+database-backed ownership lookup rather than path authorization. Telegram uses
+verified webhook authenticity, numeric Telegram identity, explicit FleetPilot
+linking, and company-scoped task authorization.
 
 ## Integration and repository findings
 

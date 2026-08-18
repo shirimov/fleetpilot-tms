@@ -45,6 +45,10 @@ export type TaskAssignee = {
   id: string;
   displayName: string;
   image: string | null;
+  telegram?: {
+    connected: boolean;
+    username: string | null;
+  };
 };
 
 export type MoveTaskCardInput = {
@@ -73,6 +77,8 @@ export type TaskActivityEvent = {
 
 export type TaskMutationActor = {
   userId: string;
+  sourceType?: string;
+  sourceId?: string;
 };
 
 export type TaskCompanyActor = TaskMutationActor & {

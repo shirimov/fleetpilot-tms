@@ -1,5 +1,6 @@
 "use client";
-import React, { useEffect, useState, useRef } from 'react';
+
+import React, { useEffect, useRef, useState } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
 
 type MemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
@@ -7,15 +8,38 @@ type MemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 type Member = {
   id: string;
   role: MemberRole;
-  user: { id: string; displayName: string; email: string; image?: string | null; isActive: boolean };
+  user: {
+    id: string;
+    displayName: string;
+    email: string;
+    image?: string | null;
+    isActive: boolean;
+  };
   openTasks: number;
   overdueTasks: number;
   dueToday: number;
-  telegramStatus: string;
+  telegram: {
+    connected: boolean;
+    username: string | null;
+  };
+};
+
+type TelegramInvite = {
+  memberName: string;
+  deepLink: string;
+  expiresAt: string;
 };
 
 function canManageMember(actorRole: MemberRole, targetRole: MemberRole) {
   return actorRole === 'OWNER' || (actorRole === 'ADMIN' && targetRole !== 'OWNER');
+}
+
+function canManageTelegram(
+  actorRole: MemberRole,
+  currentUserId: string | null,
+  member: Member,
+) {
+  return member.user.id === currentUserId || canManageMember(actorRole, member.role);
 }
 
 function assignableRoles(actorRole: MemberRole) {
@@ -31,12 +55,14 @@ export default function TeamPage() {
   const [query, setQuery] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [currentUserRole, setCurrentUserRole] = useState<MemberRole>('MEMBER');
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [telegramAvailable, setTelegramAvailable] = useState(false);
+  const [invite, setInvite] = useState<TelegramInvite | null>(null);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      // Compute local day boundaries in browser timezone and pass to server so "Due Today" matches the user.
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const end = new Date(start);
@@ -50,6 +76,8 @@ export default function TeamPage() {
       const data = await resp.json();
       setMembers(data.members ?? []);
       setCurrentUserRole(data.currentUserRole ?? 'MEMBER');
+      setCurrentUserId(data.currentUserId ?? null);
+      setTelegramAvailable(data.telegramAvailable === true);
     } catch {
       setError('Failed to load team.');
     } finally {
@@ -57,25 +85,34 @@ export default function TeamPage() {
     }
   }
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    void load();
+  }, []);
 
-  const filtered = members.filter((m) => {
+  const filtered = members.filter((member) => {
     const q = query.trim().toLowerCase();
     if (!q) return true;
     return (
-      m.user.displayName.toLowerCase().includes(q) ||
-      m.user.email.toLowerCase().includes(q)
+      member.user.displayName.toLowerCase().includes(q) ||
+      member.user.email.toLowerCase().includes(q)
     );
   });
 
   return (
     <div className="p-4">
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Team</h1>
         <div className="flex items-center gap-2">
-          <input placeholder="Search name or email" value={query} onChange={(e) => setQuery(e.target.value)} className="px-2 py-1 rounded border bg-slate-900/20" />
+          <input
+            placeholder="Search name or email"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="rounded border bg-slate-900/20 px-2 py-1"
+          />
           {currentUserRole !== 'MEMBER' ? (
-            <button onClick={() => setShowAdd(true)} className="btn btn-primary">Add Member</button>
+            <button onClick={() => setShowAdd(true)} className="btn btn-primary">
+              Add Member
+            </button>
           ) : null}
         </div>
       </div>
@@ -99,35 +136,58 @@ export default function TeamPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((m) => (
-              <tr key={m.id} className="border-t border-white/6">
+            {filtered.map((member) => (
+              <tr key={member.id} className="border-t border-white/6">
                 <td className="p-2 align-middle">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-sm">
-                      {m.user.image ? (
-                        // eslint-disable-next-line @next/next/no-img-element -- remote avatar sources are user-provided and not configured for next/image
-                        <img src={m.user.image} alt="" className="w-8 h-8 rounded-full" />
-                      ) : (m.user.displayName || m.user.email).slice(0,2).toUpperCase()}
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-sm">
+                      {member.user.image ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- user-provided remote avatars are not configured for next/image
+                        <img src={member.user.image} alt="" className="h-8 w-8 rounded-full" />
+                      ) : (
+                        (member.user.displayName || member.user.email)
+                          .slice(0, 2)
+                          .toUpperCase()
+                      )}
                     </div>
-                    <div>
-                      <div className="font-medium">{m.user.displayName}</div>
-                    </div>
+                    <div className="font-medium">{member.user.displayName}</div>
                   </div>
                 </td>
-                <td className="p-2">{m.user.email}</td>
-                <td className="p-2">{m.role}</td>
-                <td className="p-2">{m.user.isActive ? 'Active' : 'Inactive'}</td>
-                <td className="p-2">{m.openTasks}</td>
-                <td className="p-2">{m.overdueTasks}</td>
-                <td className="p-2">{m.dueToday}</td>
-                <td className="p-2">{m.telegramStatus}</td>
+                <td className="p-2">{member.user.email}</td>
+                <td className="p-2">{member.role}</td>
+                <td className="p-2">{member.user.isActive ? 'Active' : 'Inactive'}</td>
+                <td className="p-2">{member.openTasks}</td>
+                <td className="p-2">{member.overdueTasks}</td>
+                <td className="p-2">{member.dueToday}</td>
                 <td className="p-2">
-                  <div className="flex gap-2">
-                    {canManageMember(currentUserRole, m.role) ? (
-                      <RoleControl member={m} actorRole={currentUserRole} reload={load} />
+                  <div className="text-sm">
+                    <div>
+                      {!telegramAvailable
+                        ? 'Unavailable'
+                        : member.telegram.connected
+                          ? 'Connected'
+                          : 'Not connected'}
+                    </div>
+                    {telegramAvailable && member.telegram.connected && member.telegram.username ? (
+                      <div className="text-xs text-slate-400">@{member.telegram.username}</div>
                     ) : null}
-                    {canManageMember(currentUserRole, m.role) ? (
-                      <RemoveControl member={m} reload={load} />
+                  </div>
+                </td>
+                <td className="p-2">
+                  <div className="flex flex-wrap gap-2">
+                    <TelegramControl
+                      member={member}
+                      currentUserId={currentUserId}
+                      currentUserRole={currentUserRole}
+                      telegramAvailable={telegramAvailable}
+                      onInvite={setInvite}
+                      reload={load}
+                    />
+                    {canManageMember(currentUserRole, member.role) ? (
+                      <RoleControl member={member} actorRole={currentUserRole} reload={load} />
+                    ) : null}
+                    {canManageMember(currentUserRole, member.role) ? (
+                      <RemoveControl member={member} reload={load} />
                     ) : null}
                   </div>
                 </td>
@@ -137,12 +197,169 @@ export default function TeamPage() {
         </table>
       </div>
 
-      {showAdd ? <AddMemberModal actorRole={currentUserRole} onClose={() => { setShowAdd(false); void load(); }} /> : null}
+      {showAdd ? (
+        <AddMemberModal
+          actorRole={currentUserRole}
+          onClose={() => {
+            setShowAdd(false);
+            void load();
+          }}
+        />
+      ) : null}
+
+      {invite ? (
+        <TelegramInviteModal
+          invite={invite}
+          onClose={() => setInvite(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function RoleControl({ member, actorRole, reload }: { member: Member; actorRole: MemberRole; reload: () => void }) {
+function TelegramControl({
+  member,
+  currentUserId,
+  currentUserRole,
+  telegramAvailable,
+  onInvite,
+  reload,
+}: {
+  member: Member;
+  currentUserId: string | null;
+  currentUserRole: MemberRole;
+  telegramAvailable: boolean;
+  onInvite: (invite: TelegramInvite) => void;
+  reload: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+
+  if (
+    !telegramAvailable ||
+    !canManageTelegram(currentUserRole, currentUserId, member)
+  ) return null;
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/company/team/${member.user.id}/telegram-link`, {
+        method: 'POST',
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'Failed to create Telegram link.');
+      onInvite({
+        memberName: member.user.displayName,
+        deepLink: body.deepLink,
+        expiresAt: body.expiresAt,
+      });
+    } catch {
+      // keep UI minimal; parent load captures later state
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!confirmDisconnect) {
+      setConfirmDisconnect(true);
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/company/team/${member.user.id}/telegram-link`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) throw new Error('disconnect failed');
+      await reload();
+    } catch {
+      // keep UI minimal; parent load captures later state
+    } finally {
+      setBusy(false);
+      setConfirmDisconnect(false);
+    }
+  }
+
+  return member.telegram.connected ? (
+    <button
+      type="button"
+      onClick={() => void disconnect()}
+      disabled={busy}
+      className="btn btn-ghost btn-sm text-amber-300"
+    >
+      {confirmDisconnect ? 'Confirm Disconnect' : 'Disconnect'}
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={() => void connect()}
+      disabled={busy}
+      className="btn btn-sm"
+    >
+      Connect Telegram
+    </button>
+  );
+}
+
+function TelegramInviteModal({
+  invite,
+  onClose,
+}: {
+  invite: TelegramInvite;
+  onClose: () => void;
+}) {
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+
+  return (
+    <ModalLayer
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      labelledBy="telegram-invite-title"
+      describedBy="telegram-invite-description"
+      initialFocusRef={closeRef}
+      onClose={onClose}
+    >
+      <button
+        type="button"
+        aria-hidden="true"
+        tabIndex={-1}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/50"
+      />
+      <div className="relative z-10 w-full max-w-lg rounded bg-slate-900 p-4">
+        <h2 id="telegram-invite-title" className="mb-2 text-lg font-medium">
+          Connect Telegram
+        </h2>
+        <p id="telegram-invite-description" className="mb-3 text-sm text-slate-300">
+          The Telegram identity is only verified when {invite.memberName} opens this one-time link in Telegram.
+        </p>
+        <div className="rounded border border-white/10 bg-slate-950/40 p-3 text-sm break-all">
+          {invite.deepLink}
+        </div>
+        <p className="mt-2 text-xs text-slate-400">
+          Expires: {new Date(invite.expiresAt).toLocaleString()}
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button ref={closeRef} type="button" onClick={onClose} className="btn btn-ghost">
+            Close
+          </button>
+          <a href={invite.deepLink} target="_blank" rel="noreferrer" className="btn btn-primary">
+            Open Telegram
+          </a>
+        </div>
+      </div>
+    </ModalLayer>
+  );
+}
+
+function RoleControl({
+  member,
+  actorRole,
+  reload,
+}: {
+  member: Member;
+  actorRole: MemberRole;
+  reload: () => Promise<void>;
+}) {
   const [changing, setChanging] = useState(false);
   const [role, setRole] = useState(member.role);
   const roles = assignableRoles(actorRole);
@@ -151,11 +368,13 @@ function RoleControl({ member, actorRole, reload }: { member: Member; actorRole:
     if (role === member.role) return;
     setChanging(true);
     try {
-      const resp = await fetch('/api/company/team', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: member.user.id, role }) });
-      if (!resp.ok) throw new Error('failed');
+      const response = await fetch('/api/company/team', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: member.user.id, role }),
+      });
+      if (!response.ok) throw new Error('failed');
       await reload();
-    } catch {
-      // TODO show error
     } finally {
       setChanging(false);
     }
@@ -163,29 +382,48 @@ function RoleControl({ member, actorRole, reload }: { member: Member; actorRole:
 
   return (
     <div className="flex items-center gap-1">
-      <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="px-2 py-1 rounded bg-slate-900/10">
+      <select
+        value={role}
+        onChange={(event) => setRole(event.target.value as Member['role'])}
+        className="rounded bg-slate-900/10 px-2 py-1"
+      >
         {roles.map((option) => (
-          <option key={option} value={option}>{option}</option>
+          <option key={option} value={option}>
+            {option}
+          </option>
         ))}
       </select>
-      <button disabled={changing || role === member.role} onClick={save} className="btn btn-sm">Save</button>
+      <button disabled={changing || role === member.role} onClick={() => void save()} className="btn btn-sm">
+        Save
+      </button>
     </div>
   );
 }
 
-function RemoveControl({ member, reload }: { member: Member; reload: () => void }) {
+function RemoveControl({
+  member,
+  reload,
+}: {
+  member: Member;
+  reload: () => Promise<void>;
+}) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function remove() {
-    if (!confirm) { setConfirm(true); return; }
+    if (!confirm) {
+      setConfirm(true);
+      return;
+    }
     setBusy(true);
     try {
-      const resp = await fetch('/api/company/team', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: member.user.id }) });
-      if (!resp.ok) throw new Error('failed');
+      const response = await fetch('/api/company/team', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: member.user.id }),
+      });
+      if (!response.ok) throw new Error('failed');
       await reload();
-    } catch {
-      // TODO handle error
     } finally {
       setBusy(false);
       setConfirm(false);
@@ -193,27 +431,39 @@ function RemoveControl({ member, reload }: { member: Member; reload: () => void 
   }
 
   return (
-    <button onClick={remove} disabled={busy} className="btn btn-ghost btn-sm text-rose-400">{confirm ? 'Confirm' : 'Remove'}</button>
+    <button onClick={() => void remove()} disabled={busy} className="btn btn-ghost btn-sm text-rose-400">
+      {confirm ? 'Confirm' : 'Remove'}
+    </button>
   );
 }
 
-function AddMemberModal({ actorRole, onClose }: { actorRole: MemberRole; onClose: () => void }) {
+function AddMemberModal({
+  actorRole,
+  onClose,
+}: {
+  actorRole: MemberRole;
+  onClose: () => void;
+}) {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
- const [role, setRole] = useState<MemberRole>('MEMBER');
+  const [role, setRole] = useState<MemberRole>('MEMBER');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const emailRef = useRef<HTMLInputElement | null>(null);
- const roles = assignableRoles(actorRole);
+  const roles = assignableRoles(actorRole);
 
-  async function submit(e?: React.FormEvent) {
-    e?.preventDefault();
+  async function submit(event?: React.FormEvent) {
+    event?.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const resp = await fetch('/api/company/team', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName, email, role }) });
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => ({}));
+      const response = await fetch('/api/company/team', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName, email, role }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
         setError(body?.error ?? 'Failed');
         setBusy(false);
         return;
@@ -234,7 +484,6 @@ function AddMemberModal({ actorRole, onClose }: { actorRole: MemberRole; onClose
       initialFocusRef={emailRef}
       onClose={onClose}
     >
-      {/* Backdrop */}
       <button
         type="button"
         aria-hidden="true"
@@ -242,26 +491,59 @@ function AddMemberModal({ actorRole, onClose }: { actorRole: MemberRole; onClose
         onClick={onClose}
         className="absolute inset-0 bg-black/50"
       />
-      <form id="add-member-form" onSubmit={submit} aria-labelledby="add-member-title" aria-describedby="add-member-desc" className="relative bg-slate-900 p-4 rounded w-[480px] z-10">
-        <h2 id="add-member-title" className="text-lg font-medium mb-2">Add Member</h2>
-        <p id="add-member-desc" className="sr-only">Add a member to the company with role and email.</p>
-        {error ? <div className="text-rose-400 mb-2">{error}</div> : null}
-        <label className="block mb-2">Display name
-          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" />
+      <form
+        id="add-member-form"
+        onSubmit={submit}
+        aria-labelledby="add-member-title"
+        aria-describedby="add-member-desc"
+        className="relative z-10 w-[480px] rounded bg-slate-900 p-4"
+      >
+        <h2 id="add-member-title" className="mb-2 text-lg font-medium">
+          Add Member
+        </h2>
+        <p id="add-member-desc" className="sr-only">
+          Add a member to the company with role and email.
+        </p>
+        {error ? <div className="mb-2 text-rose-400">{error}</div> : null}
+        <label className="mb-2 block">
+          Display name
+          <input
+            value={displayName}
+            onChange={(event) => setDisplayName(event.target.value)}
+            className="w-full rounded bg-slate-800/40 px-2 py-1"
+          />
         </label>
-        <label className="block mb-2">Email
-          <input ref={emailRef} required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-2 py-1 rounded bg-slate-800/40" />
+        <label className="mb-2 block">
+          Email
+          <input
+            ref={emailRef}
+            required
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            className="w-full rounded bg-slate-800/40 px-2 py-1"
+          />
         </label>
-        <label className="block mb-2">Role
-          <select value={role} onChange={(e) => setRole(e.target.value as Member['role'])} className="w-full px-2 py-1 rounded bg-slate-800/40">
+        <label className="mb-2 block">
+          Role
+          <select
+            value={role}
+            onChange={(event) => setRole(event.target.value as Member['role'])}
+            className="w-full rounded bg-slate-800/40 px-2 py-1"
+          >
             {roles.map((option) => (
-              <option key={option} value={option}>{option}</option>
+              <option key={option} value={option}>
+                {option}
+              </option>
             ))}
           </select>
         </label>
-        <div className="flex justify-end gap-2 mt-4">
-          <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
-          <button type="submit" disabled={busy} className="btn btn-primary">Add</button>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn btn-ghost">
+            Cancel
+          </button>
+          <button type="submit" disabled={busy} className="btn btn-primary">
+            Add
+          </button>
         </div>
       </form>
     </ModalLayer>

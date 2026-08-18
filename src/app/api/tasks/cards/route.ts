@@ -10,6 +10,7 @@ import {
   validateUpdateTaskCardInput,
 } from '@/lib/tasks/task-validation';
 import { taskAuthorizationService } from '@/lib/tasks/task-authorization';
+import { telegramDeliveryService } from '@/lib/integrations/telegram-delivery-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +24,7 @@ export async function POST(req: NextRequest) {
       companyId: context.companyId,
       role: context.role,
     });
+    await telegramDeliveryService.drainDueDeliveries();
 
     return NextResponse.json(card, { status: 201 });
   } catch (error) {
@@ -40,6 +42,7 @@ export async function PATCH(req: NextRequest) {
       companyId: context.companyId,
       role: context.role,
     });
+    await telegramDeliveryService.drainDueDeliveries();
 
     return NextResponse.json(card);
   } catch (error) {

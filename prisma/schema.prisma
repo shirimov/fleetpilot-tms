@@ -91,23 +91,29 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id             String              @id @default(cuid())
-  name           String
-  dotNumber      String?
-  mcNumber       String?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
-  trucks         Truck[]
-  loads          Load[]
-  bankAccounts   BankAccount[]
-  taskProjects   TaskProject[]
-  memberships    CompanyMembership[]
-  activeUsers    User[]              @relation("ActiveCompany")
-  companyDrivers Driver[]            @relation("DriverCompany")
-  employees      Employee[]
-  customers      Customer[]
-  trailers       Trailer[]
-  loadActivities LoadActivity[]
+  id                     String                  @id @default(cuid())
+  name                   String
+  dotNumber              String?
+  mcNumber               String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  trucks                 Truck[]
+  loads                  Load[]
+  bankAccounts           BankAccount[]
+  taskProjects           TaskProject[]
+  memberships            CompanyMembership[]
+  activeUsers            User[]                  @relation("ActiveCompany")
+  companyDrivers         Driver[]                @relation("DriverCompany")
+  employees              Employee[]
+  customers              Customer[]
+  trailers               Trailer[]
+  loadActivities         LoadActivity[]
+  telegramUserLinks      TelegramUserLink[]
+  telegramLinkTokens     TelegramLinkToken[]
+  telegramInboundUpdates TelegramInboundUpdate[]
+  telegramDeliveries     TelegramDelivery[]
+  telegramPendingActions TelegramPendingAction[]
+  telegramUpdateRequests TelegramUpdateRequest[]
 }
 
 enum CompanyMembershipRole {
@@ -133,12 +139,18 @@ model User {
   taskActivities           TaskActivity[]
   taskChecklistItems       TaskChecklistItem[]
   taskAttachments          TaskAttachment[]
-  assignedTaskCards        TaskCard[]          @relation("TaskCardAssignee")
-  taskMentions             TaskMention[]       @relation("MentionedTaskUser")
-  createdTaskMentions      TaskMention[]       @relation("TaskMentionCreator")
+  assignedTaskCards        TaskCard[]              @relation("TaskCardAssignee")
+  taskMentions             TaskMention[]           @relation("MentionedTaskUser")
+  createdTaskMentions      TaskMention[]           @relation("TaskMentionCreator")
   loadActivities           LoadActivity[]
   uploadedLoadDocuments    LoadDocument[]
   uploadedTrailerDocuments TrailerDocument[]
+  telegramUserLinks        TelegramUserLink[]
+  telegramLinkTokens       TelegramLinkToken[]
+  telegramDeliveries       TelegramDelivery[]
+  telegramPendingActions   TelegramPendingAction[] @relation("TelegramPendingActionUser")
+  requestedTelegramUpdates TelegramUpdateRequest[] @relation("TelegramUpdateRequester")
+  assignedTelegramUpdates  TelegramUpdateRequest[] @relation("TelegramUpdateAssignee")
 
   @@index([activeCompanyId])
 }
@@ -170,6 +182,168 @@ model CompanyMembership {
 
   @@unique([userId, companyId])
   @@index([companyId, role])
+}
+
+enum TelegramDeliveryStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  RETRYING
+  PERMANENT_FAILURE
+  CANCELLED
+}
+
+enum TelegramDeliveryType {
+  ASSIGNMENT
+  UPDATE_REQUEST
+  COMMAND_RESPONSE
+  CALLBACK_RESPONSE
+}
+
+enum TelegramPendingActionType {
+  ADD_UPDATE
+  START_TASK
+  COMPLETE_TASK
+  OPEN_TASK
+}
+
+enum TelegramUpdateRequestStatus {
+  PENDING
+  RESPONDED
+  EXPIRED
+  CANCELLED
+}
+
+model TelegramUserLink {
+  id               String   @id @default(cuid())
+  companyId        String
+  userId           String
+  telegramUserId   BigInt   @unique
+  telegramChatId   BigInt   @unique
+  telegramUsername String?
+  verifiedAt       DateTime
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@index([companyId, enabled])
+  @@index([userId, enabled])
+}
+
+model TelegramLinkToken {
+  id         String    @id @default(cuid())
+  companyId  String
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, userId, expiresAt])
+  @@index([userId, consumedAt, expiresAt])
+}
+
+model TelegramInboundUpdate {
+  id               String    @id @default(cuid())
+  companyId        String?
+  telegramUserId   BigInt?
+  telegramChatId   BigInt?
+  telegramUpdateId BigInt    @unique
+  kind             String
+  processedAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, createdAt])
+  @@index([telegramUserId, createdAt])
+}
+
+model TelegramDelivery {
+  id                String                 @id @default(cuid())
+  companyId         String
+  userId            String
+  taskCardId        String?
+  type              TelegramDeliveryType
+  telegramChatId    BigInt
+  telegramMessageId BigInt?
+  payload           Json
+  dedupeKey         String?
+  status            TelegramDeliveryStatus @default(PENDING)
+  attempts          Int                    @default(0)
+  nextAttemptAt     DateTime               @default(now())
+  lastError         String?
+  createdAt         DateTime               @default(now())
+  deliveredAt       DateTime?
+  updatedAt         DateTime               @updatedAt
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskCard TaskCard? @relation(fields: [taskCardId], references: [id], onDelete: SetNull)
+
+  @@unique([dedupeKey])
+  @@index([companyId, status, nextAttemptAt, createdAt])
+  @@index([userId, status, nextAttemptAt])
+  @@index([taskCardId, type, createdAt])
+}
+
+model TelegramUpdateRequest {
+  id                String                      @id @default(cuid())
+  companyId         String
+  taskCardId        String
+  requestedByUserId String
+  assigneeUserId    String
+  status            TelegramUpdateRequestStatus @default(PENDING)
+  telegramMessageId BigInt?
+  expiresAt         DateTime
+  respondedAt       DateTime?
+  responseCommentId String?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  taskCard        TaskCard                @relation(fields: [taskCardId], references: [id], onDelete: Cascade)
+  requestedByUser User                    @relation("TelegramUpdateRequester", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+  assigneeUser    User                    @relation("TelegramUpdateAssignee", fields: [assigneeUserId], references: [id], onDelete: Cascade)
+  responseComment TaskComment?            @relation(fields: [responseCommentId], references: [id], onDelete: SetNull)
+  pendingActions  TelegramPendingAction[]
+
+  @@index([companyId, assigneeUserId, status, createdAt])
+  @@index([taskCardId, status, createdAt])
+  @@index([responseCommentId])
+}
+
+model TelegramPendingAction {
+  id                      String                    @id @default(cuid())
+  companyId               String
+  userId                  String
+  taskCardId              String?
+  telegramChatId          BigInt
+  type                    TelegramPendingActionType
+  requestedByUserId       String?
+  telegramMessageId       BigInt?
+  telegramUpdateRequestId String?
+  expiresAt               DateTime
+  consumedAt              DateTime?
+  invalidatedAt           DateTime?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+
+  company       Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user          User                   @relation("TelegramPendingActionUser", fields: [userId], references: [id], onDelete: Cascade)
+  taskCard      TaskCard?              @relation(fields: [taskCardId], references: [id], onDelete: Cascade)
+  updateRequest TelegramUpdateRequest? @relation(fields: [telegramUpdateRequestId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, userId, type, expiresAt])
+  @@index([telegramChatId, type, expiresAt])
+  @@index([taskCardId, type, expiresAt])
 }
 
 model Truck {
@@ -739,30 +913,33 @@ model TaskBoard {
 }
 
 model TaskCard {
-  id             String              @id @default(cuid())
-  projectId      String
-  project        TaskProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  boardId        String
-  board          TaskBoard           @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  title          String
-  description    String?             @db.Text
-  order          Int                 @default(0)
-  priority       TaskPriority        @default(MEDIUM)
-  status         TaskStatus          @default(TODO)
-  assignedTo     String?
-  assigneeUserId String?
-  assigneeUser   User?               @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
-  dueDate        DateTime?
-  labels         TaskLabel[]
-  comments       TaskComment[]
-  checklistItems TaskChecklistItem[]
-  attachments    TaskAttachment[]
-  mentions       TaskMention[]
-  activities     TaskActivity[]
-  startDate      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  id                     String                  @id @default(cuid())
+  projectId              String
+  project                TaskProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  boardId                String
+  board                  TaskBoard               @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title                  String
+  description            String?                 @db.Text
+  order                  Int                     @default(0)
+  priority               TaskPriority            @default(MEDIUM)
+  status                 TaskStatus              @default(TODO)
+  assignedTo             String?
+  assigneeUserId         String?
+  assigneeUser           User?                   @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  dueDate                DateTime?
+  labels                 TaskLabel[]
+  comments               TaskComment[]
+  checklistItems         TaskChecklistItem[]
+  attachments            TaskAttachment[]
+  mentions               TaskMention[]
+  activities             TaskActivity[]
+  telegramDeliveries     TelegramDelivery[]
+  telegramPendingActions TelegramPendingAction[]
+  telegramUpdateRequests TelegramUpdateRequest[]
+  startDate              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
 
   @@index([assigneeUserId])
 }
@@ -777,16 +954,17 @@ model TaskLabel {
 }
 
 model TaskComment {
-  id           String        @id @default(cuid())
-  cardId       String
-  card         TaskCard      @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  author       String
-  authorUserId String?
-  authorUser   User?         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
-  content      String        @db.Text
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  mentions     TaskMention[]
+  id                      String                  @id @default(cuid())
+  cardId                  String
+  card                    TaskCard                @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  author                  String
+  authorUserId            String?
+  authorUser              User?                   @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  content                 String                  @db.Text
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  mentions                TaskMention[]
+  telegramUpdateResponses TelegramUpdateRequest[]
 
   @@index([authorUserId])
 }
