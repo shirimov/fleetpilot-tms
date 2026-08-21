@@ -9,6 +9,10 @@ import {
   AuthenticationRequiredError,
   AuthorizationDeniedError,
 } from './auth-errors';
+import {
+  roleCanAccessModule,
+  type FleetPilotModule,
+} from './module-permissions';
 
 export type TrustedSession = { user?: { id?: string } } | null;
 
@@ -88,6 +92,14 @@ export class AuthorizationService {
       throw new AuthorizationDeniedError();
     }
     return { user, companyId: membership.companyId, role: membership.role };
+  }
+
+  async requireModule(module: FleetPilotModule): Promise<CompanyAuthorization> {
+    const context = await this.requireActiveCompany();
+    if (!roleCanAccessModule(context.role, module)) {
+      throw new AuthorizationDeniedError();
+    }
+    return context;
   }
 
   async setActiveCompany(companyId: string): Promise<CompanyAuthorization> {

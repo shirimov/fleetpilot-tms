@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
+import type { CompanyMembershipRole } from '@prisma/client';
 import {
-  alphaNavigation,
+  navigationForRole,
   navigationItemIsActive,
   type NavigationIconName,
 } from '@/components/app-shell/navigation';
@@ -16,6 +17,7 @@ type SidebarProps = {
   query?: string;
   onCollapse?: () => void;
   onMobileClose?: () => void;
+  role?: CompanyMembershipRole;
 };
 
 const iconPaths: Record<NavigationIconName, string> = {
@@ -63,12 +65,15 @@ export default function Sidebar(props: SidebarProps = {}) {
     query = '',
     onCollapse,
     onMobileClose,
+    role,
   } = props;
+  const navigation = navigationForRole(role);
+  const isMember = role === 'MEMBER';
 
   const content = (
     <>
       <div className="flex h-16 items-center border-b border-slate-800/80 px-4">
-        <Link href="/" onClick={onMobileClose} className="flex min-w-0 items-center gap-3">
+        <Link href={isMember ? '/tasks' : '/'} onClick={onMobileClose} className="flex min-w-0 items-center gap-3">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-blue-500 via-blue-500 to-cyan-400 shadow-lg shadow-blue-500/20">
             <svg viewBox="0 0 24 24" className="h-5 w-5 text-white" fill="none" stroke="currentColor" strokeWidth="1.8">
               <path d="m4 15 16-9-6 14-2-6-8 1Z" strokeLinejoin="round" />
@@ -88,7 +93,7 @@ export default function Sidebar(props: SidebarProps = {}) {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-4" aria-label="Primary navigation">
-        {alphaNavigation.map((section) => (
+        {navigation.map((section) => (
           <section key={section.label} className="mb-4">
             {!collapsed && (
               <h2 className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600">
@@ -144,6 +149,15 @@ export default function Sidebar(props: SidebarProps = {}) {
       </nav>
 
       <div className="border-t border-slate-800/80 p-3">
+        {isMember && (
+          <Link
+            href="/api/auth/signout"
+            onClick={onMobileClose}
+            className="mb-2 flex h-10 items-center justify-center rounded-lg px-2.5 text-sm font-medium text-slate-400 hover:bg-slate-900 hover:text-white"
+          >
+            {collapsed ? '↪' : 'Sign out'}
+          </Link>
+        )}
         <div className={`rounded-xl border border-slate-800 bg-slate-900/60 ${collapsed ? 'p-2' : 'p-3'}`}>
           <div className="flex items-center gap-2">
             <span className="relative flex h-2.5 w-2.5 shrink-0">

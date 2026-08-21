@@ -1,7 +1,14 @@
+import type { CompanyMembershipRole } from '@prisma/client';
+import {
+  roleCanAccessModule,
+  type FleetPilotModule,
+} from '@/lib/auth/module-permissions';
+
 export type NavigationItem = {
   href: string;
   label: string;
   icon: NavigationIconName;
+  module: FleetPilotModule;
   unavailable?: boolean;
 };
 
@@ -31,42 +38,52 @@ export const alphaNavigation: NavigationSection[] = [
   {
     label: 'Operations',
     items: [
-      { href: '/', label: 'Dashboard', icon: 'dashboard' },
-      { href: '/loads?view=dispatch', label: 'Dispatch Board', icon: 'dispatch' },
-      { href: '/loads?view=loads', label: 'Loads', icon: 'loads' },
-      { href: '/loads?view=customers', label: 'Customers', icon: 'customers' },
+      { href: '/', label: 'Dashboard', icon: 'dashboard', module: 'operations' },
+      { href: '/loads?view=dispatch', label: 'Dispatch Board', icon: 'dispatch', module: 'operations' },
+      { href: '/loads?view=loads', label: 'Loads', icon: 'loads', module: 'operations' },
+      { href: '/loads?view=customers', label: 'Customers', icon: 'customers', module: 'operations' },
     ],
   },
   {
     label: 'Fleet',
     items: [
-      { href: '/trucks', label: 'Trucks', icon: 'trucks' },
-      { href: '/loads?view=trailers', label: 'Trailers', icon: 'trailers' },
-      { href: '/drivers', label: 'Drivers', icon: 'drivers' },
-      { href: '/inspections', label: 'Inspections', icon: 'inspections' },
+      { href: '/trucks', label: 'Trucks', icon: 'trucks', module: 'fleet' },
+      { href: '/loads?view=trailers', label: 'Trailers', icon: 'trailers', module: 'fleet' },
+      { href: '/drivers', label: 'Drivers', icon: 'drivers', module: 'fleet' },
+      { href: '/inspections', label: 'Inspections', icon: 'inspections', module: 'fleet' },
     ],
   },
   {
     label: 'Work Management',
-    items: [{ href: '/tasks', label: 'Task Manager', icon: 'tasks' }],
+    items: [{ href: '/tasks', label: 'Task Manager', icon: 'tasks', module: 'tasks' }],
   },
   {
     label: 'Finance',
     items: [
-      { href: '/settlements', label: 'Settlements', icon: 'settlements' },
-      { href: '/finance', label: 'Finance', icon: 'finance' },
+      { href: '/settlements', label: 'Settlements', icon: 'settlements', module: 'finance' },
+      { href: '/finance', label: 'Finance', icon: 'finance', module: 'finance' },
     ],
   },
   {
     label: 'Administration',
     items: [
-      { href: '/companies', label: 'Companies', icon: 'companies' },
-      { href: '/administration', label: 'Team', icon: 'team' },
-      { href: '/hr/employees', label: 'HR', icon: 'hr' },
-      { href: '/inbox', label: 'Inbox', icon: 'inbox', unavailable: true },
+      { href: '/companies', label: 'Companies', icon: 'companies', module: 'administration' },
+      { href: '/administration', label: 'Team', icon: 'team', module: 'administration' },
+      { href: '/hr/employees', label: 'HR', icon: 'hr', module: 'hr' },
+      { href: '/inbox', label: 'Inbox', icon: 'inbox', module: 'administration', unavailable: true },
     ],
   },
 ];
+
+export function navigationForRole(role: CompanyMembershipRole | undefined) {
+  if (!role) return [];
+  return alphaNavigation
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => roleCanAccessModule(role, item.module)),
+    }))
+    .filter((section) => section.items.length > 0);
+}
 
 export function navigationItemIsActive(
   itemHref: string,
