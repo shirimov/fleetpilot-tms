@@ -81,6 +81,52 @@ test.beforeEach(async ({ page }) => {
   await mockShell(page);
 });
 
+test('MEMBER sees Task Manager and sign out without unfinished modules', async ({
+  page,
+}) => {
+  await page.unroute('**/api/auth/company');
+  await page.route('**/api/auth/company', (route) =>
+    route.fulfill({
+      json: {
+        user: {
+          displayName: 'Task Member',
+          email: 'member@fleetpilot.test',
+          image: null,
+        },
+        activeCompanyId: 'company-member',
+        companies: [
+          {
+            id: 'company-member',
+            name: 'Member Transport',
+            role: 'MEMBER',
+          },
+        ],
+      },
+    }),
+  );
+
+  await page.goto('/tasks');
+  const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
+  await expect(navigation.getByRole('link', { name: 'Task Manager' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Sign out' })).toBeVisible();
+  for (const restrictedLabel of [
+    'Dashboard',
+    'Dispatch Board',
+    'Loads',
+    'Customers',
+    'Trucks',
+    'Drivers',
+    'Finance',
+    'Companies',
+    'Team',
+    'HR',
+  ]) {
+    await expect(
+      navigation.getByRole('link', { name: restrictedLabel, exact: true }),
+    ).toHaveCount(0);
+  }
+});
+
 test('renders the modern dashboard without requesting QuickManage', async ({ page }) => {
   let quickManageRequests = 0;
   page.on('request', (request) => {

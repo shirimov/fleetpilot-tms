@@ -194,6 +194,25 @@ test('selects a deterministic active company and enforces minimum roles', async 
   );
 });
 
+test('enforces module grants without weakening active-company membership', async () => {
+  activeSession = { user: { id: userId } };
+  await assert.doesNotReject(authorization.requireModule('tasks'));
+  await assert.doesNotReject(authorization.requireModule('profile'));
+  await assert.rejects(
+    authorization.requireModule('administration'),
+    AuthorizationDeniedError,
+  );
+  await assert.rejects(
+    authorization.requireModule('operations'),
+    AuthorizationDeniedError,
+  );
+
+  await authorization.setActiveCompany(secondCompanyId);
+  await assert.doesNotReject(authorization.requireModule('administration'));
+  await assert.doesNotReject(authorization.requireModule('operations'));
+  await authorization.setActiveCompany(firstCompanyId);
+});
+
 test('switches active company only after validating membership', async () => {
   activeSession = { user: { id: userId } };
   const switched = await authorization.setActiveCompany(secondCompanyId);

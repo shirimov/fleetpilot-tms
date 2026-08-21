@@ -142,6 +142,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         query=""
         onCollapse={toggleCollapsed}
         onMobileClose={() => setMobileOpen(false)}
+        role={activeCompany?.role}
       />
 
       <div
