@@ -66,4 +66,3 @@ test('public Telegram webhook stays available for secret-token authentication', 
   assert.equal(moduleForPath('/api/integrations/telegram/webhook'), null);
   assert.equal(moduleForPath('/api/telegram/webhook'), null);
 });
-
