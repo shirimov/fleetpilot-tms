@@ -127,6 +127,35 @@ test('MEMBER sees Task Manager and sign out without unfinished modules', async (
   }
 });
 
+test('Sign out uses the Auth.js POST flow and stays signed out after refresh', async ({
+  page,
+}) => {
+  let signOutMethod = '';
+  let signOutBody = '';
+  await page.route('**/api/auth/csrf', (route) =>
+    route.fulfill({ json: { csrfToken: 'playwright-csrf-token' } }),
+  );
+  await page.route('**/api/auth/signout', async (route) => {
+    signOutMethod = route.request().method();
+    signOutBody = route.request().postData() ?? '';
+    await route.fulfill({
+      json: { url: 'http://127.0.0.1:3100/login' },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Open profile menu' }).click();
+  await page.getByRole('menuitem', { name: 'Sign out' }).click();
+
+  await expect(page).toHaveURL('/login');
+  expect(signOutMethod).toBe('POST');
+  expect(signOutBody).toContain('csrfToken=playwright-csrf-token');
+  expect(signOutBody).toContain('callbackUrl=%2Flogin');
+  await page.reload();
+  await expect(page).toHaveURL('/login');
+  await expect(page.getByRole('heading', { name: 'Secure sign in' })).toBeVisible();
+});
+
 test('renders the modern dashboard without requesting QuickManage', async ({ page }) => {
   let quickManageRequests = 0;
   page.on('request', (request) => {

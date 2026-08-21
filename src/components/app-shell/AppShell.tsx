@@ -1,9 +1,9 @@
 'use client';
 
 import { type KeyboardEvent, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
+import SignOutButton from '@/components/auth/SignOutButton';
 
 type CompanyContext = {
   user: {
@@ -240,13 +240,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                       </p>
                     )}
                   </div>
-                  <Link
-                    href="/api/auth/signout"
+                  <SignOutButton
                     role="menuitem"
                     className="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900 hover:text-white"
                   >
                     Sign out
-                  </Link>
+                  </SignOutButton>
                 </div>
               )}
             </div>
