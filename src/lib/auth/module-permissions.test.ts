@@ -66,3 +66,16 @@ test('public Telegram webhook stays available for secret-token authentication', 
   assert.equal(moduleForPath('/api/integrations/telegram/webhook'), null);
   assert.equal(moduleForPath('/api/telegram/webhook'), null);
 });
+
+test('Auth.js session routes and login are never module-restricted', () => {
+  for (const pathname of [
+    '/login',
+    '/api/auth/csrf',
+    '/api/auth/session',
+    '/api/auth/signout',
+    '/api/auth/callback/github',
+  ]) {
+    assert.equal(moduleForPath(pathname), null, pathname);
+  }
+  assert.equal(moduleForPath('/api/auth/company'), 'profile');
+});

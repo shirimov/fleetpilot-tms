@@ -10,6 +10,7 @@ import {
   type NavigationIconName,
 } from '@/components/app-shell/navigation';
 import ModalLayer from '@/components/ui/ModalLayer';
+import SignOutButton from '@/components/auth/SignOutButton';
 
 type SidebarProps = {
   collapsed?: boolean;
@@ -150,13 +151,11 @@ export default function Sidebar(props: SidebarProps = {}) {
 
       <div className="border-t border-slate-800/80 p-3">
         {isMember && (
-          <Link
-            href="/api/auth/signout"
-            onClick={onMobileClose}
+          <SignOutButton
             className="mb-2 flex h-10 items-center justify-center rounded-lg px-2.5 text-sm font-medium text-slate-400 hover:bg-slate-900 hover:text-white"
           >
             {collapsed ? '↪' : 'Sign out'}
-          </Link>
+          </SignOutButton>
         )}
         <div className={`rounded-xl border border-slate-800 bg-slate-900/60 ${collapsed ? 'p-2' : 'p-3'}`}>
           <div className="flex items-center gap-2">
