@@ -61,7 +61,10 @@ They expire after 15 minutes and an atomic conditional update makes them
 single-use under concurrent requests. Request identifiers are HMAC-hashed with
 `AUTH_SECRET`; requests are rate-limited over 15 minutes by both email and
 source IP. Resend receives the link over HTTPS, and automated tests replace
-delivery with an in-process mock.
+delivery with an in-process mock. Resend delivery makes one attempt with a
+10-second native `AbortSignal` timeout; timeout and provider failures are
+reported internally as a sanitized delivery error while the public response
+remains generic.
 
 Pre-provisioning a user by email is an invitation and must use an address whose
 ownership has been independently verified. Stale pre-provisioned users should

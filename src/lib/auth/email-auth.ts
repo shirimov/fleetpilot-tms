@@ -7,7 +7,15 @@ const TOKEN_LIFETIME_MS = 15 * 60 * 1000;
 const RATE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_RATE_LIMIT = 5;
 const IP_RATE_LIMIT = 20;
+export const RESEND_DELIVERY_TIMEOUT_MS = 10_000;
 export const EMAIL_AUTH_PROVIDER_ID = 'email-magic-link';
+
+export class EmailDeliveryError extends Error {
+  constructor() {
+    super('Email delivery failed.');
+    this.name = 'EmailDeliveryError';
+  }
+}
 
 export function emailAuthIsEnabled() {
   return process.env.EMAIL_AUTH_ENABLED?.trim().toLowerCase() === 'true';
@@ -48,21 +56,27 @@ export const sendEmailMagicLink: EmailDelivery = async ({
   const from = process.env.EMAIL_AUTH_FROM?.trim();
   if (!apiKey || !from) throw new Error('Email delivery is not configured.');
 
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from,
-      to: [email],
-      subject: 'Sign in to FleetPilot',
-      html: `<p>Use the secure link below to sign in to FleetPilot.</p><p><a href="${magicLink}">Sign in to FleetPilot</a></p><p>This link expires in ${expiresInMinutes} minutes and can only be used once.</p>`,
-      text: `Sign in to FleetPilot: ${magicLink}\n\nThis link expires in ${expiresInMinutes} minutes and can only be used once.`,
-    }),
-  });
-  if (!response.ok) throw new Error('Email delivery failed.');
+  let response: Response;
+  try {
+    response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [email],
+        subject: 'Sign in to FleetPilot',
+        html: `<p>Use the secure link below to sign in to FleetPilot.</p><p><a href="${magicLink}">Sign in to FleetPilot</a></p><p>This link expires in ${expiresInMinutes} minutes and can only be used once.</p>`,
+        text: `Sign in to FleetPilot: ${magicLink}\n\nThis link expires in ${expiresInMinutes} minutes and can only be used once.`,
+      }),
+      signal: AbortSignal.timeout(RESEND_DELIVERY_TIMEOUT_MS),
+    });
+  } catch {
+    throw new EmailDeliveryError();
+  }
+  if (!response.ok) throw new EmailDeliveryError();
 };
 
 export class EmailAuthService {
