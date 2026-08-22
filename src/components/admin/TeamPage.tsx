@@ -14,6 +14,7 @@ type Member = {
     email: string;
     image?: string | null;
     isActive: boolean;
+    hasSignedIn: boolean;
   };
   openTasks: number;
   overdueTasks: number;
@@ -128,6 +129,7 @@ export default function TeamPage() {
               <th className="p-2">Email</th>
               <th className="p-2">Role</th>
               <th className="p-2">Status</th>
+              <th className="p-2">Account</th>
               <th className="p-2">Open</th>
               <th className="p-2">Overdue</th>
               <th className="p-2">Due Today</th>
@@ -156,6 +158,14 @@ export default function TeamPage() {
                 <td className="p-2">{member.user.email}</td>
                 <td className="p-2">{member.role}</td>
                 <td className="p-2">{member.user.isActive ? 'Active' : 'Inactive'}</td>
+                <td className="p-2">
+                  <div className="text-sm">
+                    <div>{member.user.hasSignedIn ? 'Signed in' : 'Not signed in yet'}</div>
+                    <div className="text-xs text-slate-400">
+                      {member.user.isActive ? 'Active' : 'Inactive'}
+                    </div>
+                  </div>
+                </td>
                 <td className="p-2">{member.openTasks}</td>
                 <td className="p-2">{member.overdueTasks}</td>
                 <td className="p-2">{member.dueToday}</td>

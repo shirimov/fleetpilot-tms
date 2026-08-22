@@ -134,6 +134,7 @@ model User {
   updatedAt       DateTime @updatedAt
 
   authAccounts             AuthAccount[]
+  emailSignInTokens        EmailSignInToken[]
   memberships              CompanyMembership[]
   taskComments             TaskComment[]
   taskActivities           TaskActivity[]
@@ -167,6 +168,33 @@ model AuthAccount {
 
   @@unique([provider, providerAccountId])
   @@index([userId])
+}
+
+model EmailSignInToken {
+  id         String    @id @default(cuid())
+  userId     String
+  email      String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([email, createdAt])
+  @@index([expiresAt])
+}
+
+model EmailSignInRequest {
+  id        String   @id @default(cuid())
+  emailHash String
+  ipHash    String
+  createdAt DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
 }
 
 model CompanyMembership {

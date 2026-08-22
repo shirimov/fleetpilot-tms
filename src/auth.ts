@@ -1,10 +1,15 @@
 import NextAuth from 'next-auth';
 import GitHub from 'next-auth/providers/github';
+import Credentials from 'next-auth/providers/credentials';
 import {
   accountLinkingService,
   selectVerifiedPrimaryGitHubEmail,
   type GitHubEmail,
 } from '@/lib/auth/account-linking';
+import {
+  EMAIL_AUTH_PROVIDER_ID,
+  emailAuthService,
+} from '@/lib/auth/email-auth';
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
   providers: [
@@ -43,11 +48,33 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         },
       },
     }),
+    Credentials({
+      id: EMAIL_AUTH_PROVIDER_ID,
+      name: 'Email magic link',
+      credentials: { token: { label: 'Token', type: 'text' } },
+      async authorize(credentials) {
+        const rawToken =
+          typeof credentials?.token === 'string' ? credentials.token : '';
+        const user = await emailAuthService.consume(rawToken);
+        if (!user) return null;
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.displayName,
+          image: user.image,
+        };
+      },
+    }),
   ],
   session: { strategy: 'jwt' },
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, user }) {
       if (!account) return token;
+      if (account.provider === EMAIL_AUTH_PROVIDER_ID) {
+        if (!user?.id) throw new Error('Email verification did not resolve a user.');
+        token.userId = user.id;
+        return token;
+      }
       if (!token.email) {
         throw new Error('The authentication provider did not return an email.');
       }

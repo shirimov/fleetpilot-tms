@@ -56,7 +56,16 @@ export async function GET(request: Request) {
           where: { companyId },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
           include: {
-            user: { select: { id: true, displayName: true, email: true, image: true, isActive: true } },
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                email: true,
+                image: true,
+                isActive: true,
+                authAccounts: { select: { id: true }, take: 1 },
+              },
+            },
           },
         }),
         prisma.taskCard.groupBy({
@@ -128,6 +137,7 @@ export async function GET(request: Request) {
         email: m.user.email,
         image: m.user.image,
         isActive: m.user.isActive,
+        hasSignedIn: m.user.authAccounts.length > 0,
       },
       openTasks: openMap.get(m.user.id) ?? 0,
       overdueTasks: overdueMap.get(m.user.id) ?? 0,
