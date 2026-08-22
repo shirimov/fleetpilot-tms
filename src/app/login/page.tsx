@@ -1,6 +1,10 @@
 import { signIn } from '@/auth';
 import { EmailSignInForm } from '@/components/auth/EmailSignInForm';
 
+// Email authentication is an operator-controlled runtime setting. Rendering
+// this page statically would freeze the value from the image build instead.
+export const dynamic = 'force-dynamic';
+
 export default function LoginPage() {
   return (
     <main className="grid min-h-screen place-items-center bg-slate-950 p-6 text-white">
