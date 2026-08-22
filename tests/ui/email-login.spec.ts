@@ -6,7 +6,7 @@ function hashToken(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
 
-test('login offers GitHub and accessible employee email sign in with generic success', async ({ page }) => {
+test('runtime-enabled email login remains available when the image was built disabled', async ({ page }) => {
   await page.route('**/api/auth/email/request', (route) =>
     route.fulfill({
       status: 202,
