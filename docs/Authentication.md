@@ -1,7 +1,7 @@
 # Authentication and Company Authorization
 
-FleetPilot uses Auth.js with GitHub OAuth for its first trusted identity
-provider. The browser receives an encrypted, HttpOnly session cookie. Route
+FleetPilot uses Auth.js with GitHub OAuth and an employee-friendly email magic
+link. The browser receives an encrypted, HttpOnly session cookie. Route
 handlers derive the internal user ID from the verified server session and then
 reload the user and company membership from PostgreSQL before authorizing data.
 
@@ -42,9 +42,29 @@ must remain outside source control.
 OAuth accounts are linked by provider account ID. FleetPilot always fetches the
 GitHub email list and requires the primary address to be verified. The first
 successful login creates an internal user or links a pre-provisioned user that
-has no authentication account. Automatic linking is rejected if that email is
-already connected to another provider account. A user must remain active and
+has no authentication account. An additional provider may link to that same
+user only through the provider's verified normalized email; a second account
+from the same provider is rejected. A user must remain active and
 have a company membership before company data is accessible.
+
+Email authentication is fail-closed behind `EMAIL_AUTH_ENABLED`. It requires
+`EMAIL_AUTH_RESEND_API_KEY`, `EMAIL_AUTH_FROM`, `AUTH_SECRET`, and the canonical
+HTTPS `AUTH_URL`. Only an existing, active user with a company membership
+receives a link. The public response is identical for known, unknown, inactive,
+membership-free, and rate-limited addresses.
+
+Magic links contain 32 random bytes in a URL fragment so the raw token is not
+sent in an HTTP request line, proxy log, or referrer. PostgreSQL stores only
+their SHA-256 hash,
+the normalized intended email, user relation, expiry, and consumption time.
+They expire after 15 minutes and an atomic conditional update makes them
+single-use under concurrent requests. Request identifiers are HMAC-hashed with
+`AUTH_SECRET`; requests are rate-limited over 15 minutes by both email and
+source IP. Resend receives the link over HTTPS, and automated tests replace
+delivery with an in-process mock. Resend delivery makes one attempt with a
+10-second native `AbortSignal` timeout; timeout and provider failures are
+reported internally as a sanitized delivery error while the public response
+remains generic.
 
 Pre-provisioning a user by email is an invitation and must use an address whose
 ownership has been independently verified. Stale pre-provisioned users should

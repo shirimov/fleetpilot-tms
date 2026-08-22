@@ -61,7 +61,7 @@ test('links a stable provider account without creating duplicate users', async (
   );
 });
 
-test('refuses automatic email linking to an already-linked user', async () => {
+test('refuses a second account from the same provider for one email', async () => {
   const email = `protected-${suffix}@example.test`;
   const existing = await linkingService.link({
     provider: 'github',
@@ -100,4 +100,29 @@ test('links a pre-provisioned user only when no provider account exists', async 
     displayName: 'Provider display name',
   });
   assert.equal(linked.id, invited.id);
+});
+
+test('links GitHub and verified email authentication to the same user', async () => {
+  const email = `coexist-${suffix}@example.test`;
+  const invited = await prisma.user.create({
+    data: { email, displayName: 'Multi-provider member' },
+  });
+  userIds.push(invited.id);
+  await prisma.authAccount.create({
+    data: {
+      userId: invited.id,
+      provider: 'email-magic-link',
+      providerAccountId: email,
+    },
+  });
+
+  const linked = await linkingService.link({
+    provider: 'github',
+    providerAccountId: `coexist-github-${suffix}`,
+    email,
+    displayName: 'Multi-provider member',
+  });
+  assert.equal(linked.id, invited.id);
+  assert.equal(await prisma.user.count({ where: { email } }), 1);
+  assert.equal(await prisma.authAccount.count({ where: { userId: invited.id } }), 2);
 });

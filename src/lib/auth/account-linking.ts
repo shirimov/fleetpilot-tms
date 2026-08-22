@@ -61,10 +61,14 @@ export class AccountLinkingService {
           const existingUser = await transaction.user.findUnique({
             where: { email },
             include: {
-              authAccounts: { select: { id: true }, take: 1 },
+              authAccounts: { select: { provider: true } },
             },
           });
-          if (existingUser?.authAccounts.length) {
+          if (
+            existingUser?.authAccounts.some(
+              ({ provider }) => provider === identity.provider,
+            )
+          ) {
             throw new OAuthAccountLinkError();
           }
 
