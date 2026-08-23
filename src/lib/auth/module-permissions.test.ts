@@ -12,6 +12,7 @@ test('MEMBER lands on Task Manager and can use Task and profile modules', () => 
   assert.equal(roleCanAccessModule('MEMBER', 'tasks'), true);
   assert.equal(roleCanAccessModule('MEMBER', 'profile'), true);
   assert.equal(roleCanAccessPath('MEMBER', '/tasks'), true);
+  assert.equal(roleCanAccessPath('MEMBER', '/profile'), true);
   assert.equal(roleCanAccessPath('MEMBER', '/api/tasks/cards/card-id/comments'), true);
   assert.equal(roleCanAccessPath('MEMBER', '/api/tasks/cards/card-id/checklist'), true);
   assert.equal(roleCanAccessPath('MEMBER', '/api/tasks/cards/card-id/telegram'), true);
@@ -48,6 +49,7 @@ test('OWNER and ADMIN retain access to every current module', () => {
     for (const pathname of [
       '/',
       '/tasks',
+      '/profile',
       '/administration',
       '/loads',
       '/trucks',
