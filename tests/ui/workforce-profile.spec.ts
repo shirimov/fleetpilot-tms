@@ -19,11 +19,13 @@ const profilePayload = {
     freeCapacityMinutes: 180, utilizationPercentage: 53.8, dueTodayCount: 2, overdueCount: 1,
     taskCount: { complete: 3, total: 5 }, weightedCompletion: { percentage: 62 },
   },
+  permissions: { canManageProfile: true, canViewCompensation: true },
 };
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/auth/company', (route) => route.fulfill({ json: { user: { id: 'owner', displayName: 'Owner', email: 'owner@example.test' }, companies: [] } }));
   await page.route('**/api/workforce/employees/employee-julia', (route) => route.fulfill({ json: profilePayload }));
+  await page.route('**/api/workforce/skills', (route) => route.fulfill({ json: [{ id: 'insurance', name: 'Insurance', isActive: true }, { id: 'safety', name: 'Safety', isActive: true }] }));
   await page.route('**/api/workforce/employees/employee-julia/schedule', async (route) => route.fulfill({ json: { schedule: (await route.request().postDataJSON()).days } }));
 });
 

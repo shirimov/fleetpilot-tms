@@ -14,7 +14,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       workforceProfileService.getProfile(context, id),
       capacityService.forEmployeeDay(context.companyId, id),
     ]);
-    return NextResponse.json({ profile, capacity }, { headers: { 'Cache-Control': 'private, no-store' } });
+    return NextResponse.json({ profile, capacity, permissions: { canManageProfile: context.role !== 'MEMBER', canViewCompensation: context.role !== 'MEMBER' } }, { headers: { 'Cache-Control': 'private, no-store' } });
   } catch (error) {
     return workforceRouteErrorResponse(error);
   }
