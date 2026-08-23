@@ -25,6 +25,16 @@ type Member = {
     username: string | null;
   };
   employee: { id: string; preferredName: string | null; jobTitle: string | null; department: string | null; photoUrl: string | null } | null;
+  employeeProfileStatus: 'LINKED' | 'NOT_CREATED' | 'UNLINKED_AVAILABLE';
+};
+
+type EmployeeOption = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email?: string | null;
+  jobTitle?: string | null;
+  department?: string | null;
 };
 
 type TelegramInvite = {
@@ -61,6 +71,7 @@ export default function TeamPage() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [telegramAvailable, setTelegramAvailable] = useState(false);
   const [invite, setInvite] = useState<TelegramInvite | null>(null);
+  const [profileMember, setProfileMember] = useState<Member | null>(null);
 
   async function load() {
     setLoading(true);
@@ -136,6 +147,7 @@ export default function TeamPage() {
               <th className="p-2">Overdue</th>
               <th className="p-2">Due Today</th>
               <th className="p-2">Telegram</th>
+              <th className="p-2">Employee Profile</th>
               <th className="p-2">Actions</th>
             </tr>
           </thead>
@@ -186,8 +198,24 @@ export default function TeamPage() {
                   </div>
                 </td>
                 <td className="p-2">
+                  {member.employeeProfileStatus === 'LINKED'
+                    ? 'Linked'
+                    : member.employeeProfileStatus === 'UNLINKED_AVAILABLE'
+                      ? 'Unlinked employee available'
+                      : 'Not created'}
+                </td>
+                <td className="p-2">
                   <div className="flex flex-wrap gap-2">
                     {member.employee && <Link href={`/hr/employees/${member.employee.id}`} className="rounded border border-white/10 px-2 py-1 text-xs hover:bg-white/5">View Profile</Link>}
+                    {!member.employee && currentUserRole !== 'MEMBER' ? (
+                      <button
+                        type="button"
+                        onClick={() => setProfileMember(member)}
+                        className="btn btn-sm"
+                      >
+                        Create Employee Profile
+                      </button>
+                    ) : null}
                     <TelegramControl
                       member={member}
                       currentUserId={currentUserId}
@@ -226,7 +254,200 @@ export default function TeamPage() {
           onClose={() => setInvite(null)}
         />
       ) : null}
+
+      {profileMember ? (
+        <EmployeeProfileOnboardingModal
+          member={profileMember}
+          onClose={() => setProfileMember(null)}
+          onSaved={async () => {
+            setProfileMember(null);
+            await load();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function splitDisplayName(displayName: string) {
+  const parts = displayName.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] ?? '',
+    lastName: parts.slice(1).join(' '),
+  };
+}
+
+function EmployeeProfileOnboardingModal({
+  member,
+  onClose,
+  onSaved,
+}: {
+  member: Member;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const names = splitDisplayName(member.user.displayName);
+  const [form, setForm] = useState({
+    firstName: names.firstName,
+    lastName: names.lastName,
+    preferredName: member.user.displayName,
+    jobTitle: '',
+    department: '',
+    employmentType: 'FULL_TIME',
+    employmentStatus: 'ACTIVE',
+    startDate: '',
+    birthDate: '',
+    phone: '',
+    workLocation: '',
+    timezone: 'UTC',
+    managerId: '',
+    salary: '',
+    payType: 'SALARY',
+    payFrequency: 'MONTHLY',
+    currency: 'USD',
+    compensationEffectiveAt: '',
+    compensationNotes: '',
+  });
+  const [managers, setManagers] = useState<EmployeeOption[]>([]);
+  const [unlinkedEmployees, setUnlinkedEmployees] = useState<EmployeeOption[]>([]);
+  const [existingEmployeeId, setExistingEmployeeId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const firstNameRef = useRef<HTMLInputElement | null>(null);
+  const endpoint = `/api/company/team/${member.user.id}/employee-profile`;
+
+  useEffect(() => {
+    let active = true;
+    fetch(endpoint, { cache: 'no-store' })
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error ?? 'Profile options could not be loaded.');
+        return body as { managers: EmployeeOption[]; unlinkedEmployees: EmployeeOption[] };
+      })
+      .then((body) => {
+        if (!active) return;
+        setManagers(body.managers);
+        setUnlinkedEmployees(body.unlinkedEmployees);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : 'Profile options could not be loaded.');
+      });
+    return () => { active = false; };
+  }, [endpoint]);
+
+  function field(name: keyof typeof form, value: string) {
+    setForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function create(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          managerId: form.managerId || null,
+          salary: form.salary === '' ? null : Number(form.salary),
+          startDate: form.startDate || null,
+          birthDate: form.birthDate || null,
+          compensationEffectiveAt: form.compensationEffectiveAt || null,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'Employee profile could not be created.');
+      await onSaved();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Employee profile could not be created.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function linkExisting() {
+    if (!existingEmployeeId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: existingEmployeeId }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'Employee profile could not be linked.');
+      await onSaved();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Employee profile could not be linked.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inputClass = 'w-full rounded border border-white/10 bg-slate-950/50 px-3 py-2 text-sm';
+  return (
+    <ModalLayer
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      labelledBy="employee-profile-onboarding-title"
+      describedBy="employee-profile-onboarding-description"
+      initialFocusRef={firstNameRef}
+      onClose={onClose}
+    >
+      <button type="button" aria-hidden="true" tabIndex={-1} onClick={onClose} className="absolute inset-0 bg-black/60" />
+      <form onSubmit={(event) => void create(event)} className="relative z-10 max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-white/10 bg-slate-900 p-5">
+        <h2 id="employee-profile-onboarding-title" className="text-xl font-semibold">Create Employee Profile</h2>
+        <p id="employee-profile-onboarding-description" className="mt-1 text-sm text-slate-400">
+          Create and link an employee profile for {member.user.displayName}. This reuses the existing FleetPilot user.
+        </p>
+        <p className="mt-2 text-sm text-slate-300">Account email: {member.user.email}</p>
+        {error ? <div role="alert" className="mt-3 rounded bg-rose-400/10 p-3 text-sm text-rose-300">{error}</div> : null}
+        <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          <label className="text-sm">First name<input ref={firstNameRef} required value={form.firstName} onChange={(event) => field('firstName', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Last name<input required value={form.lastName} onChange={(event) => field('lastName', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Preferred name<input value={form.preferredName} onChange={(event) => field('preferredName', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Job title<input value={form.jobTitle} onChange={(event) => field('jobTitle', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Department<input value={form.department} onChange={(event) => field('department', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Phone<input value={form.phone} onChange={(event) => field('phone', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Work location<input value={form.workLocation} onChange={(event) => field('workLocation', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Timezone<input required value={form.timezone} onChange={(event) => field('timezone', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Employment type<select value={form.employmentType} onChange={(event) => field('employmentType', event.target.value)} className={inputClass}>{['FULL_TIME', 'PART_TIME', 'CONTRACTOR', 'TEMPORARY'].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label className="text-sm">Employment status<select value={form.employmentStatus} onChange={(event) => field('employmentStatus', event.target.value)} className={inputClass}>{['ACTIVE', 'LEAVE', 'INACTIVE', 'TERMINATED'].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label className="text-sm">Start date<input type="date" value={form.startDate} onChange={(event) => field('startDate', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Birth date<input type="date" value={form.birthDate} onChange={(event) => field('birthDate', event.target.value)} className={inputClass} /></label>
+          <label className="text-sm">Manager<select value={form.managerId} onChange={(event) => field('managerId', event.target.value)} className={inputClass}><option value="">No manager</option>{managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.firstName} {manager.lastName}{manager.jobTitle ? ` — ${manager.jobTitle}` : ''}</option>)}</select></label>
+        </div>
+        <fieldset className="mt-5 rounded-lg border border-white/10 p-4">
+          <legend className="px-2 text-sm font-medium">Compensation</legend>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm">Salary / rate<input type="number" min="0" step="0.01" value={form.salary} onChange={(event) => field('salary', event.target.value)} className={inputClass} /></label>
+            <label className="text-sm">Currency<input value={form.currency} onChange={(event) => field('currency', event.target.value)} className={inputClass} /></label>
+            <label className="text-sm">Pay type<select value={form.payType} onChange={(event) => field('payType', event.target.value)} className={inputClass}><option>SALARY</option><option>HOURLY</option></select></label>
+            <label className="text-sm">Pay frequency<select value={form.payFrequency} onChange={(event) => field('payFrequency', event.target.value)} className={inputClass}>{['WEEKLY', 'BIWEEKLY', 'SEMIMONTHLY', 'MONTHLY'].map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label className="text-sm">Effective date<input type="date" value={form.compensationEffectiveAt} onChange={(event) => field('compensationEffectiveAt', event.target.value)} className={inputClass} /></label>
+            <label className="text-sm">Compensation notes<input value={form.compensationNotes} onChange={(event) => field('compensationNotes', event.target.value)} className={inputClass} /></label>
+          </div>
+        </fieldset>
+        {unlinkedEmployees.length > 0 ? (
+          <section className="mt-5 rounded-lg border border-blue-300/20 bg-blue-300/5 p-4">
+            <h3 className="font-medium">Link Existing Employee</h3>
+            <p className="mt-1 text-xs text-slate-400">Select explicitly. FleetPilot never links by name or email automatically.</p>
+            <div className="mt-3 flex gap-2">
+              <select aria-label="Existing employee" value={existingEmployeeId} onChange={(event) => setExistingEmployeeId(event.target.value)} className={inputClass}>
+                <option value="">Select an unlinked employee</option>
+                {unlinkedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.firstName} {employee.lastName}{employee.jobTitle ? ` — ${employee.jobTitle}` : ''}</option>)}
+              </select>
+              <button type="button" disabled={busy || !existingEmployeeId} onClick={() => void linkExisting()} className="btn btn-sm">Link Existing Employee</button>
+            </div>
+          </section>
+        ) : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
+          <button type="submit" disabled={busy} className="btn btn-primary">{busy ? 'Saving…' : 'Create and Link Profile'}</button>
+        </div>
+      </form>
+    </ModalLayer>
   );
 }
 
