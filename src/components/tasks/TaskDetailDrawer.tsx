@@ -11,7 +11,7 @@ import TaskDescriptionEditor, {
   extractMentionUserIds,
 } from './TaskDescriptionEditor';
 import TaskDeadline from './TaskDeadline';
-import { TaskAssigneeSelect, TaskDueDateInput, TaskPrioritySelect, TaskStatusSelect } from './TaskFields';
+import { TaskAssigneeSelect, TaskDueDateInput, TaskDurationInput, TaskEffortSelect, TaskPrioritySelect, TaskStatusSelect } from './TaskFields';
 
 type ChecklistItem = {
   id: string;
@@ -446,6 +446,9 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
               <label className="text-xs text-slate-500">Priority<span className="mt-1 block"><TaskPrioritySelect label="Task priority" value={card.priority} disabled={updating} onChange={(priority) => void updateOverview({ priority })} /></span></label>
               <label className="text-xs text-slate-500">Assignee<span className="mt-1 block"><TaskAssigneeSelect label="Task assignee" value={card.assigneeUserId ?? ''} legacyName={card.assignedTo} assignees={assignees} disabled={updating} onChange={(assigneeUserId) => void updateOverview({ assigneeUserId })} /></span></label>
               <label className="text-xs text-slate-500">Due date and time<span className="mt-1 block"><TaskDueDateInput label="Task due date and time" value={card.dueDate} disabled={updating} onChange={(dueDate) => void updateOverview({ dueDate })} /></span></label>
+              <label className="text-xs text-slate-500">Effort<span className="mt-1 block"><TaskEffortSelect label="Task effort" value={card.effort ?? 3} disabled={updating} onChange={(effort) => void updateOverview({ effort })} /></span></label>
+              <label className="text-xs text-slate-500">Expected duration<span className="mt-1 block"><TaskDurationInput label="Expected duration" value={card.expectedDurationMinutes ?? null} disabled={updating} onChange={(expectedDurationMinutes) => void updateOverview({ expectedDurationMinutes })} /></span></label>
+              <label className="text-xs text-slate-500 sm:col-span-2">Blocked / waiting reason<select aria-label="Blocked or waiting reason" value={card.blockedReason ?? ''} disabled={updating} onChange={(event) => void updateOverview({ blockedReason: (event.target.value || null) as typeof card.blockedReason })} className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[#11151f] px-2 text-xs text-slate-200"><option value="">Not blocked</option><option value="WAITING_ON_CUSTOMER">Waiting on Customer</option><option value="WAITING_ON_DRIVER">Waiting on Driver</option><option value="WAITING_ON_VENDOR">Waiting on Vendor</option><option value="WAITING_ON_MANAGER">Waiting on Manager</option><option value="WAITING_ON_GOVERNMENT_DMV">Waiting on Government/DMV</option><option value="WAITING_ON_AMAZON">Waiting on Amazon</option><option value="WAITING_ON_INSURANCE">Waiting on Insurance</option><option value="TECHNICAL_ISSUE">Technical Issue</option><option value="OTHER">Other</option></select></label>
               <div className="sm:col-span-2 flex items-center justify-between border-t border-white/8 pt-3"><span className="text-xs text-slate-500">Countdown</span><TaskDeadline dueDate={card.dueDate} now={now} status={card.status} /></div>
             </div>
           </section>

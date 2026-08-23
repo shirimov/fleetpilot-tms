@@ -23,6 +23,12 @@ const baseProject: KanbanProject = {
           assigneeUserId: 'user-maya',
           assigneeUser: { id: 'user-maya', displayName: 'Maya Chen', image: null },
           dueDate: '2026-08-01T00:00:00.000Z',
+          effort: 5,
+          expectedDurationMinutes: 120,
+          blockedReason: 'WAITING_ON_VENDOR',
+          blockedSince: '2026-07-28T11:00:00.000Z',
+          blockedNote: 'Waiting for replacement part',
+          blockedClearedAt: null,
           order: 0,
           updatedAt: '2026-07-28T09:00:00.000Z',
           labels: [{ id: 'label-safety', name: 'Safety', color: '#ef4444' }],
@@ -222,6 +228,9 @@ async function mockTaskApis(page: Page) {
         ...(Object.hasOwn(body, 'description') ? { description: body.description } : {}),
         ...(Object.hasOwn(body, 'priority') ? { priority: body.priority } : {}),
         ...(Object.hasOwn(body, 'dueDate') ? { dueDate: body.dueDate } : {}),
+        ...(Object.hasOwn(body, 'effort') ? { effort: Number(body.effort) } : {}),
+        ...(Object.hasOwn(body, 'expectedDurationMinutes') ? { expectedDurationMinutes: body.expectedDurationMinutes === null ? null : Number(body.expectedDurationMinutes) } : {}),
+        ...(Object.hasOwn(body, 'blockedReason') ? { blockedReason: body.blockedReason } : {}),
         ...(Object.hasOwn(body, 'assigneeUserId')
           ? {
               assigneeUserId: body.assigneeUserId,
@@ -400,6 +409,22 @@ test('switches views, filters tasks, and keeps the legacy group visible', async 
   await expect(page.getByRole('button', { name: 'Complete trailer inspection' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Confirm driver availability' })).toBeHidden();
   await expect(page.getByText('Imported backlog')).toBeVisible();
+});
+
+test('shows effort, expected duration, and waiting metadata across Board, Table, and Drawer', async ({ page }) => {
+  await mockTaskApis(page);
+  await page.goto('/tasks');
+  const card = page.getByRole('article', { name: /Complete trailer inspection/ });
+  await expect(card.getByLabel('Effort for Complete trailer inspection')).toHaveValue('5');
+  await expect(card.getByText('120m')).toBeVisible();
+  await expect(card.getByText(/WAITING ON VENDOR/)).toBeVisible();
+  await page.getByRole('button', { name: 'Table' }).click();
+  await expect(page.getByRole('columnheader', { name: 'Effort' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Expected' })).toBeVisible();
+  await page.getByRole('button', { name: 'Complete trailer inspection' }).click();
+  await expect(page.getByLabel('Task effort')).toHaveValue('5');
+  await expect(page.getByLabel('Expected duration', { exact: true })).toHaveValue('120');
+  await expect(page.getByLabel('Blocked or waiting reason')).toHaveValue('WAITING_ON_VENDOR');
 });
 
 test('supports checklist and comment collaboration in the task drawer', async ({

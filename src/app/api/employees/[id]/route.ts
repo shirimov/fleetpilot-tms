@@ -28,6 +28,10 @@ export async function PUT(
     const { id } = await params;
     const context = await workforceAuthorizationService.requireEmployee(id);
     const data = await request.json();
+    if (data.managerId) {
+      const manager = await prisma.employee.findFirst({ where: { id: data.managerId, companyId: context.companyId }, select: { id: true } });
+      if (!manager || manager.id === id) return NextResponse.json({ error: 'managerId must reference another employee in this company.' }, { status: 400 });
+    }
     const employee = await prisma.employee.update({
       where: { id, companyId: context.companyId },
       data: {
@@ -37,10 +41,26 @@ export async function PUT(
         roleCustom: data.roleCustom || null,
         phone: data.phone || null,
         email: data.email || null,
+        preferredName: data.preferredName || null,
+        jobTitle: data.jobTitle || null,
+        department: data.department || null,
+        managerId: data.managerId || null,
+        workLocation: data.workLocation || null,
+        timezone: data.timezone || 'UTC',
+        employmentType: data.employmentType || 'FULL_TIME',
+        employmentStatus: data.employmentStatus || 'ACTIVE',
+        birthDate: data.birthDate ? new Date(data.birthDate) : null,
+        address: data.address || null,
+        emergencyContact: data.emergencyContact || null,
+        privateNotes: data.privateNotes || null,
         country: data.country || 'Turkmenistan',
         city: data.city || null,
         region: data.region || null,
         salary: data.salary ? parseFloat(data.salary) : null,
+        payType: data.payType || 'SALARY',
+        payFrequency: data.payFrequency || 'MONTHLY',
+        compensationEffectiveAt: data.compensationEffectiveAt ? new Date(data.compensationEffectiveAt) : null,
+        compensationNotes: data.compensationNotes || null,
         currency: data.currency || 'USD',
         paymentMethod: data.paymentMethod || 'Bank Transfer',
         startDate: data.startDate ? new Date(data.startDate) : null,

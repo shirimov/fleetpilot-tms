@@ -99,6 +99,8 @@ export default function TaskWorkspace() {
   const [newTaskStatus, setNewTaskStatus] = useState<TaskStatus>('TODO');
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>('MEDIUM');
   const [newTaskDueDate, setNewTaskDueDate] = useState('');
+  const [newTaskEffort, setNewTaskEffort] = useState(3);
+  const [newTaskExpectedDurationMinutes, setNewTaskExpectedDurationMinutes] = useState('');
   const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCreationError, setTaskCreationError] = useState('');
@@ -413,6 +415,8 @@ export default function TaskWorkspace() {
           title: newTaskTitle.trim(),
           priority: newTaskPriority,
           dueDate: localDateTimeToIso(newTaskDueDate),
+          effort: newTaskEffort,
+          expectedDurationMinutes: newTaskExpectedDurationMinutes ? Number(newTaskExpectedDurationMinutes) : null,
           assigneeUserId: newTaskAssigneeUserId || null,
         }),
       });
@@ -639,6 +643,8 @@ export default function TaskWorkspace() {
           status={newTaskStatus}
           priority={newTaskPriority}
           dueDate={newTaskDueDate}
+          effort={newTaskEffort}
+          expectedDurationMinutes={newTaskExpectedDurationMinutes}
           assigneeUserId={newTaskAssigneeUserId}
           assignees={assigneeOptions}
           pending={creatingTask}
@@ -647,6 +653,8 @@ export default function TaskWorkspace() {
           onStatusChange={setNewTaskStatus}
           onPriorityChange={setNewTaskPriority}
           onDueDateChange={setNewTaskDueDate}
+          onEffortChange={setNewTaskEffort}
+          onExpectedDurationMinutesChange={setNewTaskExpectedDurationMinutes}
           onAssigneeChange={setNewTaskAssigneeUserId}
           onSubmit={() => void createTask()}
           onClose={() => {

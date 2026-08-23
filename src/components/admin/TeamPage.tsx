@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
+import Link from 'next/link';
 
 type MemberRole = 'OWNER' | 'ADMIN' | 'MEMBER';
 
@@ -23,6 +24,7 @@ type Member = {
     connected: boolean;
     username: string | null;
   };
+  employee: { id: string; preferredName: string | null; jobTitle: string | null; department: string | null; photoUrl: string | null } | null;
 };
 
 type TelegramInvite = {
@@ -143,16 +145,16 @@ export default function TeamPage() {
                 <td className="p-2 align-middle">
                   <div className="flex items-center gap-2">
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-sm">
-                      {member.user.image ? (
+                      {member.employee?.photoUrl || member.user.image ? (
                         // eslint-disable-next-line @next/next/no-img-element -- user-provided remote avatars are not configured for next/image
-                        <img src={member.user.image} alt="" className="h-8 w-8 rounded-full" />
+                        <img src={member.employee?.photoUrl ?? member.user.image ?? ''} alt="" className="h-8 w-8 rounded-full object-cover" />
                       ) : (
                         (member.user.displayName || member.user.email)
                           .slice(0, 2)
                           .toUpperCase()
                       )}
                     </div>
-                    <div className="font-medium">{member.user.displayName}</div>
+                    <div><div className="font-medium">{member.employee?.preferredName || member.user.displayName}</div>{member.employee && <div className="text-xs text-slate-500">{member.employee.jobTitle || 'Team member'}{member.employee.department ? ` · ${member.employee.department}` : ''}</div>}</div>
                   </div>
                 </td>
                 <td className="p-2">{member.user.email}</td>
@@ -185,6 +187,7 @@ export default function TeamPage() {
                 </td>
                 <td className="p-2">
                   <div className="flex flex-wrap gap-2">
+                    {member.employee && <Link href={`/hr/employees/${member.employee.id}`} className="rounded border border-white/10 px-2 py-1 text-xs hover:bg-white/5">View Profile</Link>}
                     <TelegramControl
                       member={member}
                       currentUserId={currentUserId}

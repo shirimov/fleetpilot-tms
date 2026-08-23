@@ -31,6 +31,7 @@ const iconPaths: Record<NavigationIconName, string> = {
   drivers: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 9v-2a7 7 0 0 1 14 0v2H5Zm3-8 4 3 4-3',
   inspections: 'M7 3h10v3H7V3ZM5 5h14v16H5V5Zm3 6 2 2 5-5m-7 8h8',
   tasks: 'M5 4h14v16H5V4Zm3 5 2 2 5-5m-7 10h8',
+  profile: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0',
   settlements: 'M4 6h16v12H4V6Zm3 3h10M8 14h3',
   finance: 'M3 20h18M5 20V9m5 11V9m5 11V9m5 11V9M3 7l9-4 9 4H3Z',
   companies: 'M4 21V5h10v16M14 9h6v12M7 8h3m-3 4h3m-3 4h3m10-3h-3m3 4h-3',

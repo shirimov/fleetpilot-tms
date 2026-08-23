@@ -8,8 +8,8 @@ function labelsFor(role: 'OWNER' | 'ADMIN' | 'MEMBER') {
   );
 }
 
-test('MEMBER navigation contains only Task Manager', () => {
-  assert.deepEqual(labelsFor('MEMBER'), ['Task Manager']);
+test('MEMBER navigation contains only Task Manager and their profile', () => {
+  assert.deepEqual(labelsFor('MEMBER'), ['Task Manager', 'My Profile']);
 });
 
 test('OWNER and ADMIN navigation preserve the Alpha modules', () => {

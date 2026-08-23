@@ -45,6 +45,7 @@ const PAGE_MODULES: ReadonlyArray<[prefix: string, module: FleetPilotModule]> = 
 const API_MODULES: ReadonlyArray<[prefix: string, module: FleetPilotModule]> = [
   ['/api/tasks', 'tasks'],
   ['/api/auth/company', 'profile'],
+  ['/api/workforce', 'profile'],
   ['/api/company/team', 'administration'],
   ['/api/companies', 'administration'],
   ['/api/inbox', 'administration'],

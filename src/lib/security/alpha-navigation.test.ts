@@ -19,6 +19,7 @@ test('alpha navigation exposes completed modules and marks blocked inbox unavail
       'Drivers',
       'Inspections',
       'Task Manager',
+      'My Profile',
       'Settlements',
       'Finance',
       'Companies',

@@ -64,6 +64,7 @@ export async function GET(request: Request) {
                 image: true,
                 isActive: true,
                 authAccounts: { select: { id: true }, take: 1 },
+                employeeProfile: { select: { id: true, preferredName: true, jobTitle: true, department: true, photoStorageKey: true } },
               },
             },
           },
@@ -143,6 +144,13 @@ export async function GET(request: Request) {
       overdueTasks: overdueMap.get(m.user.id) ?? 0,
       dueToday: dueTodayMap.get(m.user.id) ?? 0,
       telegram: telegramMap.get(m.user.id) ?? { connected: false, username: null },
+      employee: m.user.employeeProfile ? {
+        id: m.user.employeeProfile.id,
+        preferredName: m.user.employeeProfile.preferredName,
+        jobTitle: m.user.employeeProfile.jobTitle,
+        department: m.user.employeeProfile.department,
+        photoUrl: m.user.employeeProfile.photoStorageKey ? `/api/workforce/employees/${m.user.employeeProfile.id}/photo` : null,
+      } : null,
     }));
 
     return NextResponse.json(

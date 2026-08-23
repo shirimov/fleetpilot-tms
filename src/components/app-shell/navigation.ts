@@ -27,6 +27,7 @@ export type NavigationIconName =
   | 'drivers'
   | 'inspections'
   | 'tasks'
+  | 'profile'
   | 'settlements'
   | 'finance'
   | 'companies'
@@ -55,7 +56,10 @@ export const alphaNavigation: NavigationSection[] = [
   },
   {
     label: 'Work Management',
-    items: [{ href: '/tasks', label: 'Task Manager', icon: 'tasks', module: 'tasks' }],
+    items: [
+      { href: '/tasks', label: 'Task Manager', icon: 'tasks', module: 'tasks' },
+      { href: '/profile', label: 'My Profile', icon: 'profile', module: 'profile' },
+    ],
   },
   {
     label: 'Finance',

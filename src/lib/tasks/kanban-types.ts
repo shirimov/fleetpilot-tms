@@ -1,4 +1,4 @@
-import type { TaskPriority, TaskStatus } from '@prisma/client';
+import type { TaskBlockedReason, TaskPriority, TaskStatus } from '@prisma/client';
 
 export type KanbanLabel = {
   id: string;
@@ -20,6 +20,12 @@ export type KanbanCard = {
     image: string | null;
   } | null;
   dueDate: string | null;
+  effort?: number;
+  expectedDurationMinutes?: number | null;
+  blockedReason?: TaskBlockedReason | null;
+  blockedSince?: string | null;
+  blockedNote?: string | null;
+  blockedClearedAt?: string | null;
   order: number;
   updatedAt: string;
   labels: KanbanLabel[];
@@ -36,7 +42,7 @@ export type KanbanColumn = {
 };
 
 export type KanbanCardFieldUpdate = Partial<
-  Pick<KanbanCard, 'description' | 'priority' | 'assigneeUserId' | 'dueDate'>
+  Pick<KanbanCard, 'description' | 'priority' | 'assigneeUserId' | 'dueDate' | 'effort' | 'expectedDurationMinutes' | 'blockedReason' | 'blockedNote'>
 >;
 
 export type KanbanProject = {

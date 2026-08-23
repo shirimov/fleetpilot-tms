@@ -1,4 +1,4 @@
-import type { TaskPriority, TaskStatus } from '@prisma/client';
+import type { TaskBlockedReason, TaskPriority, TaskStatus } from '@prisma/client';
 import type {
   CreateTaskChecklistItemInput,
   CreateTaskCommentInput,
@@ -19,6 +19,28 @@ const TASK_STATUSES = new Set<TaskStatus>([
   'DONE',
   'CANCELLED',
 ]);
+const TASK_BLOCKED_REASONS = new Set<TaskBlockedReason>([
+  'WAITING_ON_CUSTOMER', 'WAITING_ON_DRIVER', 'WAITING_ON_VENDOR',
+  'WAITING_ON_MANAGER', 'WAITING_ON_GOVERNMENT_DMV', 'WAITING_ON_AMAZON',
+  'WAITING_ON_INSURANCE', 'TECHNICAL_ISSUE', 'OTHER',
+]);
+
+function optionalEffort(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 5) {
+    throw new TaskValidationError('effort must be an integer from 1 to 5.');
+  }
+  return value as number;
+}
+
+function optionalDuration(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  if (!Number.isInteger(value) || (value as number) <= 0 || (value as number) > 525600) {
+    throw new TaskValidationError('expectedDurationMinutes must be a positive integer.');
+  }
+  return value as number;
+}
 
 export class TaskValidationError extends Error {
   constructor(message: string) {
@@ -127,6 +149,8 @@ export function validateCreateTaskCardInput(value: unknown): CreateTaskCardInput
     priority: priority as TaskPriority | undefined,
     assigneeUserId: optionalNullableString(body.assigneeUserId, 'assigneeUserId'),
     dueDate,
+    effort: optionalEffort(body.effort),
+    expectedDurationMinutes: optionalDuration(body.expectedDurationMinutes),
     order: optionalOrder(body.order),
   };
 }
@@ -141,6 +165,10 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
     'status',
     'assigneeUserId',
     'dueDate',
+    'effort',
+    'expectedDurationMinutes',
+    'blockedReason',
+    'blockedNote',
     'order',
     'mentionUserIds',
   ];
@@ -157,6 +185,10 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
   const status = body.status;
   if (status !== undefined && !TASK_STATUSES.has(status as TaskStatus)) {
     throw new TaskValidationError('status is invalid.');
+  }
+  const blockedReason = body.blockedReason;
+  if (blockedReason !== undefined && blockedReason !== null && !TASK_BLOCKED_REASONS.has(blockedReason as TaskBlockedReason)) {
+    throw new TaskValidationError('blockedReason is invalid.');
   }
 
   let dueDate: Date | null | undefined;
@@ -194,6 +226,10 @@ export function validateUpdateTaskCardInput(value: unknown): UpdateTaskCardInput
     status: status as TaskStatus | undefined,
     assigneeUserId: optionalNullableString(body.assigneeUserId, 'assigneeUserId'),
     dueDate,
+    effort: optionalEffort(body.effort),
+    expectedDurationMinutes: optionalDuration(body.expectedDurationMinutes),
+    blockedReason: blockedReason as TaskBlockedReason | null | undefined,
+    blockedNote: optionalNullableString(body.blockedNote, 'blockedNote'),
     order: optionalOrder(body.order),
     expectedUpdatedAt,
     mentionUserIds: optionalMentionUserIds(body.mentionUserIds),

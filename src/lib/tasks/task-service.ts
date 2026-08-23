@@ -71,6 +71,12 @@ const boardCardSelect = {
     select: { id: true, displayName: true, image: true },
   },
   dueDate: true,
+  effort: true,
+  expectedDurationMinutes: true,
+  blockedReason: true,
+  blockedSince: true,
+  blockedNote: true,
+  blockedClearedAt: true,
   order: true,
   updatedAt: true,
   labels: {
@@ -212,6 +218,8 @@ export class TaskService {
           assigneeUserId: input.assigneeUserId,
           status: destinationBoard.status,
           dueDate: input.dueDate,
+          effort: input.effort ?? 3,
+          expectedDurationMinutes: input.expectedDurationMinutes,
           order: input.order === undefined ? order + 1 : order,
         },
         include: cardInclude,
@@ -235,6 +243,8 @@ export class TaskService {
           priority: card.priority,
           status: card.status,
           dueDate: card.dueDate?.toISOString() ?? null,
+          effort: card.effort,
+          expectedDurationMinutes: card.expectedDurationMinutes,
           assigneeUserId: card.assigneeUserId,
         },
       });
@@ -460,6 +470,16 @@ export class TaskService {
           assignedTo: input.assignedTo,
           assigneeUserId: input.assigneeUserId,
           dueDate: input.dueDate,
+          effort: input.effort,
+          expectedDurationMinutes: input.expectedDurationMinutes,
+          blockedReason: input.blockedReason,
+          blockedNote: input.blockedNote,
+          blockedSince: input.blockedReason !== undefined
+            ? input.blockedReason ? existing.blockedSince ?? new Date() : existing.blockedSince
+            : undefined,
+          blockedClearedAt: input.blockedReason !== undefined
+            ? input.blockedReason ? null : new Date()
+            : undefined,
           order: input.order,
         },
         include: cardInclude,
@@ -1265,6 +1285,10 @@ export class TaskService {
       { field: 'status', action: 'STATUS_CHANGED' },
       { field: 'boardId', action: 'BOARD_CHANGED' },
       { field: 'priority', action: 'PRIORITY_CHANGED' },
+      { field: 'effort', action: 'EFFORT_CHANGED' },
+      { field: 'expectedDurationMinutes', action: 'EXPECTED_DURATION_CHANGED' },
+      { field: 'blockedReason', action: 'BLOCKING_CHANGED' },
+      { field: 'blockedNote', action: 'BLOCKING_CHANGED' },
       { field: 'assignedTo', action: 'ASSIGNEE_CHANGED' },
       { field: 'assigneeUserId', action: 'ASSIGNEE_CHANGED' },
       { field: 'dueDate', action: 'DUE_DATE_CHANGED' },
@@ -1309,6 +1333,10 @@ export class TaskService {
       | 'assignedTo'
       | 'assigneeUserId'
       | 'dueDate'
+      | 'effort'
+      | 'expectedDurationMinutes'
+      | 'blockedReason'
+      | 'blockedNote'
       | 'order'
     >> = [
       'boardId',
@@ -1319,6 +1347,10 @@ export class TaskService {
       'assignedTo',
       'assigneeUserId',
       'dueDate',
+      'effort',
+      'expectedDurationMinutes',
+      'blockedReason',
+      'blockedNote',
       'order',
     ];
     return fields.every((field) =>
