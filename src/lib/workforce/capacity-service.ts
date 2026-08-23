@@ -4,9 +4,24 @@ import { prisma } from '@/lib/prisma';
 const completeStatuses = new Set(['DONE', 'CANCELLED']);
 
 export function weightedCompletion(tasks: Pick<TaskCard, 'effort' | 'status'>[]) {
-  const totalEffort = tasks.reduce((sum, task) => sum + task.effort, 0);
-  const completedEffort = tasks.reduce((sum, task) => sum + (task.status === 'DONE' ? task.effort : 0), 0);
+  const eligibleTasks = tasks.filter((task) => task.status !== 'CANCELLED');
+  const totalEffort = eligibleTasks.reduce((sum, task) => sum + task.effort, 0);
+  const completedEffort = eligibleTasks.reduce((sum, task) => sum + (task.status === 'DONE' ? task.effort : 0), 0);
   return { completedEffort, totalEffort, percentage: totalEffort ? Math.round((completedEffort / totalEffort) * 1000) / 10 : 0 };
+}
+
+type LocalDate = { year: number; month: number; day: number };
+
+function localMidnight({ year, month, day }: LocalDate, timeZone: string) {
+  const utcGuess = Date.UTC(year, month - 1, day);
+  const offsetAt = (instant: number) => {
+    const p = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(instant));
+    const get = (type: Intl.DateTimeFormatPartTypes) => Number(p.find((part) => part.type === type)?.value);
+    return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')) - instant;
+  };
+  let result = utcGuess - offsetAt(utcGuess);
+  result = utcGuess - offsetAt(result);
+  return new Date(result);
 }
 
 function zonedParts(date: Date, timeZone: string) {
@@ -17,18 +32,27 @@ function zonedParts(date: Date, timeZone: string) {
 
 export function localDayBounds(date: Date, timeZone: string) {
   const local = zonedParts(date, timeZone);
-  const utcGuess = Date.UTC(local.year, local.month - 1, local.day);
-  const offsetAt = (instant: number) => {
-    const p = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(instant));
-    const get = (type: Intl.DateTimeFormatPartTypes) => Number(p.find((part) => part.type === type)?.value);
-    return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')) - instant;
+  const next = new Date(Date.UTC(local.year, local.month - 1, local.day + 1));
+  return { start: localMidnight(local, timeZone), end: localMidnight({ year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, day: next.getUTCDate() }, timeZone), weekday: local.weekday };
+}
+
+export function localPeriodBounds(date: Date, timeZone: string) {
+  const local = zonedParts(date, timeZone);
+  const day = localDayBounds(date, timeZone);
+  const calendarDate = new Date(Date.UTC(local.year, local.month - 1, local.day));
+  const weekStartDate = new Date(calendarDate);
+  weekStartDate.setUTCDate(calendarDate.getUTCDate() - ((local.weekday + 6) % 7));
+  const monthStartDate = new Date(Date.UTC(local.year, local.month - 1, 1));
+  const monthEndDate = new Date(Date.UTC(local.year, local.month, 1));
+  const asLocalDate = (value: Date): LocalDate => ({ year: value.getUTCFullYear(), month: value.getUTCMonth() + 1, day: value.getUTCDate() });
+  const weekStart = localMidnight(asLocalDate(weekStartDate), timeZone);
+  const weekEndDate = new Date(weekStartDate);
+  weekEndDate.setUTCDate(weekStartDate.getUTCDate() + 7);
+  return {
+    today: { start: day.start, end: day.end },
+    thisWeek: { start: weekStart, end: localMidnight(asLocalDate(weekEndDate), timeZone) },
+    thisMonth: { start: localMidnight(asLocalDate(monthStartDate), timeZone), end: localMidnight(asLocalDate(monthEndDate), timeZone) },
   };
-  let startMs = utcGuess - offsetAt(utcGuess);
-  startMs = utcGuess - offsetAt(startMs);
-  const nextGuess = Date.UTC(local.year, local.month - 1, local.day + 1);
-  let endMs = nextGuess - offsetAt(nextGuess);
-  endMs = nextGuess - offsetAt(endMs);
-  return { start: new Date(startMs), end: new Date(endMs), weekday: local.weekday };
 }
 
 export class CapacityService {
@@ -37,7 +61,8 @@ export class CapacityService {
   async forEmployeeDay(companyId: string, employeeId: string, date = new Date()) {
     const employee = await this.database.employee.findFirst({ where: { id: employeeId, companyId }, select: { id: true, userId: true, timezone: true } });
     if (!employee) throw new Error('Employee not found.');
-    const bounds = localDayBounds(date, employee.timezone);
+    const timeZone = employee.timezone || 'UTC';
+    const bounds = localDayBounds(date, timeZone);
     const [schedule, tasks] = await Promise.all([
       this.database.employeeScheduleDay.findUnique({ where: { employeeId_weekday: { employeeId, weekday: bounds.weekday } } }),
       employee.userId ? this.database.taskCard.findMany({ where: { assigneeUserId: employee.userId, project: { companyId } }, select: { effort: true, status: true, expectedDurationMinutes: true, dueDate: true, completedAt: true } }) : [],
@@ -52,7 +77,7 @@ export class CapacityService {
     return {
       employeeId,
       date: bounds.start.toISOString(),
-      timezone: employee.timezone,
+      timezone: timeZone,
       scheduledWorkingMinutes: schedule?.isWorking && schedule.startMinute !== null && schedule.endMinute !== null
         ? ((schedule.endMinute - schedule.startMinute + 1440) % 1440 || 1440) - schedule.breakMinutes : 0,
       expectedTaskCapacityMinutes: capacityMinutes,
@@ -60,7 +85,8 @@ export class CapacityService {
       dueTodayExpectedMinutes: dueToday.reduce((sum, task) => sum + (task.expectedDurationMinutes ?? 0), 0),
       overdueExpectedMinutes: overdue.reduce((sum, task) => sum + (task.expectedDurationMinutes ?? 0), 0),
       freeCapacityMinutes: capacityMinutes - assignedRemainingMinutes,
-      utilizationPercentage: capacityMinutes ? Math.round((assignedRemainingMinutes / capacityMinutes) * 1000) / 10 : 0,
+      utilizationPercentage: capacityMinutes > 0 ? Math.round((assignedRemainingMinutes / capacityMinutes) * 1000) / 10 : null,
+      overloaded: assignedRemainingMinutes > capacityMinutes,
       taskCount: { complete: tasks.filter((task) => task.status === 'DONE').length, total: tasks.length },
       openTaskCount: open.length,
       completedThisWeekCount: completedThisWeek.length,
@@ -71,16 +97,27 @@ export class CapacityService {
     };
   }
 
-  async weightedPeriods(companyId: string, userId: string, now = new Date()) {
-    const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const week = new Date(today); week.setUTCDate(today.getUTCDate() - ((today.getUTCDay() + 6) % 7));
-    const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const tasks = await this.database.taskCard.findMany({
-      where: { assigneeUserId: userId, project: { companyId } },
-      select: { effort: true, status: true, completedAt: true },
-    });
-    const forPeriod = (start: Date | null) => weightedCompletion(tasks.filter((task) => !start || task.status !== 'DONE' || (task.completedAt !== null && task.completedAt >= start)) as Pick<TaskCard, 'effort' | 'status'>[]);
-    return { today: forPeriod(today), thisWeek: forPeriod(week), thisMonth: forPeriod(month), currentWorkload: weightedCompletion(tasks.filter((task) => !completeStatuses.has(task.status)) as Pick<TaskCard, 'effort' | 'status'>[]) };
+  async weightedPeriods(companyId: string, employeeId: string, now = new Date()) {
+    const employee = await this.database.employee.findFirst({ where: { id: employeeId, companyId }, select: { userId: true, timezone: true } });
+    if (!employee) throw new Error('Employee not found.');
+    if (!employee.userId) {
+      const empty = weightedCompletion([]);
+      return { today: empty, thisWeek: empty, thisMonth: empty, currentWorkload: empty };
+    }
+    const periods = localPeriodBounds(now, employee.timezone || 'UTC');
+    const forPeriod = async ({ start, end }: { start: Date; end: Date }) => weightedCompletion(await this.database.taskCard.findMany({
+      where: {
+        assigneeUserId: employee.userId,
+        status: { not: 'CANCELLED' },
+        project: { companyId, isArchived: false },
+        OR: [{ status: { not: 'DONE' } }, { status: 'DONE', completedAt: { gte: start, lt: end } }],
+      },
+      select: { effort: true, status: true },
+    }));
+    const [today, thisWeek, thisMonth] = await Promise.all([forPeriod(periods.today), forPeriod(periods.thisWeek), forPeriod(periods.thisMonth)]);
+    // Current workload is the active monthly window: unfinished assigned work plus
+    // work completed this employee-local month. Cancelled and archived work is excluded.
+    return { today, thisWeek, thisMonth, currentWorkload: thisMonth };
   }
 
   async dailyPlanner(companyId: string, date = new Date()) {

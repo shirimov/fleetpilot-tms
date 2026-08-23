@@ -4,7 +4,7 @@ import { after, before, test } from 'node:test';
 import { prisma } from '@/lib/prisma';
 import { AuthorizationService, type TrustedSession } from '@/lib/auth/authorization';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
-import { CapacityService, localDayBounds, weightedCompletion } from './capacity-service';
+import { CapacityService, localDayBounds, localPeriodBounds, weightedCompletion } from './capacity-service';
 import { WorkforceProfileService, WorkforceValidationError } from './workforce-profile-service';
 import { TaskService } from '@/lib/tasks/task-service';
 
@@ -99,14 +99,26 @@ test('skills are company-scoped and can be replaced', async () => {
 });
 
 test('weighted completion uses effort rather than raw task count', () => {
-  const result = weightedCompletion([{ effort: 1, status: 'DONE' }, { effort: 3, status: 'DONE' }, { effort: 5, status: 'IN_PROGRESS' }, { effort: 2, status: 'DONE' }] as never);
+  const result = weightedCompletion([{ effort: 1, status: 'DONE' }, { effort: 3, status: 'DONE' }, { effort: 5, status: 'IN_PROGRESS' }, { effort: 2, status: 'DONE' }, { effort: 100, status: 'CANCELLED' }] as never);
   assert.deepEqual(result, { completedEffort: 6, totalEffort: 11, percentage: 54.5 });
 });
 
-test('timezone day boundaries handle DST and remain ordered', () => {
-  const spring = localDayBounds(new Date('2026-03-08T18:00:00Z'), 'America/Chicago');
+test('employee-local period boundaries support UTC and representative IANA zones', () => {
+  const instant = new Date('2026-08-23T18:00:00Z');
+  assert.equal(localPeriodBounds(instant, 'UTC').today.start.toISOString(), '2026-08-23T00:00:00.000Z');
+  assert.equal(localPeriodBounds(instant, 'America/Los_Angeles').today.start.toISOString(), '2026-08-23T07:00:00.000Z');
+  assert.equal(localPeriodBounds(instant, 'America/New_York').today.start.toISOString(), '2026-08-23T04:00:00.000Z');
+  assert.equal(localPeriodBounds(instant, 'Europe/Berlin').today.start.toISOString(), '2026-08-22T22:00:00.000Z');
+  assert.equal(localPeriodBounds(instant, 'America/Los_Angeles').thisWeek.start.toISOString(), '2026-08-17T07:00:00.000Z');
+  assert.equal(localPeriodBounds(instant, 'Europe/Berlin').thisMonth.start.toISOString(), '2026-07-31T22:00:00.000Z');
+});
+
+test('timezone day boundaries are DST-safe', () => {
+  const spring = localDayBounds(new Date('2026-03-08T18:00:00Z'), 'America/New_York');
   assert.equal((spring.end.getTime() - spring.start.getTime()) / 3_600_000, 23);
   assert.equal(spring.weekday, 0);
+  const fall = localDayBounds(new Date('2026-11-01T18:00:00Z'), 'America/New_York');
+  assert.equal((fall.end.getTime() - fall.start.getTime()) / 3_600_000, 25);
 });
 
 test('capacity reports overload, due today, overdue, and weighted progress', async () => {
@@ -120,7 +132,54 @@ test('capacity reports overload, due today, overdue, and weighted progress', asy
   ] });
   const result = await capacity.forEmployeeDay(companyId, employeeId, new Date('2026-08-23T18:00:00Z'));
   assert.equal(result.assignedRemainingExpectedMinutes, 540); assert.equal(result.freeCapacityMinutes, -150);
+  assert.equal(result.utilizationPercentage, 138.5); assert.equal(result.overloaded, true);
   assert.equal(result.dueTodayCount, 1); assert.equal(result.overdueCount, 1); assert.equal(result.weightedCompletion.percentage, 16.7);
+});
+
+test('zero capacity distinguishes nonworking availability from assigned work', async () => {
+  session = { user: { id: ownerId } };
+  const context = await authorization.requireActiveCompany();
+  await profiles.linkUser(context, secondEmployeeId, secondMemberId);
+  const when = new Date('2026-08-23T18:00:00Z');
+  const bounds = localDayBounds(when, 'UTC');
+  const board = await prisma.taskBoard.findFirstOrThrow({ where: { projectId } });
+
+  const empty = await capacity.forEmployeeDay(companyId, secondEmployeeId, when);
+  assert.equal(empty.expectedTaskCapacityMinutes, 0);
+  assert.equal(empty.utilizationPercentage, null);
+  assert.equal(empty.freeCapacityMinutes, 0);
+  assert.equal(empty.overloaded, false);
+
+  const assigned = await prisma.taskCard.create({ data: { projectId, boardId: board.id, title: 'Outside schedule', assigneeUserId: secondMemberId, expectedDurationMinutes: 120, status: 'IN_PROGRESS', blockedReason: 'WAITING_ON_VENDOR', blockedSince: when } });
+  const outsideSchedule = await capacity.forEmployeeDay(companyId, secondEmployeeId, when);
+  assert.equal(outsideSchedule.assignedRemainingExpectedMinutes, 120);
+  assert.equal(outsideSchedule.utilizationPercentage, null);
+  assert.equal(outsideSchedule.freeCapacityMinutes, -120);
+  assert.equal(outsideSchedule.overloaded, true);
+  assert.equal(outsideSchedule.openTaskCount, 1);
+
+  await prisma.employeeScheduleDay.upsert({ where: { employeeId_weekday: { employeeId: secondEmployeeId, weekday: bounds.weekday } }, update: { isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: 60, capacityMinutes: 0 }, create: { employeeId: secondEmployeeId, weekday: bounds.weekday, isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: 60, capacityMinutes: 0 } });
+  const zeroProductiveCapacity = await capacity.forEmployeeDay(companyId, secondEmployeeId, when);
+  assert.equal(zeroProductiveCapacity.scheduledWorkingMinutes, 480);
+  assert.equal(zeroProductiveCapacity.utilizationPercentage, null);
+  assert.equal(zeroProductiveCapacity.overloaded, true);
+  await prisma.taskCard.delete({ where: { id: assigned.id } });
+});
+
+test('current workload uses completed and open effort in the employee-local month', async () => {
+  const board = await prisma.taskBoard.findFirstOrThrow({ where: { projectId } });
+  const titles = ['Done two', 'Done three', 'Open five', 'Cancelled five'];
+  await prisma.taskCard.deleteMany({ where: { projectId, title: { in: titles } } });
+  await prisma.taskCard.createMany({ data: [
+    { projectId, boardId: board.id, title: titles[0], assigneeUserId: secondMemberId, effort: 2, status: 'DONE', completedAt: new Date('2026-08-05T12:00:00Z') },
+    { projectId, boardId: board.id, title: titles[1], assigneeUserId: secondMemberId, effort: 3, status: 'DONE', completedAt: new Date('2026-08-20T12:00:00Z') },
+    { projectId, boardId: board.id, title: titles[2], assigneeUserId: secondMemberId, effort: 5, status: 'IN_PROGRESS' },
+    { projectId, boardId: board.id, title: titles[3], assigneeUserId: secondMemberId, effort: 5, status: 'CANCELLED' },
+  ] });
+  const result = await capacity.weightedPeriods(companyId, secondEmployeeId, new Date('2026-08-23T18:00:00Z'));
+  assert.deepEqual(result.currentWorkload, { completedEffort: 5, totalEffort: 10, percentage: 50 });
+  assert.deepEqual(result.thisMonth, result.currentWorkload);
+  await prisma.taskCard.deleteMany({ where: { projectId, title: { in: titles } } });
 });
 
 test('task planning fields persist, update, and expose blocked lifecycle timestamps', async () => {
