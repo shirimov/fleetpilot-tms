@@ -11,7 +11,7 @@ const VALID_ROLES = new Set(['OWNER', 'ADMIN', 'MEMBER']);
 
 export async function GET(request: Request) {
   try {
-    const context = await authorizationService.requireActiveCompany();
+    const context = await authorizationService.requireActiveCompany('ADMIN');
     const { companyId } = context;
     const telegramAvailable = Boolean(getTelegramConfig());
 
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
       nextDay = utcNext;
     }
 
-    const [memberships, openGroups, overdueGroups, dueTodayGroups, telegramLinks] =
+    const [memberships, openGroups, overdueGroups, dueTodayGroups, telegramLinks, unlinkedEmployeeCount] =
       await Promise.all([
         prisma.companyMembership.findMany({
           where: { companyId },
@@ -105,6 +105,14 @@ export async function GET(request: Request) {
             telegramUsername: true,
           },
         }),
+        prisma.employee.count({
+          where: {
+            companyId,
+            userId: null,
+            isActive: true,
+            employmentStatus: { not: 'TERMINATED' },
+          },
+        }),
       ]);
 
     const openMap = new Map<string, number>();
@@ -151,6 +159,11 @@ export async function GET(request: Request) {
         department: m.user.employeeProfile.department,
         photoUrl: m.user.employeeProfile.photoStorageKey ? `/api/workforce/employees/${m.user.employeeProfile.id}/photo` : null,
       } : null,
+      employeeProfileStatus: m.user.employeeProfile
+        ? 'LINKED'
+        : unlinkedEmployeeCount > 0
+          ? 'UNLINKED_AVAILABLE'
+          : 'NOT_CREATED',
     }));
 
     return NextResponse.json(

@@ -9,6 +9,32 @@ if (!companyId || !ownerId) {
 
 let currentUserRole = 'OWNER';
 
+type MockMember = {
+  id: string;
+  role: string;
+  createdAt: string;
+  updatedAt: string;
+  user: {
+    id: string;
+    displayName: string;
+    email: string;
+    image: null;
+    isActive: boolean;
+  };
+  openTasks: number;
+  overdueTasks: number;
+  dueToday: number;
+  telegram: { connected: boolean; username: string | null };
+  employee: {
+    id: string;
+    preferredName: string | null;
+    jobTitle: string | null;
+    department: string | null;
+    photoUrl: null;
+  } | null;
+  employeeProfileStatus: 'LINKED' | 'NOT_CREATED' | 'UNLINKED_AVAILABLE';
+};
+
 test.beforeEach(async ({ page }) => {
   // Mock auth/company endpoint to return owner context
   await page.route('**/api/auth/company', async (route) => {
@@ -25,7 +51,7 @@ test.beforeEach(async ({ page }) => {
 
   // Mock the team API to return a deterministic seeded member for UI tests, mutable so tests can simulate updates.
   currentUserRole = 'OWNER';
-  const members = [
+  const members: MockMember[] = [
     {
       id: 'seed-membership',
       role: 'OWNER',
@@ -42,6 +68,8 @@ test.beforeEach(async ({ page }) => {
       overdueTasks: 0,
       dueToday: 0,
       telegram: { connected: true, username: 'pwowner' },
+      employee: null,
+      employeeProfileStatus: 'NOT_CREATED',
     },
     {
       id: 'seed-member-1',
@@ -59,19 +87,24 @@ test.beforeEach(async ({ page }) => {
       overdueTasks: 0,
       dueToday: 0,
       telegram: { connected: false, username: null },
+      employee: null,
+      employeeProfileStatus: 'NOT_CREATED',
     },
   ];
 
   // Intercept GET/POST/PATCH/DELETE to mutate the in-memory members array for UI updates
   await page.route('**/api/company/team**', async (route) => {
-    if (route.request().url().includes('/telegram-link')) {
+    if (
+      route.request().url().includes('/telegram-link')
+      || route.request().url().includes('/employee-profile')
+    ) {
       await route.fallback();
       return;
     }
     const req = route.request();
     if (req.method() === 'POST') {
       const body = JSON.parse(String(await req.postData()));
-      const newMember = {
+      const newMember: MockMember = {
         id: `m-${Date.now()}`,
         role: body.role || 'MEMBER',
         createdAt: new Date().toISOString(),
@@ -81,6 +114,8 @@ test.beforeEach(async ({ page }) => {
         overdueTasks: 0,
         dueToday: 0,
         telegram: { connected: false, username: null },
+        employee: null,
+        employeeProfileStatus: 'NOT_CREATED',
       };
       members.push(newMember);
       await route.fulfill({ status: 201, json: { membership: { id: newMember.id, role: newMember.role }, user: newMember.user } });
@@ -126,6 +161,38 @@ test.beforeEach(async ({ page }) => {
     if (member) member.telegram = { connected: false, username: null };
     await route.fulfill({ status: 200, json: { disconnected: true } });
   });
+  await page.route('**/api/company/team/*/employee-profile', async (route) => {
+    const memberUserId = route.request().url().split('/').at(-2);
+    const member = members.find((candidate) => candidate.user.id === memberUserId);
+    if (!member) {
+      await route.fulfill({ status: 404, json: { error: 'Team member not found.' } });
+      return;
+    }
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        json: {
+          user: member.user,
+          managers: [],
+          unlinkedEmployees: [],
+        },
+      });
+      return;
+    }
+    if (route.request().method() === 'POST') {
+      const input = await route.request().postDataJSON();
+      member.employee = {
+        id: 'created-employee',
+        preferredName: input.preferredName || input.firstName,
+        jobTitle: input.jobTitle || null,
+        department: input.department || null,
+        photoUrl: null,
+      };
+      member.employeeProfileStatus = 'LINKED';
+      await route.fulfill({ status: 201, json: { employeeId: member.employee.id, userId: member.user.id } });
+      return;
+    }
+    await route.fulfill({ status: 405, json: { error: 'Method not allowed.' } });
+  });
 });
 
 // UI tests
@@ -141,6 +208,27 @@ test('Team page renders members, columns and Telegram status', async ({ page }) 
   await expect(page.getByText('@pwowner')).toBeVisible();
   // workload columns present for owner (at least one '1' visible)
   await expect(page.getByRole('cell', { name: '1' }).first()).toBeVisible();
+});
+
+test('Team creates and links an Employee Profile for an existing member', async ({ page }) => {
+  await page.goto('/administration');
+  const memberRow = page
+    .getByRole('cell', { name: 'pw-seed-member@example.test' })
+    .locator('xpath=ancestor::tr');
+  await expect(memberRow.getByText('Not created')).toBeVisible();
+  await memberRow.getByRole('button', { name: 'Create Employee Profile' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create Employee Profile' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Last name').fill('Member');
+  await dialog.getByLabel('Job title').fill('Dispatcher');
+  await dialog.getByLabel('Department').fill('Operations');
+  await dialog.getByRole('button', { name: 'Create and Link Profile' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(memberRow.getByText('Linked')).toBeVisible();
+  await expect(memberRow.getByRole('link', { name: 'View Profile' })).toHaveAttribute(
+    'href',
+    '/hr/employees/created-employee',
+  );
 });
 
 test('Connect Telegram presents a one-time deep link and Disconnect updates the UI', async ({ page }) => {
@@ -179,6 +267,8 @@ test('Team page presents Telegram as unavailable when integration is disabled', 
             overdueTasks: 0,
             dueToday: 0,
             telegram: { connected: true, username: 'pwowner' },
+            employee: null,
+            employeeProfileStatus: 'NOT_CREATED',
           },
         ],
         currentUserRole: 'OWNER',
@@ -270,6 +360,8 @@ test('Role controls visibility for OWNER vs MEMBER', async ({ page }) => {
       overdueTasks: 0,
       dueToday: 0,
       telegram: { connected: false, username: null },
+      employee: null,
+      employeeProfileStatus: 'NOT_CREATED',
     },
     {
       id: 'seed-member-1',
@@ -287,6 +379,8 @@ test('Role controls visibility for OWNER vs MEMBER', async ({ page }) => {
       overdueTasks: 0,
       dueToday: 0,
       telegram: { connected: false, username: null },
+      employee: null,
+      employeeProfileStatus: 'NOT_CREATED',
     },
   ];
 
