@@ -10,6 +10,10 @@ function labelsFor(role: 'OWNER' | 'ADMIN' | 'MEMBER') {
 
 test('MEMBER navigation contains only Task Manager and their profile', () => {
   assert.deepEqual(labelsFor('MEMBER'), ['Task Manager', 'My Profile']);
+  const profile = navigationForRole('MEMBER')
+    .flatMap((section) => section.items)
+    .find((item) => item.label === 'My Profile');
+  assert.equal(profile?.href, '/profile');
 });
 
 test('OWNER and ADMIN navigation preserve the Alpha modules', () => {

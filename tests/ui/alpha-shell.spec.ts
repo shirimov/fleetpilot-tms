@@ -108,6 +108,10 @@ test('MEMBER sees Task Manager and sign out without unfinished modules', async (
   await page.goto('/tasks');
   const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
   await expect(navigation.getByRole('link', { name: 'Task Manager' })).toBeVisible();
+  await expect(navigation.getByRole('link', { name: 'My Profile' })).toHaveAttribute(
+    'href',
+    '/profile',
+  );
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
   for (const restrictedLabel of [
     'Dashboard',
