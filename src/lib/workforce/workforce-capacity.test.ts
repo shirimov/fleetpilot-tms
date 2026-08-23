@@ -5,7 +5,8 @@ import { prisma } from '@/lib/prisma';
 import { AuthorizationService, type TrustedSession } from '@/lib/auth/authorization';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import { CapacityService, localDayBounds, localPeriodBounds, weightedCompletion } from './capacity-service';
-import { WorkforceProfileService, WorkforceValidationError } from './workforce-profile-service';
+import { WorkforceProfileService, WorkforceValidationError, type ScheduleDayInput } from './workforce-profile-service';
+import { safeExpectedTaskCapacityMinutes, safeScheduledWorkingMinutes, shiftDurationMinutes } from './schedule-time';
 import { TaskService } from '@/lib/tasks/task-service';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -87,6 +88,48 @@ test('schedule supports weekend and overnight shifts and validates all weekdays'
   const saved = await profiles.replaceSchedule(context, employeeId, days);
   assert.equal(saved.length, 7); assert.equal(saved[6].startMinute, 1320); assert.equal(saved[6].endMinute, 360);
   await assert.rejects(profiles.replaceSchedule(context, employeeId, days.slice(0, 6)), WorkforceValidationError);
+});
+
+test('schedule break validation covers daytime, overnight, malformed, and non-working days', async () => {
+  session = { user: { id: ownerId } };
+  const context = await authorization.requireActiveCompany();
+  const base: ScheduleDayInput[] = Array.from({ length: 7 }, (_, weekday) => ({ weekday, isWorking: false, startMinute: null, endMinute: null, breakMinutes: 0, capacityMinutes: 0 }));
+  const withDay = (changes: Partial<ScheduleDayInput>) => base.map((day) => day.weekday === 1 ? { ...day, ...changes } : day);
+
+  for (const breakMinutes of [0, 60, 540]) {
+    await profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes }));
+  }
+  await assert.rejects(
+    profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: 541 })),
+    /Break minutes cannot exceed the shift duration/,
+  );
+
+  for (const breakMinutes of [30, 480]) {
+    await profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 1320, endMinute: 360, breakMinutes }));
+  }
+  await assert.rejects(
+    profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 1320, endMinute: 360, breakMinutes: 481 })),
+    /Break minutes cannot exceed the shift duration/,
+  );
+  await profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 480, endMinute: 480, breakMinutes: 1440 }));
+  await assert.rejects(profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: -1 })), WorkforceValidationError);
+  await assert.rejects(profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: 1440, endMinute: 1020 })), WorkforceValidationError);
+  await assert.rejects(profiles.replaceSchedule(context, employeeId, withDay({ isWorking: true, startMinute: null, endMinute: 1020 })), /Working days require start and end times/);
+
+  const nonWorking = await profiles.replaceSchedule(context, employeeId, withDay({ isWorking: false, startMinute: null, endMinute: null, breakMinutes: 60 }));
+  assert.equal(nonWorking.find(({ weekday }) => weekday === 1)?.breakMinutes, 60);
+});
+
+test('capacity helpers never emit negative schedule or task capacity', () => {
+  assert.equal(shiftDurationMinutes(480, 1020), 540);
+  assert.equal(shiftDurationMinutes(1320, 360), 480);
+  assert.equal(shiftDurationMinutes(480, 480), 1440);
+  assert.equal(safeScheduledWorkingMinutes({ isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: 600 }), 0);
+  assert.equal(safeScheduledWorkingMinutes({ isWorking: true, startMinute: 1320, endMinute: 360, breakMinutes: 500 }), 0);
+  assert.equal(safeScheduledWorkingMinutes({ isWorking: true, startMinute: 480, endMinute: 1020, breakMinutes: 540 }), 0);
+  assert.equal(safeScheduledWorkingMinutes({ isWorking: false, startMinute: null, endMinute: null, breakMinutes: 1440 }), 0);
+  assert.equal(safeExpectedTaskCapacityMinutes({ isWorking: true, capacityMinutes: -30 }), 0);
+  assert.equal(safeExpectedTaskCapacityMinutes({ isWorking: false, capacityMinutes: 390 }), 0);
 });
 
 test('skills are company-scoped and can be replaced', async () => {

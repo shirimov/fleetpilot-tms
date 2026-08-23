@@ -18,7 +18,7 @@ const profilePayload = {
     expectedTaskCapacityMinutes: 390, assignedRemainingExpectedMinutes: 210,
     freeCapacityMinutes: 180, utilizationPercentage: 53.8, dueTodayCount: 2, overdueCount: 1,
     openTaskCount: 2, completedThisWeekCount: 3, weightedEffortCompletedThisWeek: 8,
-    taskCount: { complete: 3, total: 5 }, weightedCompletion: { percentage: 62 },
+    taskCount: { complete: 3, total: 5 }, weightedCompletion: { percentage: 62 }, overloaded: false,
   },
   permissions: { canManageProfile: true, canViewCompensation: true },
 };
@@ -57,4 +57,11 @@ test('schedule editor preserves overnight shifts and saves all weekdays', async 
   await page.getByRole('button', { name: 'Save schedule' }).click();
   await expect.poll(() => savedDays.length).toBe(7);
   expect(savedDays.find((day) => day.weekday === 6)?.capacityMinutes).toBe(420);
+});
+
+test('schedule editor surfaces server validation errors', async ({ page }) => {
+  await page.route('**/api/workforce/employees/employee-julia/schedule', (route) => route.fulfill({ status: 400, json: { error: 'Break minutes cannot exceed the shift duration.' } }));
+  await page.goto('/hr/employees/employee-julia');
+  await page.getByRole('button', { name: 'Save schedule' }).click();
+  await expect(page.getByText('Break minutes cannot exceed the shift duration.', { exact: true })).toBeVisible();
 });

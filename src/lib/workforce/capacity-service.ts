@@ -1,5 +1,6 @@
 import type { PrismaClient, TaskCard } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { safeExpectedTaskCapacityMinutes, safeScheduledWorkingMinutes } from './schedule-time';
 
 const completeStatuses = new Set(['DONE', 'CANCELLED']);
 
@@ -71,15 +72,14 @@ export class CapacityService {
     const dueToday = open.filter((task) => task.dueDate && task.dueDate >= bounds.start && task.dueDate < bounds.end);
     const overdue = open.filter((task) => task.dueDate && task.dueDate < bounds.start);
     const assignedRemainingMinutes = open.reduce((sum, task) => sum + (task.expectedDurationMinutes ?? 0), 0);
-    const capacityMinutes = schedule?.isWorking ? schedule.capacityMinutes : 0;
+    const capacityMinutes = safeExpectedTaskCapacityMinutes(schedule);
     const weekStart = new Date(bounds.start); weekStart.setUTCDate(weekStart.getUTCDate() - ((bounds.weekday + 6) % 7));
     const completedThisWeek = tasks.filter((task) => task.status === 'DONE' && task.completedAt && task.completedAt >= weekStart && task.completedAt < bounds.end);
     return {
       employeeId,
       date: bounds.start.toISOString(),
       timezone: timeZone,
-      scheduledWorkingMinutes: schedule?.isWorking && schedule.startMinute !== null && schedule.endMinute !== null
-        ? ((schedule.endMinute - schedule.startMinute + 1440) % 1440 || 1440) - schedule.breakMinutes : 0,
+      scheduledWorkingMinutes: schedule ? safeScheduledWorkingMinutes(schedule) : 0,
       expectedTaskCapacityMinutes: capacityMinutes,
       assignedRemainingExpectedMinutes: assignedRemainingMinutes,
       dueTodayExpectedMinutes: dueToday.reduce((sum, task) => sum + (task.expectedDurationMinutes ?? 0), 0),

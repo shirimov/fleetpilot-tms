@@ -2,6 +2,7 @@ import type { CompanyMembershipRole, Prisma, PrismaClient } from '@prisma/client
 import { prisma } from '@/lib/prisma';
 import type { CompanyAuthorization } from '@/lib/auth/authorization';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
+import { shiftDurationMinutes } from './schedule-time';
 import { WorkforceResourceNotFoundError } from './workforce-authorization';
 
 export class WorkforceValidationError extends Error {
@@ -130,6 +131,10 @@ export class WorkforceProfileService {
     }
     if (day.isWorking && (day.startMinute === null || day.endMinute === null)) {
       throw new WorkforceValidationError('Working days require start and end times.');
+    }
+    if (day.isWorking && day.startMinute !== null && day.endMinute !== null
+      && day.breakMinutes > shiftDurationMinutes(day.startMinute, day.endMinute)) {
+      throw new WorkforceValidationError('Break minutes cannot exceed the shift duration.');
     }
   }
 }
