@@ -4,6 +4,7 @@ import type {
   TaskActivityAction,
   TaskActivityActorType,
   TaskActivityEntityType,
+  TaskBlockedReason,
   TaskPriority,
   TaskStatus,
 } from '@prisma/client';
@@ -23,6 +24,8 @@ export type CreateTaskCardInput = {
   priority?: TaskPriority;
   assigneeUserId?: string | null;
   dueDate?: Date | null;
+  effort?: number;
+  expectedDurationMinutes?: number | null;
   order?: number;
 };
 
@@ -36,6 +39,10 @@ export type UpdateTaskCardInput = {
   assignedTo?: string | null;
   assigneeUserId?: string | null;
   dueDate?: Date | null;
+  effort?: number;
+  expectedDurationMinutes?: number | null;
+  blockedReason?: TaskBlockedReason | null;
+  blockedNote?: string | null;
   order?: number;
   expectedUpdatedAt?: Date;
   mentionUserIds?: string[];

@@ -99,6 +99,8 @@ export function CreateTaskDialog({
   status,
   priority,
   dueDate,
+  effort,
+  expectedDurationMinutes,
   assigneeUserId,
   assignees,
   pending,
@@ -107,6 +109,8 @@ export function CreateTaskDialog({
   onStatusChange,
   onPriorityChange,
   onDueDateChange,
+  onEffortChange,
+  onExpectedDurationMinutesChange,
   onAssigneeChange,
   onSubmit,
   onClose,
@@ -117,6 +121,8 @@ export function CreateTaskDialog({
   status: TaskStatus;
   priority: TaskPriority;
   dueDate: string;
+  effort: number;
+  expectedDurationMinutes: string;
   assigneeUserId: string;
   assignees: TaskAssignee[];
   pending: boolean;
@@ -125,6 +131,8 @@ export function CreateTaskDialog({
   onStatusChange: (status: TaskStatus) => void;
   onPriorityChange: (priority: TaskPriority) => void;
   onDueDateChange: (dueDate: string) => void;
+  onEffortChange: (effort: number) => void;
+  onExpectedDurationMinutesChange: (minutes: string) => void;
   onAssigneeChange: (assigneeUserId: string) => void;
   onSubmit: () => void;
   onClose: () => void;
@@ -213,6 +221,16 @@ export function CreateTaskDialog({
               onChange={(event) => onDueDateChange(event.target.value)}
               className={fieldClassName}
             />
+          </label>
+          <label className="block text-sm font-medium text-slate-200">Effort
+            <select value={effort} onChange={(event) => onEffortChange(Number(event.target.value))} className={fieldClassName}>
+              <option value="1">1 · Very Small</option><option value="2">2 · Small</option><option value="3">3 · Medium</option><option value="4">4 · Large</option><option value="5">5 · Major</option>
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-slate-200">Expected duration
+            <select value={expectedDurationMinutes} onChange={(event) => onExpectedDurationMinutesChange(event.target.value)} className={fieldClassName}>
+              <option value="">Not estimated</option><option value="15">15m</option><option value="30">30m</option><option value="60">1h</option><option value="120">2h</option><option value="240">4h</option><option value="480">1 day</option><option value="960">2 days</option>
+            </select>
           </label>
           <label className="block text-sm font-medium text-slate-200 sm:col-span-2">
             Assignee <span className="text-slate-500">(optional)</span>

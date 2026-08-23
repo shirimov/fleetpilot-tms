@@ -91,20 +91,21 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id                     String                  @id @default(cuid())
+  id                     String                    @id @default(cuid())
   name                   String
   dotNumber              String?
   mcNumber               String?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
+  createdAt              DateTime                  @default(now())
+  updatedAt              DateTime                  @updatedAt
   trucks                 Truck[]
   loads                  Load[]
   bankAccounts           BankAccount[]
   taskProjects           TaskProject[]
   memberships            CompanyMembership[]
-  activeUsers            User[]                  @relation("ActiveCompany")
-  companyDrivers         Driver[]                @relation("DriverCompany")
+  activeUsers            User[]                    @relation("ActiveCompany")
+  companyDrivers         Driver[]                  @relation("DriverCompany")
   employees              Employee[]
+  employeeSkills         EmployeeSkillDefinition[]
   customers              Customer[]
   trailers               Trailer[]
   loadActivities         LoadActivity[]
@@ -152,6 +153,7 @@ model User {
   telegramPendingActions   TelegramPendingAction[] @relation("TelegramPendingActionUser")
   requestedTelegramUpdates TelegramUpdateRequest[] @relation("TelegramUpdateRequester")
   assignedTelegramUpdates  TelegramUpdateRequest[] @relation("TelegramUpdateAssignee")
+  employeeProfile          Employee?
 
   @@index([activeCompanyId])
 }
@@ -731,30 +733,124 @@ enum PaymentStatus {
   CANCELLED
 }
 
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACTOR
+  TEMPORARY
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  LEAVE
+  INACTIVE
+  TERMINATED
+}
+
+enum EmployeePayType {
+  SALARY
+  HOURLY
+}
+
+enum EmployeePayFrequency {
+  WEEKLY
+  BIWEEKLY
+  SEMIMONTHLY
+  MONTHLY
+}
+
 model Employee {
-  id            String            @id @default(cuid())
-  companyId     String?
-  company       Company?          @relation(fields: [companyId], references: [id])
-  firstName     String
-  lastName      String
-  role          EmployeeRole      @default(DISPATCHER)
-  roleCustom    String?
-  phone         String?
-  email         String?
-  country       String            @default("Turkmenistan")
-  city          String?
-  region        String? // Mary, Ashgabat, Balkan, Dashoguz, Lebap
-  salary        Float?
-  currency      String            @default("USD")
-  paymentMethod String            @default("Bank Transfer")
-  startDate     DateTime?
-  isActive      Boolean           @default(true)
-  notes         String?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  payments      EmployeePayment[]
+  id                      String                @id @default(cuid())
+  companyId               String?
+  company                 Company?              @relation(fields: [companyId], references: [id])
+  userId                  String?               @unique
+  user                    User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  firstName               String
+  lastName                String
+  role                    EmployeeRole          @default(DISPATCHER)
+  roleCustom              String?
+  phone                   String?
+  email                   String?
+  preferredName           String?
+  jobTitle                String?
+  department              String?
+  managerId               String?
+  manager                 Employee?             @relation("EmployeeManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports           Employee[]            @relation("EmployeeManager")
+  workLocation            String?
+  timezone                String                @default("UTC")
+  employmentType          EmploymentType        @default(FULL_TIME)
+  employmentStatus        EmploymentStatus      @default(ACTIVE)
+  birthDate               DateTime?
+  address                 String?
+  emergencyContact        String?
+  privateNotes            String?               @db.Text
+  photoStorageKey         String?
+  photoMimeType           String?
+  country                 String                @default("Turkmenistan")
+  city                    String?
+  region                  String? // Mary, Ashgabat, Balkan, Dashoguz, Lebap
+  salary                  Float?
+  payType                 EmployeePayType       @default(SALARY)
+  payFrequency            EmployeePayFrequency  @default(MONTHLY)
+  compensationEffectiveAt DateTime?
+  compensationNotes       String?               @db.Text
+  currency                String                @default("USD")
+  paymentMethod           String                @default("Bank Transfer")
+  startDate               DateTime?
+  isActive                Boolean               @default(true)
+  notes                   String?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  payments                EmployeePayment[]
+  scheduleDays            EmployeeScheduleDay[]
+  skills                  EmployeeSkill[]
 
   @@index([companyId])
+  @@index([companyId, employmentStatus])
+  @@index([companyId, managerId])
+}
+
+model EmployeeScheduleDay {
+  id              String   @id @default(cuid())
+  employeeId      String
+  weekday         Int
+  isWorking       Boolean  @default(false)
+  startMinute     Int?
+  endMinute       Int?
+  breakMinutes    Int      @default(0)
+  capacityMinutes Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, weekday])
+  @@index([employeeId, isWorking])
+}
+
+model EmployeeSkillDefinition {
+  id        String          @id @default(cuid())
+  companyId String
+  name      String
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  company   Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employees EmployeeSkill[]
+
+  @@unique([companyId, name])
+  @@index([companyId, isActive, name])
+}
+
+model EmployeeSkill {
+  employeeId String
+  skillId    String
+  createdAt  DateTime                @default(now())
+  employee   Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  skill      EmployeeSkillDefinition @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([employeeId, skillId])
+  @@index([skillId, employeeId])
 }
 
 model EmployeePayment {
@@ -871,6 +967,9 @@ enum TaskActivityAction {
   STATUS_CHANGED
   BOARD_CHANGED
   PRIORITY_CHANGED
+  EFFORT_CHANGED
+  EXPECTED_DURATION_CHANGED
+  BLOCKING_CHANGED
   ASSIGNEE_CHANGED
   DUE_DATE_CHANGED
   ORDER_CHANGED
@@ -909,6 +1008,18 @@ enum TaskMentionSourceType {
   COMMENT
 }
 
+enum TaskBlockedReason {
+  WAITING_ON_CUSTOMER
+  WAITING_ON_DRIVER
+  WAITING_ON_VENDOR
+  WAITING_ON_MANAGER
+  WAITING_ON_GOVERNMENT_DMV
+  WAITING_ON_AMAZON
+  WAITING_ON_INSURANCE
+  TECHNICAL_ISSUE
+  OTHER
+}
+
 model TaskProject {
   id          String         @id @default(cuid())
   name        String
@@ -941,35 +1052,42 @@ model TaskBoard {
 }
 
 model TaskCard {
-  id                     String                  @id @default(cuid())
-  projectId              String
-  project                TaskProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  boardId                String
-  board                  TaskBoard               @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  title                  String
-  description            String?                 @db.Text
-  order                  Int                     @default(0)
-  priority               TaskPriority            @default(MEDIUM)
-  status                 TaskStatus              @default(TODO)
-  assignedTo             String?
-  assigneeUserId         String?
-  assigneeUser           User?                   @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
-  dueDate                DateTime?
-  labels                 TaskLabel[]
-  comments               TaskComment[]
-  checklistItems         TaskChecklistItem[]
-  attachments            TaskAttachment[]
-  mentions               TaskMention[]
-  activities             TaskActivity[]
-  telegramDeliveries     TelegramDelivery[]
-  telegramPendingActions TelegramPendingAction[]
-  telegramUpdateRequests TelegramUpdateRequest[]
-  startDate              DateTime?
-  completedAt            DateTime?
-  createdAt              DateTime                @default(now())
-  updatedAt              DateTime                @updatedAt
+  id                      String                  @id @default(cuid())
+  projectId               String
+  project                 TaskProject             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  boardId                 String
+  board                   TaskBoard               @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  title                   String
+  description             String?                 @db.Text
+  order                   Int                     @default(0)
+  priority                TaskPriority            @default(MEDIUM)
+  status                  TaskStatus              @default(TODO)
+  assignedTo              String?
+  assigneeUserId          String?
+  assigneeUser            User?                   @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  dueDate                 DateTime?
+  effort                  Int                     @default(3)
+  expectedDurationMinutes Int?
+  blockedReason           TaskBlockedReason?
+  blockedSince            DateTime?
+  blockedNote             String?                 @db.Text
+  blockedClearedAt        DateTime?
+  labels                  TaskLabel[]
+  comments                TaskComment[]
+  checklistItems          TaskChecklistItem[]
+  attachments             TaskAttachment[]
+  mentions                TaskMention[]
+  activities              TaskActivity[]
+  telegramDeliveries      TelegramDelivery[]
+  telegramPendingActions  TelegramPendingAction[]
+  telegramUpdateRequests  TelegramUpdateRequest[]
+  startDate               DateTime?
+  completedAt             DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
 
   @@index([assigneeUserId])
+  @@index([assigneeUserId, dueDate, status])
 }
 
 model TaskLabel {

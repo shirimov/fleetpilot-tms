@@ -85,6 +85,29 @@ export function TaskPrioritySelect({ value, disabled, label, onChange }: {
   );
 }
 
+export function TaskEffortSelect({ value, disabled, label, onChange }: {
+  value: number;
+  disabled?: boolean;
+  label: string;
+  onChange: (value: number) => void;
+}) {
+  const labels = ['Very Small', 'Small', 'Medium', 'Large', 'Major'];
+  return <select aria-label={label} value={value} disabled={disabled} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onChange={(event) => onChange(Number(event.target.value))} className={controlClass}>
+    {labels.map((name, index) => <option key={name} value={index + 1}>{index + 1} · {name}</option>)}
+  </select>;
+}
+
+export function TaskDurationInput({ value, disabled, label, onChange }: {
+  value: number | null;
+  disabled?: boolean;
+  label: string;
+  onChange: (value: number | null) => void;
+}) {
+  return <select aria-label={label} value={value ?? ''} disabled={disabled} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)} className={controlClass}>
+    <option value="">Not estimated</option><option value="15">15m</option><option value="30">30m</option><option value="60">1h</option><option value="120">2h</option><option value="240">4h</option><option value="480">1 day</option><option value="960">2 days</option>
+  </select>;
+}
+
 export function TaskStatusSelect({ value, statuses, disabled, label, onChange }: {
   value: TaskStatus;
   statuses: Array<{ value: TaskStatus; label: string }>;

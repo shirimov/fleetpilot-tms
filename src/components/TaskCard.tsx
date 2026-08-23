@@ -6,7 +6,7 @@ import type { KanbanCardFieldUpdate } from '@/lib/tasks/kanban-types';
 import type { TaskAssignee } from '@/lib/tasks/task-types';
 import type { TaskStatus } from '@prisma/client';
 import TaskDeadline from '@/components/tasks/TaskDeadline';
-import { AssigneeAvatar, TaskAssigneeSelect, TaskDueDateInput, TaskPrioritySelect, TaskStatusSelect } from '@/components/tasks/TaskFields';
+import { AssigneeAvatar, TaskAssigneeSelect, TaskDueDateInput, TaskEffortSelect, TaskPrioritySelect, TaskStatusSelect } from '@/components/tasks/TaskFields';
 
 type TaskCardProps = {
   card: KanbanCard;
@@ -113,6 +113,9 @@ export default function TaskCard({
           <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">Countdown</span>
           <TaskDeadline dueDate={card.dueDate} now={now} status={card.status} compact />
         </div>
+        <div><span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Effort</span>{onUpdateCard ? <TaskEffortSelect label={`Effort for ${card.title}`} value={card.effort ?? 3} disabled={updating} onChange={(effort) => void onUpdateCard(card.id, { effort })} /> : <span className="text-violet-200">{card.effort ?? 3} / 5</span>}</div>
+        <div><span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-600">Expected</span><span className="text-slate-300">{card.expectedDurationMinutes ? `${card.expectedDurationMinutes}m` : '—'}</span></div>
+        {card.blockedReason && <div className="col-span-2 rounded-lg bg-amber-400/10 px-2 py-1.5 text-amber-200">Waiting · {card.blockedReason.replaceAll('_', ' ')}</div>}
       </div>
 
       {card.labels.length > 0 && (
