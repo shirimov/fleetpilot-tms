@@ -17,6 +17,7 @@ const profilePayload = {
   capacity: {
     expectedTaskCapacityMinutes: 390, assignedRemainingExpectedMinutes: 210,
     freeCapacityMinutes: 180, utilizationPercentage: 53.8, dueTodayCount: 2, overdueCount: 1,
+    openTaskCount: 2, completedThisWeekCount: 3, weightedEffortCompletedThisWeek: 8,
     taskCount: { complete: 3, total: 5 }, weightedCompletion: { percentage: 62 },
   },
   permissions: { canManageProfile: true, canViewCompensation: true },

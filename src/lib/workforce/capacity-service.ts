@@ -40,13 +40,15 @@ export class CapacityService {
     const bounds = localDayBounds(date, employee.timezone);
     const [schedule, tasks] = await Promise.all([
       this.database.employeeScheduleDay.findUnique({ where: { employeeId_weekday: { employeeId, weekday: bounds.weekday } } }),
-      employee.userId ? this.database.taskCard.findMany({ where: { assigneeUserId: employee.userId, project: { companyId } }, select: { effort: true, status: true, expectedDurationMinutes: true, dueDate: true } }) : [],
+      employee.userId ? this.database.taskCard.findMany({ where: { assigneeUserId: employee.userId, project: { companyId } }, select: { effort: true, status: true, expectedDurationMinutes: true, dueDate: true, completedAt: true } }) : [],
     ]);
     const open = tasks.filter((task) => !completeStatuses.has(task.status));
     const dueToday = open.filter((task) => task.dueDate && task.dueDate >= bounds.start && task.dueDate < bounds.end);
     const overdue = open.filter((task) => task.dueDate && task.dueDate < bounds.start);
     const assignedRemainingMinutes = open.reduce((sum, task) => sum + (task.expectedDurationMinutes ?? 0), 0);
     const capacityMinutes = schedule?.isWorking ? schedule.capacityMinutes : 0;
+    const weekStart = new Date(bounds.start); weekStart.setUTCDate(weekStart.getUTCDate() - ((bounds.weekday + 6) % 7));
+    const completedThisWeek = tasks.filter((task) => task.status === 'DONE' && task.completedAt && task.completedAt >= weekStart && task.completedAt < bounds.end);
     return {
       employeeId,
       date: bounds.start.toISOString(),
@@ -60,6 +62,9 @@ export class CapacityService {
       freeCapacityMinutes: capacityMinutes - assignedRemainingMinutes,
       utilizationPercentage: capacityMinutes ? Math.round((assignedRemainingMinutes / capacityMinutes) * 1000) / 10 : 0,
       taskCount: { complete: tasks.filter((task) => task.status === 'DONE').length, total: tasks.length },
+      openTaskCount: open.length,
+      completedThisWeekCount: completedThisWeek.length,
+      weightedEffortCompletedThisWeek: completedThisWeek.reduce((sum, task) => sum + task.effort, 0),
       weightedCompletion: weightedCompletion(tasks),
       overdueCount: overdue.length,
       dueTodayCount: dueToday.length,
