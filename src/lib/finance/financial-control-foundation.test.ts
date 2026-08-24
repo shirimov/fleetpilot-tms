@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma';
 import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import { AuthorizationService, type CompanyAuthorization, type TrustedSession } from '@/lib/auth/authorization';
 import { FinancialControlAuthorizationService, type FinancialAuthorization } from './financial-control-authorization';
-import { FinancialControlService } from './financial-control-service';
+import { FinancialControlService, financialDate } from './financial-control-service';
 import { FinancialValidationError } from './financial-control-errors';
 import { GenericCsvImporter } from './financial-importers';
 import { FinancialStatementStorage, validateFinancialStatement } from './financial-statement-storage';
@@ -49,6 +49,7 @@ before(async () => {
 });
 
 after(async () => {
+  await prisma.adminFeeAgreement.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.financialExpectationMatch.deleteMany({ where: { expectation: { operatingGroupId: groupId } } });
   await prisma.financialExpectation.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.financialAllocation.deleteMany({ where: { transaction: { operatingGroupId: groupId } } });
@@ -59,6 +60,7 @@ after(async () => {
   await prisma.financialStatement.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.financialSource.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.financialCategory.deleteMany({ where: { operatingGroupId: groupId } });
+  await prisma.financialProgram.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.operatingGroupMembership.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.operatingGroup.deleteMany({ where: { id: groupId } });
@@ -78,6 +80,107 @@ test('minor-unit arithmetic is exact and currency is normalized', () => {
   assert.throws(() => parsePositiveMinorUnits(String(0.1 + 0.2)), FinancialValidationError);
   assert.equal(minorUnitsToDecimalInput(BigInt('9007199254740993')), '90071992547409.93');
   assert.equal(formatMinorUnitsDecimal(BigInt('9007199254740993')), '90,071,992,547,409.93');
+});
+
+test('financial calendar dates preserve the selected day without timezone conversion', () => {
+  assert.equal(financialDate('2026-08-15', 'Date').toISOString(), '2026-08-15T00:00:00.000Z');
+  assert.equal(financialDate('2024-02-29', 'Date').toISOString(), '2024-02-29T00:00:00.000Z');
+  assert.throws(() => financialDate('2026-02-30', 'Date'), /invalid/);
+  assert.throws(() => financialDate('08/15/2026', 'Date'), /invalid/);
+});
+
+test('category hierarchy supports arbitrary depth and full paths', async () => {
+  const root = await service.createCategory({ name: `Company Expenses ${suffix}`, type: 'DIRECT_EXPENSE' }, context());
+  const admin = await service.createCategory({ name: `Admin ${suffix}`, type: 'DIRECT_EXPENSE', parentCategoryId: root.id }, context());
+  const compliance = await service.createCategory({ name: `Compliance ${suffix}`, type: 'DIRECT_EXPENSE', parentCategoryId: admin.id }, context());
+  const mvr = await service.createCategory({ name: `MVR ${suffix}`, type: 'DIRECT_EXPENSE', parentCategoryId: compliance.id }, context());
+  const categories = await service.listCategories(context());
+  assert.equal(categories.find((category) => category.id === mvr.id)?.path, `Company Expenses ${suffix} / Admin ${suffix} / Compliance ${suffix} / MVR ${suffix}`);
+  await assert.rejects(service.updateCategory(root.id, { parentCategoryId: mvr.id }, context()), /cycle/);
+  await assert.rejects(service.updateCategory(root.id, { parentCategoryId: root.id }, context()), /own parent/);
+  await service.updateCategory(mvr.id, { isActive: false }, context());
+  assert.equal((await prisma.financialCategory.findUniqueOrThrow({ where: { id: mvr.id } })).isActive, false);
+  await assert.rejects(service.createTransaction({ transactionDate: '2026-08-17', amount: '18.00', direction: 'OUTFLOW', description: 'Inactive MVR', categoryId: mvr.id, currency: 'USD' }, context()), /dimension/);
+});
+
+test('category parents cannot cross operating groups', async () => {
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Category foreign ${suffix}` } });
+  const foreignCategory = await prisma.financialCategory.create({ data: { operatingGroupId: foreignGroup.id, name: `Foreign category ${suffix}`, type: 'OTHER' } });
+  await assert.rejects(service.createCategory({ name: `Invalid child ${suffix}`, type: 'OTHER', parentCategoryId: foreignCategory.id }, context()), /outside/);
+  await prisma.financialCategory.delete({ where: { id: foreignCategory.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+});
+
+test('program is an independent allocation dimension and does not duplicate a transaction', async () => {
+  const program = await service.createProgram({ code: `ADMIN-${suffix}`, name: `Admin program ${suffix}`, type: 'ADMIN' }, context());
+  const transaction = await service.createTransaction({ transactionDate: '2026-08-18', amount: '50.00', direction: 'OUTFLOW', description: 'MVR expense', categoryId, currency: 'USD' }, context());
+  const allocated = await service.replaceAllocations(transaction.id, [{ amount: '50.00', categoryId, programId: program.id }], context());
+  assert.equal(allocated.totalMinor, '5000');
+  assert.equal(await prisma.financialTransaction.count({ where: { id: transaction.id } }), 1);
+  assert.equal((await prisma.financialAllocation.findFirstOrThrow({ where: { transactionId: transaction.id } })).programId, program.id);
+});
+
+test('bulk allocation tracks exact partial, remaining, complete, and over-allocation states', async () => {
+  const transaction = await service.createTransaction({ transactionDate: '2026-08-19', amount: '50000.00', direction: 'OUTFLOW', description: 'Fuel statement', categoryId, currency: 'USD' }, context());
+  const partial = await service.replaceAllocations(transaction.id, [{ amount: '1820.00', categoryId, truckId }, { amount: '1640.00', categoryId, truckId: secondTruckId }], context(), false);
+  assert.deepEqual(partial, { allocationCount: 2, totalMinor: '346000', remainingMinor: '4654000', allocationStatus: 'PARTIAL' });
+  await assert.rejects(service.replaceAllocations(transaction.id, [{ amount: '50000.01', categoryId }], context(), false), /exceed/);
+  const complete = await service.replaceAllocations(transaction.id, [{ amount: '1820.00', categoryId, truckId }, { amount: '1640.00', categoryId, truckId: secondTruckId }, { amount: '46540.00', categoryId }], context());
+  assert.equal(complete.allocationStatus, 'COMPLETE');
+  assert.equal(complete.remainingMinor, '0');
+  assert.equal(await prisma.truck.count({ where: { id: { in: [truckId, secondTruckId] } } }), 2);
+});
+
+test('dimension discovery reuses canonical equipment classification data', async () => {
+  await prisma.truck.update({ where: { id: truckId }, data: { year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true } });
+  const trailer = await prisma.trailer.create({ data: { companyId, unitNumber: `dimension-${suffix}`, equipmentType: 'REEFER' } });
+  const dimensions = await service.listDimensions(context());
+  assert.deepEqual(dimensions.trucks.find((truck) => truck.id === truckId), { id: truckId, unitNumber: `financial-${suffix}`, year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true });
+  assert.equal(dimensions.trailers.find((item) => item.id === trailer.id)?.equipmentType, 'REEFER');
+  assert.equal(await prisma.truck.count({ where: { id: truckId } }), 1);
+  await prisma.trailer.delete({ where: { id: trailer.id } });
+});
+
+test('allocation rejects cross-group programs and preserves general overhead without a truck', async () => {
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Program foreign ${suffix}` } });
+  const foreignProgram = await prisma.financialProgram.create({ data: { operatingGroupId: foreignGroup.id, code: `FOREIGN-${suffix}`, name: `Foreign ${suffix}` } });
+  const transaction = await service.createTransaction({ transactionDate: '2026-08-20', amount: '100.00', direction: 'OUTFLOW', description: 'Office software', categoryId, currency: 'USD' }, context());
+  await assert.rejects(service.replaceAllocations(transaction.id, [{ amount: '100.00', categoryId, programId: foreignProgram.id }], context()), /outside/);
+  const overhead = await service.replaceAllocations(transaction.id, [{ amount: '100.00', categoryId }], context());
+  assert.equal(overhead.allocationStatus, 'COMPLETE');
+  const stored = await prisma.financialAllocation.findFirstOrThrow({ where: { transactionId: transaction.id } });
+  assert.equal(stored.truckId, null);
+  await prisma.financialProgram.delete({ where: { id: foreignProgram.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+});
+
+test('Admin Fee agreements preserve owner and truck history with deterministic lookup', async () => {
+  const ownerA = await prisma.financialParty.create({ data: { operatingGroupId: groupId, companyId, type: 'OWNER_OPERATOR', name: `Agreement owner A ${suffix}` } });
+  const ownerB = await prisma.financialParty.create({ data: { operatingGroupId: groupId, companyId, type: 'OWNER_OPERATOR', name: `Agreement owner B ${suffix}` } });
+  const may = await service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: ownerA.id, amount: '90.00', effectiveFrom: '2026-01-01', effectiveTo: '2026-06-30' }, context());
+  await service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: ownerA.id, amount: '100.00', effectiveFrom: '2026-07-01' }, context());
+  const different = await service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: ownerB.id, amount: '95.00', effectiveFrom: '2026-01-01' }, context());
+  const truck = await service.createAdminFeeAgreement({ scope: 'TRUCK', truckId, amount: '100.00', effectiveFrom: '2027-01-01' }, context());
+  assert.equal(may.amountMinor, '9000');
+  assert.equal(different.amountMinor, '9500');
+  assert.equal(truck.amountMinor, '10000');
+  assert.equal((await service.adminFeeAt({ ownerPartyId: ownerA.id, on: '2026-05-01' }, context()))?.amountMinor, '9000');
+  assert.equal((await service.adminFeeAt({ ownerPartyId: ownerA.id, on: '2026-08-01' }, context()))?.amountMinor, '10000');
+  assert.equal(await service.adminFeeAt({ ownerPartyId: ownerB.id, on: '2025-12-01' }, context()), null);
+  await assert.rejects(service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: ownerA.id, amount: '91.00', effectiveFrom: '2026-06-01', effectiveTo: '2026-08-01' }, context()), /overlaps/);
+  await assert.rejects(service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: ownerA.id, truckId, amount: '90.00', effectiveFrom: '2028-01-01' }, context()), /requires only/);
+  assert.equal((await service.updateAdminFeeAgreement(may.id, { isActive: false }, context())).isActive, false);
+  assert.equal((await prisma.adminFeeAgreement.findUniqueOrThrow({ where: { id: may.id } })).amountMinor, BigInt(9000));
+});
+
+test('Admin Fee dimensions reject foreign owner/truck references and create no actual charge', async () => {
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Fee foreign ${suffix}` } });
+  const foreignOwner = await prisma.financialParty.create({ data: { operatingGroupId: foreignGroup.id, type: 'OWNER_OPERATOR', name: `Foreign fee owner ${suffix}` } });
+  await assert.rejects(service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: foreignOwner.id, amount: '90.00', effectiveFrom: '2026-01-01' }, context()), /outside/);
+  await assert.rejects(service.createAdminFeeAgreement({ scope: 'TRUCK', truckId: foreignTruckId, amount: '90.00', effectiveFrom: '2026-01-01' }, context()), /outside/);
+  assert.equal(await prisma.financialTransaction.count({ where: { description: { contains: 'Admin Fee' }, operatingGroupId: groupId } }), 0);
+  await prisma.financialParty.delete({ where: { id: foreignOwner.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
 });
 
 test('OWNER and ADMIN group access is allowed while MEMBER is denied', async () => {
