@@ -9,3 +9,9 @@ export async function PATCH(request: Request, { params }: Context) {
   try { return NextResponse.json(await financialControlService.updateAdminFeeAgreement((await params).id, await request.json(), await financialControlAuthorization.requireContext())); }
   catch (error) { return financialRouteError(error); }
 }
+
+export async function DELETE(_request: Request, { params }: Context) {
+  try {
+    return NextResponse.json(await financialControlService.deleteAdminFeeAgreement((await params).id, await financialControlAuthorization.requireContext('OWNER')));
+  } catch (error) { return financialRouteError(error); }
+}

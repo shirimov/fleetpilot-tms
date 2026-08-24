@@ -1,13 +1,15 @@
 import { NextResponse } from 'next/server';
 import { authorizationService } from '@/lib/auth/authorization';
 import { financialControlService } from '@/lib/finance/financial-control-service';
+import { financialControlAuthorization } from '@/lib/finance/financial-control-authorization';
 import { financialRouteError } from '@/lib/finance/financial-control-route';
 
 export async function GET() {
   try {
     const active = await authorizationService.requireActiveCompany('ADMIN');
     const link = await financialControlService.getGroup(active);
-    return NextResponse.json({ group: link?.operatingGroup ?? null });
+    const role = link ? (await financialControlAuthorization.requireContext()).role : active.role;
+    return NextResponse.json({ group: link?.operatingGroup ?? null, role });
   } catch (error) { return financialRouteError(error); }
 }
 export async function POST(request: Request) {

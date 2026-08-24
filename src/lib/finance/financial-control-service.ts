@@ -10,6 +10,7 @@ import {
   PrismaClient,
 } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import type { CompanyAuthorization } from '@/lib/auth/authorization';
 import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
@@ -92,7 +93,27 @@ export class FinancialControlService {
     return this.database.financialSource.findMany({
       where: { operatingGroupId: context.operatingGroupId },
       orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
-      select: { id: true, name: true, type: true, institution: true, provider: true, currency: true, lastFour: true, isActive: true, company: { select: { id: true, name: true } }, _count: { select: { statements: true } } },
+      select: { id: true, name: true, type: true, institution: true, provider: true, currency: true, lastFour: true, isActive: true, company: { select: { id: true, name: true } }, _count: { select: { statements: true, transactions: true, destinationTransfers: true, expectations: true } } },
+    });
+  }
+
+  async updateSource(sourceId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    if (typeof input.isActive !== 'boolean') throw new FinancialValidationError('Only active status can be changed.');
+    const source = await this.database.financialSource.findFirst({ where: { id: sourceId, operatingGroupId: context.operatingGroupId } });
+    if (!source) throw new FinancialNotFoundError();
+    return this.database.financialSource.update({ where: { id: sourceId }, data: { isActive: input.isActive } });
+  }
+
+  async deleteSource(sourceId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`financial-source:${sourceId}`]);
+      const source = await tx.financialSource.findFirst({ where: { id: sourceId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, _count: { select: { statements: true, transactions: true, destinationTransfers: true, expectations: true } } } });
+      if (!source) throw new FinancialNotFoundError();
+      if (Object.values(source._count).some((count) => count > 0)) throw new FinancialConflictError('This financial account cannot be deleted because it has financial history. Deactivate it instead.');
+      await tx.financialSource.delete({ where: { id: sourceId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'FINANCIAL_SOURCE_DELETED', metadata: { deletedSourceId: source.id, name: source.name } } });
+      return { deleted: true };
     });
   }
 
@@ -113,7 +134,7 @@ export class FinancialControlService {
   }
 
   async listCategories(context: FinancialAuthorization) {
-    const categories = await this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ name: 'asc' }] });
+    const categories = await this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ name: 'asc' }], include: { _count: { select: { childCategories: true, transactions: true, allocations: true } } } });
     const byId = new Map(categories.map((category) => [category.id, category]));
     const pathFor = (category: (typeof categories)[number]) => {
       const names = [category.name];
@@ -130,6 +151,19 @@ export class FinancialControlService {
       return names.join(' / ');
     };
     return categories.map((category) => ({ ...category, path: pathFor(category) })).sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  async deleteCategory(categoryId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`financial-category:${categoryId}`]);
+      const category = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, isSystemDefault: true, _count: { select: { childCategories: true, transactions: true, allocations: true } } } });
+      if (!category) throw new FinancialNotFoundError();
+      if (category.isSystemDefault || Object.values(category._count).some((count) => count > 0)) throw new FinancialConflictError('This category cannot be deleted because it has financial history or dependent categories. Deactivate it instead.');
+      await tx.financialCategory.delete({ where: { id: categoryId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'FINANCIAL_CATEGORY_DELETED', metadata: { deletedCategoryId: category.id, name: category.name } } });
+      return { deleted: true };
+    });
   }
 
   async createCategory(input: Record<string, unknown>, context: FinancialAuthorization) {
@@ -161,7 +195,27 @@ export class FinancialControlService {
   }
 
   async listPrograms(context: FinancialAuthorization) {
-    return this.database.financialProgram.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ isActive: 'desc' }, { name: 'asc' }] });
+    return this.database.financialProgram.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ isActive: 'desc' }, { name: 'asc' }], include: { _count: { select: { allocations: true } } } });
+  }
+
+  async updateProgram(programId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    if (typeof input.isActive !== 'boolean') throw new FinancialValidationError('Only active status can be changed.');
+    const program = await this.database.financialProgram.findFirst({ where: { id: programId, operatingGroupId: context.operatingGroupId } });
+    if (!program) throw new FinancialNotFoundError();
+    return this.database.financialProgram.update({ where: { id: programId }, data: { isActive: input.isActive } });
+  }
+
+  async deleteProgram(programId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`financial-program:${programId}`]);
+      const program = await tx.financialProgram.findFirst({ where: { id: programId, operatingGroupId: context.operatingGroupId }, select: { id: true, code: true, name: true, _count: { select: { allocations: true } } } });
+      if (!program) throw new FinancialNotFoundError();
+      if (program._count.allocations > 0) throw new FinancialConflictError('This program cannot be deleted because it has financial history. Deactivate it instead.');
+      await tx.financialProgram.delete({ where: { id: programId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'FINANCIAL_PROGRAM_DELETED', metadata: { deletedProgramId: program.id, code: program.code, name: program.name } } });
+      return { deleted: true };
+    });
   }
 
   async createProgram(input: Record<string, unknown>, context: FinancialAuthorization) {
@@ -242,6 +296,22 @@ export class FinancialControlService {
       const updated = await tx.adminFeeAgreement.update({ where: { id: agreementId }, data: { isActive } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: isActive ? 'ADMIN_FEE_AGREEMENT_ACTIVATED' : 'ADMIN_FEE_AGREEMENT_DEACTIVATED', metadata: { agreementId } } });
       return { ...updated, amountMinor: updated.amountMinor.toString() };
+    });
+  }
+
+  async deleteAdminFeeAgreement(agreementId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`admin-fee-agreement:${agreementId}`]);
+      const agreement = await tx.adminFeeAgreement.findFirst({ where: { id: agreementId, operatingGroupId: context.operatingGroupId } });
+      if (!agreement) throw new FinancialNotFoundError();
+      if (!agreement.isActive || agreement.effectiveFrom <= new Date()) throw new FinancialConflictError('Historical Admin Fee agreements cannot be deleted. Deactivate or end-date them instead.');
+      const history = await tx.financialAuditEvent.count({ where: { operatingGroupId: context.operatingGroupId, metadata: { path: ['agreementId'], equals: agreementId }, action: { not: 'ADMIN_FEE_AGREEMENT_CREATED' } } });
+      if (history > 0) throw new FinancialConflictError('This Admin Fee agreement has protected history and cannot be deleted.');
+      await tx.financialAuditEvent.deleteMany({ where: { operatingGroupId: context.operatingGroupId, action: 'ADMIN_FEE_AGREEMENT_CREATED', metadata: { path: ['agreementId'], equals: agreementId } } });
+      await tx.adminFeeAgreement.delete({ where: { id: agreementId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'ADMIN_FEE_AGREEMENT_DELETED', metadata: { deletedAgreementId: agreement.id, scope: agreement.scope, effectiveFrom: agreement.effectiveFrom.toISOString().slice(0, 10) } } });
+      return { deleted: true };
     });
   }
 
@@ -364,6 +434,50 @@ export class FinancialControlService {
       evidenceMatchedMinor: transaction.evidence.filter((item) => item.role === 'PRIMARY').reduce((sum, item) => sum + item.matchedAmountMinor, BigInt(0)).toString(),
       allocations: undefined, evidence: undefined,
     }));
+  }
+
+  async deleteTransaction(transactionId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`transaction:${transactionId}`]);
+      const transaction = await tx.financialTransaction.findFirst({
+        where: { id: transactionId, operatingGroupId: context.operatingGroupId },
+        select: {
+          id: true, companyId: true, amountMinor: true, status: true, reconciliationStatus: true, reviewedAt: true,
+          recoveredAmountMinor: true, waivedAmountMinor: true, lastRecoveryAt: true,
+          _count: { select: { evidence: true, allocations: true, expectationMatches: true } },
+          auditEvents: { select: { action: true } },
+        },
+      });
+      if (!transaction) throw new FinancialNotFoundError();
+      const onlyCreationAudit = transaction.auditEvents.every(({ action }) => action === 'TRANSACTION_CREATED');
+      const safe = transaction.status === 'DRAFT'
+        && ['UNREVIEWED', 'UNMATCHED', 'DUPLICATE_SUSPECTED', 'NEEDS_REVIEW'].includes(transaction.reconciliationStatus)
+        && transaction.reviewedAt === null
+        && transaction.recoveredAmountMinor === BigInt(0)
+        && transaction.waivedAmountMinor === BigInt(0)
+        && transaction.lastRecoveryAt === null
+        && Object.values(transaction._count).every((count) => count === 0)
+        && onlyCreationAudit;
+      if (!safe) throw new FinancialConflictError('This transaction cannot be deleted because it has financial history. Void it instead.');
+      await tx.financialAuditEvent.deleteMany({ where: { transactionId, action: 'TRANSACTION_CREATED' } });
+      await tx.financialTransaction.delete({ where: { id: transactionId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: transaction.companyId, actorUserId: context.userId, action: 'FINANCIAL_TRANSACTION_DELETED', metadata: { deletedTransactionId: transaction.id, amountMinor: transaction.amountMinor.toString(), status: transaction.status, reconciliationStatus: transaction.reconciliationStatus } } });
+      return { deleted: true };
+    });
+  }
+
+  async voidTransaction(transactionId: string, context: FinancialAuthorization) {
+    this.requireOwner(context);
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`transaction:${transactionId}`]);
+      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId } });
+      if (!transaction) throw new FinancialNotFoundError();
+      if (transaction.status === 'VOIDED') throw new FinancialConflictError('This transaction is already voided.');
+      await tx.financialTransaction.update({ where: { id: transactionId }, data: { status: 'VOIDED' } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: transaction.companyId, transactionId, actorUserId: context.userId, action: 'TRANSACTION_VOIDED', before: { status: transaction.status }, after: { status: 'VOIDED' } } });
+      return { status: 'VOIDED' };
+    });
   }
 
   async listImportRecords(context: FinancialAuthorization) {
@@ -555,6 +669,10 @@ export class FinancialControlService {
     for (const key of [...new Set(keys)].sort()) {
       await database.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text AS lock_result`;
     }
+  }
+
+  private requireOwner(context: FinancialAuthorization) {
+    if (context.role !== 'OWNER') throw new AuthorizationDeniedError();
   }
 
   private async validateDimensions(input: { companyId: string | null; sourceId: string | null; categoryId: string | null; customerId: string | null; vendorId: string | null; ownerId: string | null }, context: FinancialAuthorization) {
