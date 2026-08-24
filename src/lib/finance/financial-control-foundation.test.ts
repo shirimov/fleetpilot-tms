@@ -2,6 +2,7 @@ import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { mkdtemp, readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { prisma } from '@/lib/prisma';
@@ -9,7 +10,7 @@ import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import { AuthorizationService, type CompanyAuthorization, type TrustedSession } from '@/lib/auth/authorization';
 import { FinancialControlAuthorizationService, type FinancialAuthorization } from './financial-control-authorization';
 import { FinancialControlService, financialDate } from './financial-control-service';
-import { FinancialValidationError } from './financial-control-errors';
+import { FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
 import { GenericCsvImporter } from './financial-importers';
 import { FinancialStatementStorage, validateFinancialStatement } from './financial-statement-storage';
 import { formatMinorUnitsDecimal, minorUnitsToDecimalInput, normalizeCurrency, parsePositiveMinorUnits } from './money';
@@ -181,6 +182,73 @@ test('Admin Fee dimensions reject foreign owner/truck references and create no a
   assert.equal(await prisma.financialTransaction.count({ where: { description: { contains: 'Admin Fee' }, operatingGroupId: groupId } }), 0);
   await prisma.financialParty.delete({ where: { id: foreignOwner.id } });
   await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+});
+
+test('OWNER cleanup permanently deletes only dependency-free financial records', async () => {
+  const manual = await service.createTransaction({ transactionDate: '2026-08-25', amount: '10.00', direction: 'OUTFLOW', description: `Disposable manual ${suffix}`, currency: 'USD' }, context());
+  await assert.rejects(service.deleteTransaction(manual.id, context(adminId, 'ADMIN')), AuthorizationDeniedError);
+  assert.deepEqual(await service.deleteTransaction(manual.id, context()), { deleted: true });
+  assert.equal(await prisma.financialTransaction.findUnique({ where: { id: manual.id } }), null);
+
+  const protectedTransaction = await service.createTransaction({ transactionDate: '2026-08-25', amount: '20.00', direction: 'OUTFLOW', description: `Protected allocation ${suffix}`, categoryId, currency: 'USD' }, context());
+  await service.replaceAllocations(protectedTransaction.id, [{ amount: '20.00', categoryId }], context());
+  await assert.rejects(service.deleteTransaction(protectedTransaction.id, context()), /financial history/);
+  assert.deepEqual(await service.voidTransaction(protectedTransaction.id, context()), { status: 'VOIDED' });
+
+  const recovery = await service.createTransaction({ transactionDate: '2026-08-25', amount: '30.00', direction: 'OUTFLOW', description: `Protected recovery ${suffix}`, recoverableFromOwner: true, currency: 'USD' }, context());
+  await service.updateOwnerRecovery(recovery.id, { action: 'RECORD', amount: '5.00' }, context());
+  await assert.rejects(service.deleteTransaction(recovery.id, context()), /financial history/);
+  await service.updateOwnerRecovery(recovery.id, { action: 'WAIVE', notes: 'Cleanup-control regression fixture' }, context());
+
+  const evidenceStatement = await service.registerStatement({ sourceId, type: 'BANK_STATEMENT', periodStart: new Date('2026-08-25'), periodEnd: new Date('2026-08-25'), originalFilename: `cleanup-${suffix}.csv`, displayFilename: `cleanup-${suffix}.csv`, mimeType: 'text/csv', byteSize: 32, storageKey: randomUUID(), checksumSha256: createHash('sha256').update(`cleanup-${suffix}`).digest('hex'), currency: 'USD' }, context());
+  const [evidenceCandidate] = new GenericCsvImporter().parse(new TextEncoder().encode('date,description,amount\n2026-08-25,Evidence,35.00\n'));
+  await service.importRawRecords(evidenceStatement.id, [evidenceCandidate], context());
+  const evidenceRecord = await prisma.financialImportRecord.findFirstOrThrow({ where: { statementId: evidenceStatement.id } });
+  const evidenceTransaction = await service.createTransaction({ transactionDate: '2026-08-25', amount: '35.00', direction: 'OUTFLOW', description: `Protected evidence ${suffix}`, currency: 'USD' }, context());
+  await service.matchEvidence(evidenceTransaction.id, { importRecordId: evidenceRecord.id, amount: '35.00', method: 'EXACT' }, context());
+  await assert.rejects(service.deleteTransaction(evidenceTransaction.id, context()), /financial history/);
+
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Cleanup foreign ${suffix}`, companies: { create: { companyId: foreignCompanyId } } } });
+  const foreignTransaction = await prisma.financialTransaction.create({ data: { operatingGroupId: foreignGroup.id, companyId: foreignCompanyId, transactionDate: new Date('2026-08-25'), amountMinor: BigInt(100), currency: 'USD', direction: 'OUTFLOW', description: `Foreign cleanup ${suffix}`, fingerprintSha256: createHash('sha256').update(`foreign-cleanup-${suffix}`).digest('hex'), createdByUserId: ownerId } });
+  await assert.rejects(service.deleteTransaction(foreignTransaction.id, context()), FinancialNotFoundError);
+  await prisma.financialTransaction.delete({ where: { id: foreignTransaction.id } });
+  await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: foreignGroup.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+
+  const unusedCategory = await service.createCategory({ name: `Disposable category ${suffix}`, type: 'OTHER' }, context());
+  assert.deepEqual(await service.deleteCategory(unusedCategory.id, context()), { deleted: true });
+  const parent = await service.createCategory({ name: `Protected parent ${suffix}`, type: 'OTHER' }, context());
+  await service.createCategory({ name: `Protected child ${suffix}`, type: 'OTHER', parentCategoryId: parent.id }, context());
+  await assert.rejects(service.deleteCategory(parent.id, context()), /dependent categories/);
+  await assert.rejects(service.deleteCategory(categoryId, context()), /financial history/);
+  await service.updateCategory(categoryId, { isActive: false }, context());
+  assert.equal((await prisma.financialCategory.findUniqueOrThrow({ where: { id: categoryId } })).isActive, false);
+  assert.equal((await prisma.financialTransaction.findUniqueOrThrow({ where: { id: protectedTransaction.id } })).categoryId, categoryId);
+  await service.updateCategory(categoryId, { isActive: true }, context());
+
+  const unusedProgram = await service.createProgram({ code: `DELETE-${suffix}`, name: `Delete ${suffix}` }, context());
+  assert.deepEqual(await service.deleteProgram(unusedProgram.id, context()), { deleted: true });
+  const usedProgram = await service.createProgram({ code: `KEEP-${suffix}`, name: `Keep ${suffix}` }, context());
+  const programTransaction = await service.createTransaction({ transactionDate: '2026-08-25', amount: '40.00', direction: 'OUTFLOW', description: `Program history ${suffix}`, categoryId, currency: 'USD' }, context());
+  await service.replaceAllocations(programTransaction.id, [{ amount: '40.00', categoryId, programId: usedProgram.id }], context());
+  await assert.rejects(service.deleteProgram(usedProgram.id, context()), /financial history/);
+  await service.updateProgram(usedProgram.id, { isActive: false }, context());
+  assert.equal((await prisma.financialProgram.findUniqueOrThrow({ where: { id: usedProgram.id } })).isActive, false);
+
+  const unusedSource = await service.createSource({ name: `Disposable source ${suffix}`, type: 'OTHER', currency: 'USD' }, context());
+  assert.deepEqual(await service.deleteSource(unusedSource.id, context()), { deleted: true });
+  await assert.rejects(service.deleteSource(sourceId, context()), /financial history/);
+  await service.updateSource(sourceId, { isActive: false }, context());
+  assert.equal((await prisma.financialSource.findUniqueOrThrow({ where: { id: sourceId } })).isActive, false);
+  await service.updateSource(sourceId, { isActive: true }, context());
+
+  const owner = await prisma.financialParty.create({ data: { operatingGroupId: groupId, companyId, type: 'OWNER_OPERATOR', name: `Cleanup owner ${suffix}` } });
+  const future = await service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: owner.id, amount: '90.00', effectiveFrom: '2099-01-01' }, context());
+  assert.deepEqual(await service.deleteAdminFeeAgreement(future.id, context()), { deleted: true });
+  const historical = await service.createAdminFeeAgreement({ scope: 'OWNER', ownerPartyId: owner.id, amount: '100.00', effectiveFrom: '2020-01-01', effectiveTo: '2020-12-31' }, context());
+  await assert.rejects(service.deleteAdminFeeAgreement(historical.id, context()), /Historical/);
+  await service.updateAdminFeeAgreement(historical.id, { isActive: false }, context());
+  assert.equal((await prisma.adminFeeAgreement.findUniqueOrThrow({ where: { id: historical.id } })).isActive, false);
 });
 
 test('OWNER and ADMIN group access is allowed while MEMBER is denied', async () => {

@@ -12,3 +12,9 @@ export async function PATCH(request: Request, { params }: Context) {
     return financialRouteError(error);
   }
 }
+
+export async function DELETE(_request: Request, { params }: Context) {
+  try {
+    return NextResponse.json(await financialControlService.deleteCategory((await params).id, await financialControlAuthorization.requireContext('OWNER')));
+  } catch (error) { return financialRouteError(error); }
+}

@@ -44,12 +44,26 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await categoryForm.getByLabel('Category parent').selectOption({ label: `Company Expenses ${suffix} / Admin ${suffix}` });
     await categoryForm.getByRole('button', { name: 'Add category' }).click();
     await expect(page.locator('strong').filter({ hasText: `Company Expenses ${suffix} / Admin ${suffix} / MVR ${suffix}` })).toBeVisible();
+    await categoryForm.getByPlaceholder('Operational category').fill(`Disposable category ${suffix}`);
+    await categoryForm.getByLabel('Category parent').selectOption('');
+    await categoryForm.getByRole('button', { name: 'Add category' }).click();
+    const disposableCategory = page.locator('strong').filter({ hasText: `Disposable category ${suffix}` }).locator('xpath=ancestor::article');
+    page.once('dialog', (dialog) => dialog.accept());
+    await disposableCategory.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('strong').filter({ hasText: `Disposable category ${suffix}` })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Programs' }).click();
     await page.getByPlaceholder('ADMIN', { exact: true }).fill(`ADMIN-${suffix}`);
     await page.getByPlaceholder('Administration', { exact: true }).fill(`Administration ${suffix}`);
     await page.getByRole('button', { name: 'Add program' }).click();
     await expect(page.getByText(`${`ADMIN-${suffix}`.toUpperCase()} · Administration ${suffix}`, { exact: true })).toBeVisible();
+    await page.getByPlaceholder('ADMIN', { exact: true }).fill(`DELETE-${suffix}`);
+    await page.getByPlaceholder('Administration', { exact: true }).fill(`Disposable program ${suffix}`);
+    await page.getByRole('button', { name: 'Add program' }).click();
+    const disposableProgram = page.getByText(`${`DELETE-${suffix}`.toUpperCase()} · Disposable program ${suffix}`, { exact: true }).locator('xpath=ancestor::article');
+    page.once('dialog', (dialog) => dialog.accept());
+    await disposableProgram.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText(`Disposable program ${suffix}`, { exact: false })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Admin Fees' }).click();
     const feeForm = page.getByRole('heading', { name: 'Add Admin Fee agreement' }).locator('xpath=ancestor::form');
@@ -65,6 +79,14 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await feeForm.getByLabel('Effective to').fill('');
     await feeForm.getByRole('button', { name: 'Add agreement' }).click();
     await expect(page.getByText('$100.00 weekly · 2026-01-01 – ongoing')).toBeVisible();
+    await feeForm.getByLabel('Owner').selectOption(feeOwnerA.id);
+    await feeForm.getByPlaceholder('90.00').fill('110.00');
+    await feeForm.getByLabel('Effective from').fill('2099-01-01');
+    await feeForm.getByRole('button', { name: 'Add agreement' }).click();
+    const disposableFee = page.getByText('$110.00 weekly · 2099-01-01 – ongoing').locator('xpath=ancestor::article');
+    page.once('dialog', (dialog) => dialog.accept());
+    await disposableFee.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText('$110.00 weekly · 2099-01-01 – ongoing')).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Sources' }).click();
     await page.getByPlaceholder('Bank of America Operating').fill(`Operating Bank ${suffix}`);
@@ -73,6 +95,12 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await page.getByPlaceholder('Bank of America Operating').fill(`Reserve Bank ${suffix}`);
     await page.getByRole('button', { name: 'Add source' }).click();
     await expect(page.getByText(`Reserve Bank ${suffix}`, { exact: true })).toBeVisible();
+    await page.getByPlaceholder('Bank of America Operating').fill(`Disposable account ${suffix}`);
+    await page.getByRole('button', { name: 'Add source' }).click();
+    const disposableSource = page.getByText(`Disposable account ${suffix}`, { exact: true }).locator('xpath=ancestor::article');
+    page.once('dialog', (dialog) => dialog.accept());
+    await disposableSource.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText(`Disposable account ${suffix}`, { exact: true })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Statements' }).click();
     const uploadForm = page.getByRole('heading', { name: 'Upload statement' }).locator('xpath=ancestor::form');
@@ -86,6 +114,14 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await page.getByRole('button', { name: 'Transactions' }).click();
     const browserToday = await page.evaluate(() => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; });
     await expect(page.getByLabel('Transaction date')).toHaveValue(browserToday);
+    await page.getByLabel('Transaction date').fill('2026-08-01');
+    await page.getByPlaceholder('Description').fill(`Disposable transaction ${suffix}`);
+    await page.getByPlaceholder('48320.00').fill('1.00');
+    await page.getByRole('button', { name: 'Add transaction' }).click();
+    const disposableTransaction = page.getByText(`Disposable transaction ${suffix}`, { exact: true }).locator('xpath=ancestor::article');
+    page.once('dialog', (dialog) => dialog.accept());
+    await disposableTransaction.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByText(`Disposable transaction ${suffix}`, { exact: true })).toHaveCount(0);
     await page.getByLabel('Transaction date').fill('2026-08-02');
     await page.getByPlaceholder('Description').fill('Amazon settlement');
     await page.getByPlaceholder('48320.00').fill('48320.00');
@@ -107,6 +143,10 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await transaction.getByRole('button', { name: 'Save allocations' }).click();
     await expect(transaction.getByText(/RECONCILED/)).toBeVisible();
     await expect(transaction.getByText(/Allocated \$48,320\.00 · Remaining \$0\.00/)).toBeVisible();
+    page.once('dialog', (dialog) => dialog.accept());
+    await transaction.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('p[role="alert"]')).toContainText('financial history');
+    await expect(transaction).toBeVisible();
 
     const transactionForm = page.getByRole('heading', { name: 'Add normalized transaction' }).locator('xpath=ancestor::form');
     await transactionForm.locator('input[name="transactionDate"]').fill('2026-08-03');
