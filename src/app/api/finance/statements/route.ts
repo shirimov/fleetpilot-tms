@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { FinancialStatementType } from '@prisma/client';
 import { financialControlAuthorization } from '@/lib/finance/financial-control-authorization';
-import { financialControlService } from '@/lib/finance/financial-control-service';
+import { financialControlService, financialDate } from '@/lib/finance/financial-control-service';
 import { financialRouteError } from '@/lib/finance/financial-control-route';
 import { FinancialValidationError } from '@/lib/finance/financial-control-errors';
 import { financialStatementStorage, validateFinancialStatement } from '@/lib/finance/financial-statement-storage';
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     const metadata = validateFinancialStatement(file, bytes);
     storedKey = await financialStatementStorage.put(bytes);
     const { extension, ...documentMetadata } = metadata;
-    const statement = await financialControlService.registerStatement({ sourceId, type: type as FinancialStatementType, periodStart: new Date(periodStart), periodEnd: new Date(periodEnd), ...documentMetadata, storageKey: storedKey, currency: normalizeCurrency(form.get('currency') ?? 'USD') }, context);
+    const statement = await financialControlService.registerStatement({ sourceId, type: type as FinancialStatementType, periodStart: financialDate(periodStart, 'Statement period start'), periodEnd: financialDate(periodEnd, 'Statement period end'), ...documentMetadata, storageKey: storedKey, currency: normalizeCurrency(form.get('currency') ?? 'USD') }, context);
     storedKey = null;
     const imported = extension === '.csv' ? await financialControlService.importRawRecords(statement.id, genericCsvImporter.parse(bytes), context) : null;
     return NextResponse.json({ statementId: statement.id, imported }, { status: 201 });

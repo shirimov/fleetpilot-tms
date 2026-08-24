@@ -4,6 +4,7 @@ import {
   type FinancialCategoryType,
   type FinancialDirection,
   type FinancialMatchMethod,
+  type FinancialProgramType,
   type FinancialSourceType,
   type FinancialStatementType,
   PrismaClient,
@@ -38,9 +39,11 @@ function optionalText(value: unknown, max = 255) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
 }
 
-function date(value: unknown, label: string) {
-  const parsed = typeof value === 'string' ? new Date(value) : null;
-  if (!parsed || Number.isNaN(parsed.getTime())) throw new FinancialValidationError(`${label} is invalid.`);
+export function financialDate(value: unknown, label: string) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new FinancialValidationError(`${label} is invalid.`);
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) throw new FinancialValidationError(`${label} is invalid.`);
   return parsed;
 }
 
@@ -110,15 +113,145 @@ export class FinancialControlService {
   }
 
   async listCategories(context: FinancialAuthorization) {
-    return this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ type: 'asc' }, { name: 'asc' }] });
+    const categories = await this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ name: 'asc' }] });
+    const byId = new Map(categories.map((category) => [category.id, category]));
+    const pathFor = (category: (typeof categories)[number]) => {
+      const names = [category.name];
+      const visited = new Set([category.id]);
+      let parentId = category.parentCategoryId;
+      while (parentId) {
+        if (visited.has(parentId)) break;
+        visited.add(parentId);
+        const parent = byId.get(parentId);
+        if (!parent) break;
+        names.unshift(parent.name);
+        parentId = parent.parentCategoryId;
+      }
+      return names.join(' / ');
+    };
+    return categories.map((category) => ({ ...category, path: pathFor(category) })).sort((a, b) => a.path.localeCompare(b.path));
   }
 
   async createCategory(input: Record<string, unknown>, context: FinancialAuthorization) {
+    const parentCategoryId = optionalText(input.parentCategoryId);
+    if (parentCategoryId) await this.requireCategory(parentCategoryId, context);
     return this.database.financialCategory.create({ data: {
       operatingGroupId: context.operatingGroupId,
       name: text(input.name, 'Category name'),
       type: enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
+      parentCategoryId,
     } });
+  }
+
+  async updateCategory(categoryId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    const existing = await this.requireCategory(categoryId, context);
+    const parentCategoryId = input.parentCategoryId === undefined ? existing.parentCategoryId : optionalText(input.parentCategoryId);
+    if (parentCategoryId === categoryId) throw new FinancialValidationError('A category cannot be its own parent.');
+    if (parentCategoryId) {
+      await this.requireCategory(parentCategoryId, context);
+      const descendants = await this.categoryDescendantIds(categoryId, context);
+      if (descendants.has(parentCategoryId)) throw new FinancialValidationError('Category hierarchy cannot contain a cycle.');
+    }
+    return this.database.financialCategory.update({ where: { id: categoryId }, data: {
+      name: input.name === undefined ? undefined : text(input.name, 'Category name'),
+      type: input.type === undefined ? undefined : enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
+      isActive: typeof input.isActive === 'boolean' ? input.isActive : undefined,
+      parentCategoryId,
+    } });
+  }
+
+  async listPrograms(context: FinancialAuthorization) {
+    return this.database.financialProgram.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ isActive: 'desc' }, { name: 'asc' }] });
+  }
+
+  async createProgram(input: Record<string, unknown>, context: FinancialAuthorization) {
+    return this.database.financialProgram.create({ data: {
+      operatingGroupId: context.operatingGroupId,
+      code: text(input.code, 'Program code', 40).toUpperCase(),
+      name: text(input.name, 'Program name'),
+      type: enumValue(input.type ?? 'OTHER', ['ADMIN', 'SAFETY', 'RECRUITING', 'MAINTENANCE', 'SHOP', 'INSURANCE', 'TRAILER_RENTAL', 'OTHER'] satisfies FinancialProgramType[], 'Program type'),
+    } });
+  }
+
+  async createParty(input: Record<string, unknown>, context: FinancialAuthorization) {
+    const companyId = optionalText(input.companyId) ?? context.activeCompanyId;
+    if (!context.companyIds.includes(companyId)) throw new FinancialValidationError('Party company is outside this operating group.');
+    return this.database.financialParty.create({ data: {
+      operatingGroupId: context.operatingGroupId,
+      companyId,
+      type: enumValue(input.type, ['VENDOR', 'OWNER_OPERATOR', 'OTHER'] as const, 'Party type'),
+      name: text(input.name, 'Party name'),
+      externalReference: optionalText(input.externalReference),
+    } });
+  }
+
+  async listDimensions(context: FinancialAuthorization) {
+    const companyWhere = { companyId: { in: context.companyIds } };
+    const [companies, trucks, trailers, drivers, employees, loads, customers, parties, programs] = await Promise.all([
+      this.database.company.findMany({ where: { id: { in: context.companyIds } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+      this.database.truck.findMany({ where: companyWhere, select: { id: true, unitNumber: true, year: true, make: true, model: true, isOwnerOp: true }, orderBy: { unitNumber: 'asc' } }),
+      this.database.trailer.findMany({ where: companyWhere, select: { id: true, unitNumber: true, equipmentType: true }, orderBy: { unitNumber: 'asc' } }),
+      this.database.driver.findMany({ where: companyWhere, select: { id: true, firstName: true, lastName: true }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }] }),
+      this.database.employee.findMany({ where: companyWhere, select: { id: true, firstName: true, lastName: true, preferredName: true }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }] }),
+      this.database.load.findMany({ where: companyWhere, select: { id: true, loadNumber: true }, orderBy: { loadNumber: 'asc' } }),
+      this.database.customer.findMany({ where: companyWhere, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+      this.database.financialParty.findMany({ where: { operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true, name: true, type: true }, orderBy: { name: 'asc' } }),
+      this.database.financialProgram.findMany({ where: { operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true, code: true, name: true }, orderBy: { name: 'asc' } }),
+    ]);
+    return { companies, trucks, trailers, drivers, employees, loads, customers, parties, programs };
+  }
+
+  async listAdminFeeAgreements(context: FinancialAuthorization) {
+    const rows = await this.database.adminFeeAgreement.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ effectiveFrom: 'desc' }, { createdAt: 'desc' }], include: { ownerParty: { select: { id: true, name: true } }, truck: { select: { id: true, unitNumber: true } } } });
+    return rows.map((row) => ({ ...row, amountMinor: row.amountMinor.toString(), effectiveFrom: row.effectiveFrom.toISOString().slice(0, 10), effectiveTo: row.effectiveTo?.toISOString().slice(0, 10) ?? null }));
+  }
+
+  async createAdminFeeAgreement(input: Record<string, unknown>, context: FinancialAuthorization) {
+    const scope = enumValue(input.scope, ['OWNER', 'TRUCK'] as const, 'Agreement scope');
+    const ownerPartyId = optionalText(input.ownerPartyId);
+    const truckId = optionalText(input.truckId);
+    if (scope === 'OWNER' && (!ownerPartyId || truckId) || scope === 'TRUCK' && (!truckId || ownerPartyId)) throw new FinancialValidationError('OWNER requires only an owner; TRUCK requires only a truck.');
+    if (ownerPartyId && !await this.database.financialParty.findFirst({ where: { id: ownerPartyId, operatingGroupId: context.operatingGroupId, type: 'OWNER_OPERATOR' } })) throw new FinancialValidationError('Owner is outside this operating group.');
+    if (truckId && !await this.database.truck.findFirst({ where: { id: truckId, companyId: { in: context.companyIds } } })) throw new FinancialValidationError('Truck is outside this operating group.');
+    const effectiveFrom = financialDate(input.effectiveFrom, 'Effective from');
+    const effectiveTo = input.effectiveTo ? financialDate(input.effectiveTo, 'Effective to') : null;
+    if (effectiveTo && effectiveTo < effectiveFrom) throw new FinancialValidationError('Effective to must be on or after effective from.');
+    const key = scope === 'OWNER' ? `admin-fee:owner:${ownerPartyId}` : `admin-fee:truck:${truckId}`;
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [key]);
+      const overlap = await tx.adminFeeAgreement.findFirst({ where: { operatingGroupId: context.operatingGroupId, scope, ownerPartyId, truckId, isActive: true, effectiveFrom: { lte: effectiveTo ?? new Date('9999-12-31T00:00:00.000Z') }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: effectiveFrom } }] } });
+      if (overlap) throw new FinancialConflictError('Admin Fee agreement overlaps an existing active period.');
+      const agreement = await tx.adminFeeAgreement.create({ data: { operatingGroupId: context.operatingGroupId, scope, ownerPartyId, truckId, amountMinor: parsePositiveMinorUnits(input.amount), currency: normalizeCurrency(input.currency ?? 'USD'), frequency: 'WEEKLY', effectiveFrom, effectiveTo, isActive: input.isActive !== false, createdByUserId: context.userId } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'ADMIN_FEE_AGREEMENT_CREATED', metadata: { agreementId: agreement.id, scope, ownerPartyId, truckId, amountMinor: agreement.amountMinor.toString(), effectiveFrom: effectiveFrom.toISOString().slice(0, 10), effectiveTo: effectiveTo?.toISOString().slice(0, 10) ?? null } } });
+      return { ...agreement, amountMinor: agreement.amountMinor.toString(), effectiveFrom: effectiveFrom.toISOString().slice(0, 10), effectiveTo: effectiveTo?.toISOString().slice(0, 10) ?? null };
+    });
+  }
+
+  async updateAdminFeeAgreement(agreementId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    if (typeof input.isActive !== 'boolean') throw new FinancialValidationError('Only active status can be changed; create a new effective-dated agreement for rate changes.');
+    const isActive = input.isActive;
+    return this.database.$transaction(async (tx) => {
+      const existing = await tx.adminFeeAgreement.findFirst({ where: { id: agreementId, operatingGroupId: context.operatingGroupId } });
+      if (!existing) throw new FinancialNotFoundError();
+      const key = existing.scope === 'OWNER' ? `admin-fee:owner:${existing.ownerPartyId}` : `admin-fee:truck:${existing.truckId}`;
+      await this.lockFinancialRows(tx, [key]);
+      if (isActive) {
+        const overlap = await tx.adminFeeAgreement.findFirst({ where: { id: { not: agreementId }, operatingGroupId: context.operatingGroupId, scope: existing.scope, ownerPartyId: existing.ownerPartyId, truckId: existing.truckId, isActive: true, effectiveFrom: { lte: existing.effectiveTo ?? new Date('9999-12-31T00:00:00.000Z') }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: existing.effectiveFrom } }] } });
+        if (overlap) throw new FinancialConflictError('Admin Fee agreement overlaps an existing active period.');
+      }
+      const updated = await tx.adminFeeAgreement.update({ where: { id: agreementId }, data: { isActive } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: isActive ? 'ADMIN_FEE_AGREEMENT_ACTIVATED' : 'ADMIN_FEE_AGREEMENT_DEACTIVATED', metadata: { agreementId } } });
+      return { ...updated, amountMinor: updated.amountMinor.toString() };
+    });
+  }
+
+  async adminFeeAt(input: { ownerPartyId?: string; truckId?: string; on: string }, context: FinancialAuthorization) {
+    if (Boolean(input.ownerPartyId) === Boolean(input.truckId)) throw new FinancialValidationError('Lookup requires exactly one owner or truck.');
+    if (input.ownerPartyId && !await this.database.financialParty.findFirst({ where: { id: input.ownerPartyId, operatingGroupId: context.operatingGroupId, type: 'OWNER_OPERATOR' } })) throw new FinancialValidationError('Owner is outside this operating group.');
+    if (input.truckId && !await this.database.truck.findFirst({ where: { id: input.truckId, companyId: { in: context.companyIds } } })) throw new FinancialValidationError('Truck is outside this operating group.');
+    const on = financialDate(input.on, 'Lookup date');
+    const row = await this.database.adminFeeAgreement.findFirst({ where: { operatingGroupId: context.operatingGroupId, isActive: true, ownerPartyId: input.ownerPartyId, truckId: input.truckId, effectiveFrom: { lte: on }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: on } }] }, orderBy: { effectiveFrom: 'desc' } });
+    return row ? { ...row, amountMinor: row.amountMinor.toString() } : null;
   }
 
   async listStatements(context: FinancialAuthorization) {
@@ -174,7 +307,7 @@ export class FinancialControlService {
   async createTransaction(input: Record<string, unknown>, context: FinancialAuthorization) {
     const amountMinor = parsePositiveMinorUnits(input.amount);
     const companyId = optionalText(input.companyId) ?? context.activeCompanyId;
-    const transactionDate = date(input.transactionDate, 'Transaction date');
+    const transactionDate = financialDate(input.transactionDate, 'Transaction date');
     const direction = enumValue(input.direction, ['INFLOW', 'OUTFLOW', 'TRANSFER'] satisfies FinancialDirection[], 'Direction');
     const description = text(input.description, 'Description', 500);
     const reference = optionalText(input.reference);
@@ -219,11 +352,13 @@ export class FinancialControlService {
   }
 
   async listTransactions(context: FinancialAuthorization) {
-    const transactions = await this.database.financialTransaction.findMany({
+    const [transactions, categories] = await Promise.all([this.database.financialTransaction.findMany({
       where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
       include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, allocations: { select: { amountMinor: true } }, evidence: { select: { matchedAmountMinor: true, role: true } } },
-    });
+    }), this.listCategories(context)]);
+    const categoryPaths = new Map(categories.map((category) => [category.id, category.path]));
     return transactions.map((transaction) => ({ ...transaction,
+      category: transaction.category ? { ...transaction.category, path: categoryPaths.get(transaction.category.id) ?? transaction.category.name } : null,
       amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString(), waivedAmountMinor: transaction.waivedAmountMinor.toString(),
       allocatedMinor: transaction.allocations.reduce((sum, item) => sum + item.amountMinor, BigInt(0)).toString(),
       evidenceMatchedMinor: transaction.evidence.filter((item) => item.role === 'PRIMARY').reduce((sum, item) => sum + item.matchedAmountMinor, BigInt(0)).toString(),
@@ -252,8 +387,8 @@ export class FinancialControlService {
     const truckId = optionalText(input.truckId);
     if (loadId && !await this.database.load.findFirst({ where: { id: loadId, companyId: { in: context.companyIds } }, select: { id: true } })) throw new FinancialValidationError('Load is outside this operating group.');
     if (truckId && !await this.database.truck.findFirst({ where: { id: truckId, companyId: { in: context.companyIds } }, select: { id: true } })) throw new FinancialValidationError('Truck is outside this operating group.');
-    const expectedDateStart = date(input.expectedDateStart, 'Expected start date');
-    const expectedDateEnd = date(input.expectedDateEnd ?? input.expectedDateStart, 'Expected end date');
+    const expectedDateStart = financialDate(input.expectedDateStart, 'Expected start date');
+    const expectedDateEnd = financialDate(input.expectedDateEnd ?? input.expectedDateStart, 'Expected end date');
     if (expectedDateEnd < expectedDateStart) throw new FinancialValidationError('Expected date window is invalid.');
     const expectedAmountMinor = parsePositiveMinorUnits(input.amount);
     return this.database.$transaction(async (tx) => {
@@ -327,7 +462,7 @@ export class FinancialControlService {
       const allocations = await Promise.all(rawAllocations.map(async (raw) => {
         if (!raw || typeof raw !== 'object') throw new FinancialValidationError('Allocation is invalid.');
         const input = raw as Record<string, unknown>;
-        const allocation = { amountMinor: parsePositiveMinorUnits(input.amount), categoryId: text(input.categoryId, 'Category ID'), companyId: optionalText(input.companyId) ?? transaction.companyId, truckId: optionalText(input.truckId), trailerId: optionalText(input.trailerId), driverId: optionalText(input.driverId), employeeId: optionalText(input.employeeId), loadId: optionalText(input.loadId), customerId: optionalText(input.customerId), partyId: optionalText(input.partyId), businessType: optionalText(input.businessType), memo: optionalText(input.memo, 1000) };
+        const allocation = { amountMinor: parsePositiveMinorUnits(input.amount), categoryId: text(input.categoryId, 'Category ID'), companyId: optionalText(input.companyId) ?? transaction.companyId, truckId: optionalText(input.truckId), trailerId: optionalText(input.trailerId), driverId: optionalText(input.driverId), employeeId: optionalText(input.employeeId), loadId: optionalText(input.loadId), customerId: optionalText(input.customerId), partyId: optionalText(input.partyId), programId: optionalText(input.programId), businessType: optionalText(input.businessType), memo: optionalText(input.memo, 1000) };
         await this.validateAllocationDimensions(allocation, context, tx as unknown as PrismaClient);
         return allocation;
       }));
@@ -426,7 +561,7 @@ export class FinancialControlService {
     if (input.companyId && !context.companyIds.includes(input.companyId)) throw new FinancialValidationError('Company is outside this operating group.');
     const checks: Array<Promise<unknown>> = [];
     if (input.sourceId) checks.push(this.database.financialSource.findFirstOrThrow({ where: { id: input.sourceId, operatingGroupId: context.operatingGroupId } }));
-    if (input.categoryId) checks.push(this.database.financialCategory.findFirstOrThrow({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId } }));
+    if (input.categoryId) checks.push(this.database.financialCategory.findFirstOrThrow({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true } }));
     if (input.customerId) checks.push(this.database.customer.findFirstOrThrow({ where: { id: input.customerId, companyId: { in: context.companyIds } } }));
     for (const partyId of [input.vendorId, input.ownerId]) if (partyId) checks.push(this.database.financialParty.findFirstOrThrow({ where: { id: partyId, operatingGroupId: context.operatingGroupId } }));
     try { await Promise.all(checks); } catch { throw new FinancialValidationError('A financial dimension is outside this operating group.'); }
@@ -436,7 +571,7 @@ export class FinancialControlService {
     const companyId = input.companyId as string | null;
     if (companyId && !context.companyIds.includes(companyId)) throw new FinancialValidationError('Allocation company is outside this operating group.');
     const categoryId = input.categoryId as string;
-    const category = await database.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true } });
+    const category = await database.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
     if (!category) throw new FinancialValidationError('Allocation category is outside this operating group.');
     const dimensions: Array<[string, () => Promise<unknown>]> = [
       ['truckId', () => database.truck.findFirst({ where: { id: input.truckId as string, companyId: { in: context.companyIds } }, select: { id: true } })],
@@ -446,8 +581,27 @@ export class FinancialControlService {
       ['loadId', () => database.load.findFirst({ where: { id: input.loadId as string, companyId: { in: context.companyIds } }, select: { id: true } })],
       ['customerId', () => database.customer.findFirst({ where: { id: input.customerId as string, companyId: { in: context.companyIds } }, select: { id: true } })],
       ['partyId', () => database.financialParty.findFirst({ where: { id: input.partyId as string, operatingGroupId: context.operatingGroupId }, select: { id: true } })],
+      ['programId', () => database.financialProgram.findFirst({ where: { id: input.programId as string, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } })],
     ];
     for (const [key, lookup] of dimensions) if (input[key] && !(await lookup())) throw new FinancialValidationError(`${key} is outside this operating group.`);
+  }
+
+  private async requireCategory(categoryId: string, context: FinancialAuthorization) {
+    const category = await this.database.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId } });
+    if (!category) throw new FinancialValidationError('Category is outside this operating group.');
+    return category;
+  }
+
+  private async categoryDescendantIds(categoryId: string, context: FinancialAuthorization) {
+    const categories = await this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, select: { id: true, parentCategoryId: true } });
+    const descendants = new Set<string>();
+    let frontier = [categoryId];
+    while (frontier.length) {
+      const next = categories.filter((category) => category.parentCategoryId && frontier.includes(category.parentCategoryId) && !descendants.has(category.id)).map((category) => category.id);
+      next.forEach((id) => descendants.add(id));
+      frontier = next;
+    }
+    return descendants;
   }
 }
 

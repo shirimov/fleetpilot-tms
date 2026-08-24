@@ -169,6 +169,7 @@ model User {
   matchedFinancialEvidence      FinancialTransactionEvidence[] @relation("FinancialEvidenceMatcher")
   createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
   financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
+  createdAdminFeeAgreements     AdminFeeAgreement[]            @relation("AdminFeeAgreementCreator")
 
   @@index([activeCompanyId])
 }
@@ -412,6 +413,7 @@ model Truck {
   truckInspections      TruckInspection[]
   financialAllocations  FinancialAllocation[]
   financialExpectations FinancialExpectation[]
+  adminFeeAgreements    AdminFeeAgreement[]
 }
 
 model Customer {
@@ -1071,21 +1073,43 @@ enum FinancialDataStatus {
   VERIFIED
 }
 
+enum FinancialProgramType {
+  ADMIN
+  SAFETY
+  RECRUITING
+  MAINTENANCE
+  SHOP
+  INSURANCE
+  TRAILER_RENTAL
+  OTHER
+}
+
+enum AdminFeeAgreementScope {
+  OWNER
+  TRUCK
+}
+
+enum AdminFeeFrequency {
+  WEEKLY
+}
+
 model OperatingGroup {
-  id           String                     @id @default(cuid())
-  name         String
-  currency     String                     @default("USD")
-  createdAt    DateTime                   @default(now())
-  updatedAt    DateTime                   @updatedAt
-  companies    OperatingGroupCompany[]
-  memberships  OperatingGroupMembership[]
-  sources      FinancialSource[]
-  statements   FinancialStatement[]
-  categories   FinancialCategory[]
-  parties      FinancialParty[]
-  transactions FinancialTransaction[]
-  expectations FinancialExpectation[]
-  auditEvents  FinancialAuditEvent[]
+  id                 String                     @id @default(cuid())
+  name               String
+  currency           String                     @default("USD")
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  companies          OperatingGroupCompany[]
+  memberships        OperatingGroupMembership[]
+  sources            FinancialSource[]
+  statements         FinancialStatement[]
+  categories         FinancialCategory[]
+  programs           FinancialProgram[]
+  adminFeeAgreements AdminFeeAgreement[]
+  parties            FinancialParty[]
+  transactions       FinancialTransaction[]
+  expectations       FinancialExpectation[]
+  auditEvents        FinancialAuditEvent[]
 }
 
 model OperatingGroupCompany {
@@ -1204,12 +1228,33 @@ model FinancialCategory {
   type             FinancialCategoryType
   isActive         Boolean                @default(true)
   isSystemDefault  Boolean                @default(false)
+  parentCategoryId String?
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
   operatingGroup   OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  parentCategory   FinancialCategory?     @relation("FinancialCategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: Restrict)
+  childCategories  FinancialCategory[]    @relation("FinancialCategoryHierarchy")
   transactions     FinancialTransaction[]
   allocations      FinancialAllocation[]
 
+  @@unique([operatingGroupId, name])
+  @@index([operatingGroupId, type, isActive])
+  @@index([parentCategoryId, isActive, name])
+}
+
+model FinancialProgram {
+  id               String                @id @default(cuid())
+  operatingGroupId String
+  code             String
+  name             String
+  type             FinancialProgramType  @default(OTHER)
+  isActive         Boolean               @default(true)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  operatingGroup   OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  allocations      FinancialAllocation[]
+
+  @@unique([operatingGroupId, code])
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
 }
@@ -1230,6 +1275,7 @@ model FinancialParty {
   transactionOwner   FinancialTransaction[] @relation("FinancialTransactionOwner")
   allocations        FinancialAllocation[]
   expectationParties FinancialExpectation[]
+  adminFeeAgreements AdminFeeAgreement[]
 
   @@unique([operatingGroupId, type, name])
   @@index([companyId, type])
@@ -1326,6 +1372,7 @@ model FinancialAllocation {
   loadId        String?
   customerId    String?
   partyId       String?
+  programId     String?
   businessType  String?
   memo          String?
   createdAt     DateTime             @default(now())
@@ -1340,6 +1387,7 @@ model FinancialAllocation {
   load          Load?                @relation(fields: [loadId], references: [id], onDelete: Restrict)
   customer      Customer?            @relation(fields: [customerId], references: [id], onDelete: Restrict)
   party         FinancialParty?      @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  program       FinancialProgram?    @relation(fields: [programId], references: [id], onDelete: Restrict)
 
   @@index([transactionId])
   @@index([categoryId])
@@ -1351,6 +1399,32 @@ model FinancialAllocation {
   @@index([loadId])
   @@index([customerId])
   @@index([partyId])
+  @@index([programId])
+}
+
+model AdminFeeAgreement {
+  id               String                 @id @default(cuid())
+  operatingGroupId String
+  scope            AdminFeeAgreementScope
+  ownerPartyId     String?
+  truckId          String?
+  amountMinor      BigInt
+  currency         String                 @default("USD")
+  frequency        AdminFeeFrequency      @default(WEEKLY)
+  effectiveFrom    DateTime               @db.Date
+  effectiveTo      DateTime?              @db.Date
+  isActive         Boolean                @default(true)
+  createdByUserId  String
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  operatingGroup   OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  ownerParty       FinancialParty?        @relation(fields: [ownerPartyId], references: [id], onDelete: Restrict)
+  truck            Truck?                 @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  createdBy        User                   @relation("AdminFeeAgreementCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([operatingGroupId, scope, isActive])
+  @@index([ownerPartyId, effectiveFrom, effectiveTo])
+  @@index([truckId, effectiveFrom, effectiveTo])
 }
 
 model FinancialExpectation {
