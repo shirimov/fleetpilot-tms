@@ -165,6 +165,7 @@ model User {
   importedFinancialStatements   FinancialStatement[]           @relation("FinancialStatementImporter")
   createdFinancialTransactions  FinancialTransaction[]         @relation("FinancialTransactionCreator")
   reviewedFinancialTransactions FinancialTransaction[]         @relation("FinancialTransactionReviewer")
+  waivedFinancialTransactions   FinancialTransaction[]         @relation("FinancialTransactionWaiver")
   matchedFinancialEvidence      FinancialTransactionEvidence[] @relation("FinancialEvidenceMatcher")
   createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
   financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
@@ -998,6 +999,7 @@ enum FinancialImportRecordStatus {
 enum FinancialDirection {
   INFLOW
   OUTFLOW
+  TRANSFER
 }
 
 enum FinancialTransactionStatus {
@@ -1048,6 +1050,8 @@ enum FinancialRecoveryStatus {
   NOT_APPLICABLE
   EXPECTED
   PARTIALLY_RECOVERED
+  OPEN
+  PARTIAL
   RECOVERED
   WAIVED
 }
@@ -1109,24 +1113,25 @@ model OperatingGroupMembership {
 }
 
 model FinancialSource {
-  id               String                 @id @default(cuid())
-  operatingGroupId String
-  companyId        String?
-  name             String
-  type             FinancialSourceType
-  institution      String?
-  provider         String?
-  currency         String                 @default("USD")
-  lastFour         String?
-  isActive         Boolean                @default(true)
-  metadata         Json?
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  operatingGroup   OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company          Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  statements       FinancialStatement[]
-  transactions     FinancialTransaction[]
-  expectations     FinancialExpectation[]
+  id                   String                 @id @default(cuid())
+  operatingGroupId     String
+  companyId            String?
+  name                 String
+  type                 FinancialSourceType
+  institution          String?
+  provider             String?
+  currency             String                 @default("USD")
+  lastFour             String?
+  isActive             Boolean                @default(true)
+  metadata             Json?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  operatingGroup       OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company              Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  statements           FinancialStatement[]
+  transactions         FinancialTransaction[] @relation("FinancialTransactionSource")
+  destinationTransfers FinancialTransaction[] @relation("FinancialTransactionDestination")
+  expectations         FinancialExpectation[]
 
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
@@ -1235,6 +1240,7 @@ model FinancialTransaction {
   operatingGroupId      String
   companyId             String?
   sourceId              String?
+  destinationSourceId   String?
   transactionDate       DateTime
   amountMinor           BigInt
   currency              String                         @default("USD")
@@ -1253,7 +1259,12 @@ model FinancialTransaction {
   recoverableFromOwner  Boolean                        @default(false)
   expectedRecoveryMinor BigInt                         @default(0)
   recoveredAmountMinor  BigInt                         @default(0)
+  waivedAmountMinor     BigInt                         @default(0)
   recoveryStatus        FinancialRecoveryStatus        @default(NOT_APPLICABLE)
+  recoveryNotes         String?
+  lastRecoveryAt        DateTime?
+  waivedAt              DateTime?
+  waivedByUserId        String?
   createdByUserId       String
   reviewedByUserId      String?
   reviewedAt            DateTime?
@@ -1261,13 +1272,15 @@ model FinancialTransaction {
   updatedAt             DateTime                       @updatedAt
   operatingGroup        OperatingGroup                 @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
   company               Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source                FinancialSource?               @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  source                FinancialSource?               @relation("FinancialTransactionSource", fields: [sourceId], references: [id], onDelete: Restrict)
+  destinationSource     FinancialSource?               @relation("FinancialTransactionDestination", fields: [destinationSourceId], references: [id], onDelete: Restrict)
   category              FinancialCategory?             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   vendor                FinancialParty?                @relation("FinancialTransactionVendor", fields: [vendorId], references: [id], onDelete: Restrict)
   owner                 FinancialParty?                @relation("FinancialTransactionOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   customer              Customer?                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
   createdBy             User                           @relation("FinancialTransactionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   reviewedBy            User?                          @relation("FinancialTransactionReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  waivedBy              User?                          @relation("FinancialTransactionWaiver", fields: [waivedByUserId], references: [id], onDelete: Restrict)
   evidence              FinancialTransactionEvidence[]
   allocations           FinancialAllocation[]
   expectationMatches    FinancialExpectationMatch[]
@@ -1275,6 +1288,7 @@ model FinancialTransaction {
 
   @@index([operatingGroupId, transactionDate])
   @@index([companyId, transactionDate])
+  @@index([destinationSourceId, transactionDate])
   @@index([reconciliationStatus, transactionDate])
   @@index([categoryId, transactionDate])
   @@index([fingerprintSha256])

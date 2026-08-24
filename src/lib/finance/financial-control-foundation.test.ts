@@ -12,14 +12,14 @@ import { FinancialControlService } from './financial-control-service';
 import { FinancialValidationError } from './financial-control-errors';
 import { GenericCsvImporter } from './financial-importers';
 import { FinancialStatementStorage, validateFinancialStatement } from './financial-statement-storage';
-import { normalizeCurrency, parsePositiveMinorUnits } from './money';
+import { formatMinorUnitsDecimal, minorUnitsToDecimalInput, normalizeCurrency, parsePositiveMinorUnits } from './money';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const service = new FinancialControlService(prisma);
 let session: TrustedSession = null;
 const authorization = new AuthorizationService(prisma, async () => session);
 const financialAuthorization = new FinancialControlAuthorizationService(prisma, authorization);
-let companyId = ''; let foreignCompanyId = ''; let ownerId = ''; let adminId = ''; let memberId = ''; let groupId = ''; let categoryId = ''; let sourceId = ''; let truckId = ''; let foreignTruckId = ''; let statementId = ''; let recordId = ''; let transactionId = '';
+let companyId = ''; let foreignCompanyId = ''; let ownerId = ''; let adminId = ''; let memberId = ''; let groupId = ''; let categoryId = ''; let sourceId = ''; let destinationSourceId = ''; let euroSourceId = ''; let truckId = ''; let secondTruckId = ''; let foreignTruckId = ''; let statementId = ''; let recordId = ''; let transactionId = '';
 
 function companyContext(userId: string, role: 'OWNER' | 'ADMIN' | 'MEMBER'): CompanyAuthorization {
   return { companyId, role, user: { id: userId, email: `${userId}@test.dev`, displayName: role, isActive: true, activeCompanyId: companyId } };
@@ -42,8 +42,10 @@ before(async () => {
   groupId = group.id;
   categoryId = (await prisma.financialCategory.findFirstOrThrow({ where: { operatingGroupId: groupId, name: 'Fuel' } })).id;
   sourceId = (await service.createSource({ name: `Bank ${suffix}`, type: 'BANK_ACCOUNT', companyId, currency: 'USD' }, context())).id;
-  const [truck, foreignTruck] = await Promise.all([prisma.truck.create({ data: { companyId, unitNumber: `financial-${suffix}` } }), prisma.truck.create({ data: { companyId: foreignCompanyId, unitNumber: `financial-foreign-${suffix}` } })]);
-  truckId = truck.id; foreignTruckId = foreignTruck.id;
+  destinationSourceId = (await service.createSource({ name: `Savings ${suffix}`, type: 'BANK_ACCOUNT', companyId, currency: 'USD' }, context())).id;
+  euroSourceId = (await service.createSource({ name: `Euro ${suffix}`, type: 'BANK_ACCOUNT', companyId, currency: 'EUR' }, context())).id;
+  const [truck, secondTruck, foreignTruck] = await Promise.all([prisma.truck.create({ data: { companyId, unitNumber: `financial-${suffix}` } }), prisma.truck.create({ data: { companyId, unitNumber: `financial-2-${suffix}` } }), prisma.truck.create({ data: { companyId: foreignCompanyId, unitNumber: `financial-foreign-${suffix}` } })]);
+  truckId = truck.id; secondTruckId = secondTruck.id; foreignTruckId = foreignTruck.id;
 });
 
 after(async () => {
@@ -60,18 +62,22 @@ after(async () => {
   await prisma.operatingGroupMembership.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.operatingGroup.deleteMany({ where: { id: groupId } });
-  await prisma.truck.deleteMany({ where: { id: { in: [truckId, foreignTruckId] } } });
+  await prisma.truck.deleteMany({ where: { id: { in: [truckId, secondTruckId, foreignTruckId] } } });
   await prisma.user.deleteMany({ where: { id: { in: [ownerId, adminId, memberId] } } });
   await prisma.company.deleteMany({ where: { id: { in: [companyId, foreignCompanyId] } } });
   await prisma.$disconnect();
 });
 
 test('minor-unit arithmetic is exact and currency is normalized', () => {
+  assert.deepEqual(['0.01', '0.10', '1.00', '1,234.56', '999,999.99'].map((amount) => parsePositiveMinorUnits(amount)), [BigInt(1), BigInt(10), BigInt(100), BigInt(123456), BigInt(99999999)]);
   assert.equal(parsePositiveMinorUnits('0.10') + parsePositiveMinorUnits('0.20'), BigInt(30));
   assert.equal(parsePositiveMinorUnits('48,320.05'), BigInt(4832005));
   assert.equal(normalizeCurrency('usd'), 'USD');
   assert.throws(() => parsePositiveMinorUnits('-1.00'), FinancialValidationError);
   assert.throws(() => parsePositiveMinorUnits('1.001'), FinancialValidationError);
+  assert.throws(() => parsePositiveMinorUnits(String(0.1 + 0.2)), FinancialValidationError);
+  assert.equal(minorUnitsToDecimalInput(BigInt('9007199254740993')), '90071992547409.93');
+  assert.equal(formatMinorUnitsDecimal(BigInt('9007199254740993')), '90,071,992,547,409.93');
 });
 
 test('OWNER and ADMIN group access is allowed while MEMBER is denied', async () => {
@@ -142,7 +148,145 @@ test('owner-recoverable expense preserves expected and outstanding recovery', as
   const expense = await service.createTransaction({ transactionDate: '2026-08-03', amount: '850.00', direction: 'OUTFLOW', description: 'Owner tire', ownerId: owner.id, recoverableFromOwner: true, expectedRecoveryAmount: '850.00', currency: 'USD' }, context());
   assert.equal(expense.expectedRecoveryMinor, '85000');
   assert.equal(expense.recoveredAmountMinor, '0');
-  assert.equal(expense.recoveryStatus, 'EXPECTED');
+  assert.equal(expense.recoveryStatus, 'OPEN');
+});
+
+test('TRANSFER uses distinct same-currency group accounts and is excluded from operating totals', async () => {
+  const before = await service.overview(context());
+  const transfer = await service.createTransaction({ transactionDate: '2026-08-04', amount: '1234.56', direction: 'TRANSFER', description: 'Move operating cash', sourceId, destinationSourceId, currency: 'USD' }, context());
+  assert.equal(transfer.direction, 'TRANSFER');
+  const after = await service.overview(context());
+  assert.equal(after.inflowMinor, before.inflowMinor);
+  assert.equal(after.outflowMinor, before.outflowMinor);
+  assert.equal(after.operatingNetMinor, before.operatingNetMinor);
+  assert.equal(after.transferCount, before.transferCount + 1);
+  await assert.rejects(service.createTransaction({ transactionDate: '2026-08-04', amount: '1.00', direction: 'TRANSFER', description: 'Same account', sourceId, destinationSourceId: sourceId, currency: 'USD' }, context()), /distinct/);
+  await assert.rejects(service.createTransaction({ transactionDate: '2026-08-04', amount: '1.00', direction: 'TRANSFER', description: 'FX blocked', sourceId, destinationSourceId: euroSourceId, currency: 'USD' }, context()), /currency/);
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Foreign group ${suffix}`, companies: { create: { companyId: foreignCompanyId } } } });
+  const foreignSource = await prisma.financialSource.create({ data: { operatingGroupId: foreignGroup.id, companyId: foreignCompanyId, name: `Foreign bank ${suffix}`, type: 'BANK_ACCOUNT', currency: 'USD' } });
+  await assert.rejects(service.createTransaction({ transactionDate: '2026-08-04', amount: '1.00', direction: 'TRANSFER', description: 'Cross group', sourceId, destinationSourceId: foreignSource.id, currency: 'USD' }, context()), /outside/);
+  await prisma.financialSource.delete({ where: { id: foreignSource.id } });
+  await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: foreignGroup.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+});
+
+test('owner recovery supports multiple partials, full recovery, waiver, and exact outstanding values', async () => {
+  const party = await prisma.financialParty.create({ data: { operatingGroupId: groupId, companyId, type: 'OWNER_OPERATOR', name: `Recovery owner ${suffix}` } });
+  const foreignParty = await prisma.financialParty.create({ data: { operatingGroupId: groupId, companyId: foreignCompanyId, type: 'OWNER_OPERATOR', name: `Foreign recovery owner ${suffix}` } });
+  await assert.rejects(service.createTransaction({ transactionDate: '2026-08-05', amount: '850.00', direction: 'OUTFLOW', description: 'Cross-company recovery', ownerId: foreignParty.id, recoverableFromOwner: true, expectedRecoveryAmount: '850.00', currency: 'USD' }, context()), /company/);
+  const recovered = await service.createTransaction({ transactionDate: '2026-08-05', amount: '850.00', direction: 'OUTFLOW', description: 'Recoverable repair', ownerId: party.id, recoverableFromOwner: true, expectedRecoveryAmount: '850.00', currency: 'USD' }, context());
+  assert.equal((await service.updateOwnerRecovery(recovered.id, { action: 'RECORD', amount: '200.00' }, context())).recoveryStatus, 'PARTIAL');
+  const partial = await service.updateOwnerRecovery(recovered.id, { action: 'RECORD', amount: '300.00' }, context());
+  assert.equal(partial.outstandingAmountMinor, '35000');
+  await assert.rejects(service.updateOwnerRecovery(recovered.id, { action: 'RECORD', amount: '351.00' }, context()), /exceeds/);
+  const full = await service.updateOwnerRecovery(recovered.id, { action: 'RECORD', amount: '350.00' }, context());
+  assert.equal(full.recoveryStatus, 'RECOVERED');
+  assert.equal(full.outstandingAmountMinor, '0');
+
+  const waived = await service.createTransaction({ transactionDate: '2026-08-06', amount: '850.00', direction: 'OUTFLOW', description: 'Partially waived repair', ownerId: party.id, recoverableFromOwner: true, expectedRecoveryAmount: '850.00', currency: 'USD' }, context());
+  await service.updateOwnerRecovery(waived.id, { action: 'RECORD', amount: '500.00' }, context());
+  const result = await service.updateOwnerRecovery(waived.id, { action: 'WAIVE', notes: 'Approved waiver' }, context());
+  assert.deepEqual(result, { recoveredAmountMinor: '50000', waivedAmountMinor: '35000', outstandingAmountMinor: '0', recoveryStatus: 'WAIVED' });
+  const overview = await service.overview(context());
+  assert.equal(overview.exceptions.outstandingOwnerRecoveries, 1);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { transactionId: waived.id, action: { in: ['OWNER_RECOVERY_RECORDED', 'OWNER_RECOVERY_WAIVED'] } } }), 2);
+});
+
+test('concurrent expected-money matches cannot collectively exceed either cap', async () => {
+  const expectation = await service.createExpectation({ amount: '10000.00', direction: 'INFLOW', description: 'Concurrent expected', expectedDateStart: '2026-08-01', currency: 'USD' }, context());
+  const [first, second] = await Promise.all([
+    service.createTransaction({ transactionDate: '2026-08-07', amount: '7000.00', direction: 'INFLOW', description: 'Deposit A', currency: 'USD' }, context()),
+    service.createTransaction({ transactionDate: '2026-08-08', amount: '7000.00', direction: 'INFLOW', description: 'Deposit B', currency: 'USD' }, context()),
+  ]);
+  const results = await Promise.allSettled([
+    service.matchExpectation(expectation.id, { transactionId: first.id, amount: '7000.00' }, context()),
+    service.matchExpectation(expectation.id, { transactionId: second.id, amount: '7000.00' }, context()),
+  ]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const total = await prisma.financialExpectationMatch.aggregate({ where: { expectationId: expectation.id }, _sum: { matchedAmountMinor: true } });
+  assert.equal(total._sum.matchedAmountMinor, BigInt(700000));
+});
+
+test('concurrent evidence matches cannot collectively exceed a transaction cap', async () => {
+  const csv = new TextEncoder().encode('date,description,amount,reference\n2026-08-10,Deposit A,7000.00,C1\n2026-08-11,Deposit B,7000.00,C2\n');
+  const metadata = validateFinancialStatement(new File([csv], 'concurrent.csv', { type: 'text/csv' }), csv);
+  const { extension, ...documentMetadata } = metadata;
+  assert.equal(extension, '.csv');
+  const statement = await service.registerStatement({ sourceId, type: 'BANK_STATEMENT', periodStart: new Date('2026-08-10'), periodEnd: new Date('2026-08-11'), ...documentMetadata, storageKey: '22222222-2222-4222-8222-222222222222', currency: 'USD' }, context());
+  await service.importRawRecords(statement.id, new GenericCsvImporter().parse(csv), context());
+  const records = await prisma.financialImportRecord.findMany({ where: { statementId: statement.id } });
+  const transaction = await service.createTransaction({ transactionDate: '2026-08-11', amount: '10000.00', direction: 'INFLOW', description: 'Concurrent evidence target', currency: 'USD' }, context());
+  const results = await Promise.allSettled(records.map((record) => service.matchEvidence(transaction.id, { importRecordId: record.id, amount: '7000.00', method: 'PARTIAL' }, context())));
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const total = await prisma.financialTransactionEvidence.aggregate({ where: { transactionId: transaction.id, role: 'PRIMARY' }, _sum: { matchedAmountMinor: true } });
+  assert.equal(total._sum.matchedAmountMinor, BigInt(700000));
+});
+
+test('currency mismatches are rejected for evidence and expected money', async () => {
+  const euroTransaction = await service.createTransaction({ transactionDate: '2026-08-12', amount: '10.00', direction: 'INFLOW', description: 'Euro receipt', sourceId: euroSourceId, currency: 'EUR' }, context());
+  await assert.rejects(service.matchEvidence(euroTransaction.id, { importRecordId: recordId, amount: '10.00', method: 'PARTIAL' }, context()), /currencies/);
+  const usdExpectation = await service.createExpectation({ amount: '10.00', direction: 'INFLOW', description: 'USD expectation', expectedDateStart: '2026-08-12', currency: 'USD' }, context());
+  await assert.rejects(service.matchExpectation(usdExpectation.id, { transactionId: euroTransaction.id, amount: '10.00' }, context()), /currencies/);
+});
+
+test('allocation supports explicit partial state, exact multi-dimension totals, and large BigInt precision', async () => {
+  const transaction = await service.createTransaction({ transactionDate: '2026-08-13', amount: '90071992547409.93', direction: 'OUTFLOW', description: 'Large exact allocation', currency: 'USD' }, context());
+  const partial = await service.replaceAllocations(transaction.id, [{ amount: '3200.00', categoryId, truckId }], context(), false);
+  assert.equal(partial.allocationStatus, 'PARTIAL');
+  await assert.rejects(service.replaceAllocations(transaction.id, [{ amount: '90071992547410.00', categoryId }], context()), /exceed/);
+  const exact = await service.replaceAllocations(transaction.id, [{ amount: '3200.00', categoryId, truckId }, { amount: '1500.00', categoryId, truckId: secondTruckId }, { amount: '90071992542709.93', categoryId }], context());
+  assert.equal(exact.totalMinor, '9007199254740993');
+  assert.equal(exact.remainingMinor, '0');
+});
+
+test('completeness metrics distinguish registered, successful, failed, and pending statements', async () => {
+  await prisma.financialStatement.createMany({ data: [
+    { operatingGroupId: groupId, sourceId, type: 'BANK_STATEMENT', periodStart: new Date('2026-07-01'), periodEnd: new Date('2026-07-31'), originalFilename: 'failed.csv', displayFilename: 'failed.csv', mimeType: 'text/csv', byteSize: 1, storageKey: '33333333-3333-4333-8333-333333333333', checksumSha256: '3'.repeat(64), currency: 'USD', importStatus: 'FAILED', importedByUserId: ownerId },
+    { operatingGroupId: groupId, sourceId, type: 'BANK_STATEMENT', periodStart: new Date('2026-06-01'), periodEnd: new Date('2026-06-30'), originalFilename: 'pending.csv', displayFilename: 'pending.csv', mimeType: 'text/csv', byteSize: 1, storageKey: '44444444-4444-4444-8444-444444444444', checksumSha256: '4'.repeat(64), currency: 'USD', importStatus: 'UPLOADED', importedByUserId: ownerId },
+  ] });
+  const overview = await service.overview(context());
+  assert.ok(overview.statementsRegistered >= 4);
+  assert.ok(overview.statementsImportedSuccessfully >= 2);
+  assert.equal(overview.statementsImportFailed, 1);
+  assert.equal(overview.statementsPending, 1);
+  assert.ok(overview.completenessBasisPoints === null || overview.completenessBasisPoints >= 0 && overview.completenessBasisPoints <= 10000);
+});
+
+test('expected-money reconciliation supports one-to-many and many-to-one with exact residuals', async () => {
+  const splitExpectation = await service.createExpectation({ amount: '10000.00', direction: 'INFLOW', description: 'Split deposit expectation', expectedDateStart: '2026-08-14', currency: 'USD' }, context());
+  const firstDeposit = await service.createTransaction({ transactionDate: '2026-08-14', amount: '6000.00', direction: 'INFLOW', description: 'Split deposit one', currency: 'USD' }, context());
+  const secondDeposit = await service.createTransaction({ transactionDate: '2026-08-14', amount: '4000.00', direction: 'INFLOW', description: 'Split deposit two', currency: 'USD' }, context());
+  await service.matchExpectation(splitExpectation.id, { transactionId: firstDeposit.id, amount: '6000.00' }, context());
+  await service.matchExpectation(splitExpectation.id, { transactionId: secondDeposit.id, amount: '4000.00' }, context());
+  assert.deepEqual(await prisma.financialExpectation.findUniqueOrThrow({ where: { id: splitExpectation.id }, select: { matchedAmountMinor: true, status: true } }), { matchedAmountMinor: BigInt(1000000), status: 'MATCHED' });
+
+  const combinedDeposit = await service.createTransaction({ transactionDate: '2026-08-15', amount: '12000.00', direction: 'INFLOW', description: 'Combined deposit', currency: 'USD' }, context());
+  const [firstExpectation, secondExpectation] = await Promise.all([
+    service.createExpectation({ amount: '5000.00', direction: 'INFLOW', description: 'Combined part one', expectedDateStart: '2026-08-15', currency: 'USD' }, context()),
+    service.createExpectation({ amount: '7000.00', direction: 'INFLOW', description: 'Combined part two', expectedDateStart: '2026-08-15', currency: 'USD' }, context()),
+  ]);
+  await service.matchExpectation(firstExpectation.id, { transactionId: combinedDeposit.id, amount: '5000.00' }, context());
+  await service.matchExpectation(secondExpectation.id, { transactionId: combinedDeposit.id, amount: '7000.00' }, context());
+  const total = await prisma.financialExpectationMatch.aggregate({ where: { transactionId: combinedDeposit.id }, _sum: { matchedAmountMinor: true } });
+  assert.equal(total._sum.matchedAmountMinor, BigInt(1200000));
+});
+
+test('same-dollar transactions from distinct sources are preserved without automatic duplicate merging', async () => {
+  const first = await service.createTransaction({ transactionDate: '2026-08-16', amount: '55.00', direction: 'OUTFLOW', description: 'Legitimate same amount', reference: 'SOURCE-A', sourceId, currency: 'USD' }, context());
+  const second = await service.createTransaction({ transactionDate: '2026-08-16', amount: '55.00', direction: 'OUTFLOW', description: 'Legitimate same amount', reference: 'SOURCE-A', sourceId: destinationSourceId, currency: 'USD' }, context());
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(second.reconciliationStatus, 'DUPLICATE_SUSPECTED');
+});
+
+test('zero-data completeness is explicit and divide-by-zero safe', async () => {
+  const emptyGroup = await prisma.operatingGroup.create({ data: { name: `Empty group ${suffix}` } });
+  const empty = await service.overview({ ...context(), operatingGroupId: emptyGroup.id, companyIds: [] });
+  assert.equal(empty.statementsRegistered, 0);
+  assert.equal(empty.rawRecordsImported, 0);
+  assert.equal(empty.fullyReconciledCount, 0);
+  assert.equal(empty.completenessBasisPoints, null);
+  assert.equal(empty.reconciliationBasisPoints, null);
+  await prisma.operatingGroup.delete({ where: { id: emptyGroup.id } });
 });
 
 test('expected money supports partial matching and rejects over-matching', async () => {

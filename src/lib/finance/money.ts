@@ -23,9 +23,24 @@ export function parsePositiveMinorUnits(value: unknown): bigint {
 }
 
 export function formatMinorUnits(value: bigint, currency = 'USD'): string {
-  const major = value / BigInt(100);
-  const minor = (value % BigInt(100)).toString().padStart(2, '0');
-  return `${currency} ${major}.${minor}`;
+  return `${currency} ${formatMinorUnitsDecimal(value)}`;
+}
+
+export function minorUnitsToDecimalInput(value: bigint): string {
+  const negative = value < BigInt(0);
+  const absolute = negative ? -value : value;
+  const major = absolute / BigInt(100);
+  const minor = (absolute % BigInt(100)).toString().padStart(2, '0');
+  return `${negative ? '-' : ''}${major}.${minor}`;
+}
+
+export function formatMinorUnitsDecimal(value: bigint): string {
+  const decimal = minorUnitsToDecimalInput(value);
+  const negative = decimal.startsWith('-');
+  const unsigned = negative ? decimal.slice(1) : decimal;
+  const [major, minor] = unsigned.split('.');
+  const grouped = major.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '-' : ''}${grouped}.${minor}`;
 }
 
 export function bigintJson(value: bigint | null | undefined) {

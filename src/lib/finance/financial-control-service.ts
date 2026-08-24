@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import type {
-  FinancialCategoryType,
-  FinancialDirection,
-  FinancialMatchMethod,
-  FinancialSourceType,
-  FinancialStatementType,
+import {
+  Prisma,
+  type FinancialCategoryType,
+  type FinancialDirection,
+  type FinancialMatchMethod,
+  type FinancialSourceType,
+  type FinancialStatementType,
   PrismaClient,
 } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
@@ -174,39 +175,58 @@ export class FinancialControlService {
     const amountMinor = parsePositiveMinorUnits(input.amount);
     const companyId = optionalText(input.companyId) ?? context.activeCompanyId;
     const transactionDate = date(input.transactionDate, 'Transaction date');
-    const direction = enumValue(input.direction, ['INFLOW', 'OUTFLOW'] satisfies FinancialDirection[], 'Direction');
+    const direction = enumValue(input.direction, ['INFLOW', 'OUTFLOW', 'TRANSFER'] satisfies FinancialDirection[], 'Direction');
     const description = text(input.description, 'Description', 500);
     const reference = optionalText(input.reference);
-    const fingerprintSha256 = this.fingerprint([transactionDate.toISOString().slice(0, 10), amountMinor, direction, description.toLowerCase(), reference]);
-    await this.validateDimensions({ companyId, sourceId: optionalText(input.sourceId), categoryId: optionalText(input.categoryId), customerId: optionalText(input.customerId), vendorId: optionalText(input.vendorId), ownerId: optionalText(input.ownerId) }, context);
+    const currency = normalizeCurrency(input.currency ?? 'USD');
+    const sourceId = optionalText(input.sourceId);
+    const destinationSourceId = optionalText(input.destinationSourceId);
+    const ownerId = optionalText(input.ownerId);
+    const fingerprintSha256 = this.fingerprint([transactionDate.toISOString().slice(0, 10), amountMinor, currency, direction, description.toLowerCase(), reference, sourceId, destinationSourceId]);
+    await this.validateDimensions({ companyId, sourceId, categoryId: optionalText(input.categoryId), customerId: optionalText(input.customerId), vendorId: optionalText(input.vendorId), ownerId }, context);
+    if (direction === 'TRANSFER') {
+      if (!sourceId || !destinationSourceId || sourceId === destinationSourceId) throw new FinancialValidationError('Transfers require distinct source and destination accounts.');
+      const sources = await this.database.financialSource.findMany({ where: { id: { in: [sourceId, destinationSourceId] }, operatingGroupId: context.operatingGroupId }, select: { id: true, currency: true } });
+      if (sources.length !== 2) throw new FinancialValidationError('Transfer account is outside this operating group.');
+      if (sources.some((source) => source.currency !== currency)) throw new FinancialValidationError('Transfer accounts and transaction currency must match.');
+    } else if (destinationSourceId) {
+      throw new FinancialValidationError('Destination account is only valid for transfers.');
+    } else if (sourceId) {
+      const source = await this.database.financialSource.findFirst({ where: { id: sourceId, operatingGroupId: context.operatingGroupId }, select: { currency: true } });
+      if (!source || source.currency !== currency) throw new FinancialValidationError('Source and transaction currencies must match.');
+    }
+    if (ownerId) {
+      const owner = await this.database.financialParty.findFirst({ where: { id: ownerId, operatingGroupId: context.operatingGroupId }, select: { companyId: true } });
+      if (!owner || owner.companyId && owner.companyId !== companyId) throw new FinancialValidationError('Owner and transaction company must match.');
+    }
     const duplicate = await this.database.financialTransaction.findFirst({ where: { operatingGroupId: context.operatingGroupId, fingerprintSha256, status: { not: 'VOIDED' } }, select: { id: true } });
     return this.database.$transaction(async (tx) => {
       const transaction = await tx.financialTransaction.create({ data: {
         operatingGroupId: context.operatingGroupId, companyId,
-        sourceId: optionalText(input.sourceId), transactionDate,
-        amountMinor, currency: normalizeCurrency(input.currency ?? 'USD'),
+        sourceId, destinationSourceId, transactionDate,
+        amountMinor, currency,
         direction, description, categoryId: optionalText(input.categoryId),
-        customerId: optionalText(input.customerId), vendorId: optionalText(input.vendorId), ownerId: optionalText(input.ownerId),
+        customerId: optionalText(input.customerId), vendorId: optionalText(input.vendorId), ownerId,
         reference, memo: optionalText(input.memo, 2000), createdByUserId: context.userId, fingerprintSha256,
         reconciliationStatus: duplicate ? 'DUPLICATE_SUSPECTED' : 'UNREVIEWED',
         recoverableFromOwner: input.recoverableFromOwner === true,
         expectedRecoveryMinor: input.recoverableFromOwner === true ? parsePositiveMinorUnits(input.expectedRecoveryAmount ?? input.amount) : BigInt(0),
-        recoveryStatus: input.recoverableFromOwner === true ? 'EXPECTED' : 'NOT_APPLICABLE',
+        recoveryStatus: input.recoverableFromOwner === true ? 'OPEN' : 'NOT_APPLICABLE',
       } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId, transactionId: transaction.id, actorUserId: context.userId, action: 'TRANSACTION_CREATED', after: { amountMinor: amountMinor.toString() } } });
-      return { ...transaction, amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString() };
+      return { ...transaction, amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString(), waivedAmountMinor: transaction.waivedAmountMinor.toString() };
     });
   }
 
   async listTransactions(context: FinancialAuthorization) {
     const transactions = await this.database.financialTransaction.findMany({
       where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
-      include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, allocations: { select: { amountMinor: true } }, evidence: { select: { matchedAmountMinor: true } } },
+      include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, allocations: { select: { amountMinor: true } }, evidence: { select: { matchedAmountMinor: true, role: true } } },
     });
     return transactions.map((transaction) => ({ ...transaction,
-      amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString(),
+      amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString(), waivedAmountMinor: transaction.waivedAmountMinor.toString(),
       allocatedMinor: transaction.allocations.reduce((sum, item) => sum + item.amountMinor, BigInt(0)).toString(),
-      evidenceMatchedMinor: transaction.evidence.reduce((sum, item) => sum + item.matchedAmountMinor, BigInt(0)).toString(),
+      evidenceMatchedMinor: transaction.evidence.filter((item) => item.role === 'PRIMARY').reduce((sum, item) => sum + item.matchedAmountMinor, BigInt(0)).toString(),
       allocations: undefined, evidence: undefined,
     }));
   }
@@ -250,12 +270,14 @@ export class FinancialControlService {
     const transactionId = text(input.transactionId, 'Transaction ID');
     const matchedAmountMinor = parsePositiveMinorUnits(input.amount);
     return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`expectation:${expectationId}`, `transaction:${transactionId}`]);
       const [expectation, transaction] = await Promise.all([
-        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId }, select: { expectedAmountMinor: true, matchedAmountMinor: true, direction: true } }),
-        tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { amountMinor: true, direction: true } }),
+        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId }, select: { expectedAmountMinor: true, matchedAmountMinor: true, direction: true, currency: true } }),
+        tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { amountMinor: true, direction: true, currency: true } }),
       ]);
       if (!expectation || !transaction) throw new FinancialNotFoundError();
       if (expectation.direction !== transaction.direction) throw new FinancialValidationError('Expected and actual directions must match.');
+      if (expectation.currency !== transaction.currency) throw new FinancialValidationError('Expected and actual currencies must match.');
       if (expectation.matchedAmountMinor + matchedAmountMinor > expectation.expectedAmountMinor) throw new FinancialValidationError('Match exceeds the expected amount.');
       const actualMatched = await tx.financialExpectationMatch.aggregate({ where: { transactionId }, _sum: { matchedAmountMinor: true } });
       if ((actualMatched._sum.matchedAmountMinor ?? BigInt(0)) + matchedAmountMinor > transaction.amountMinor) throw new FinancialValidationError('Match exceeds the actual transaction amount.');
@@ -273,9 +295,11 @@ export class FinancialControlService {
     const method = enumValue(input.method, ['EXACT', 'PARTIAL', 'SPLIT', 'MANUAL', 'SUGGESTED'] satisfies FinancialMatchMethod[], 'Match method');
     const role = enumValue(input.role ?? 'PRIMARY', ['PRIMARY', 'CORROBORATING'] as const, 'Evidence role');
     return this.database.$transaction(async (tx) => {
-      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true } });
-      const record = await tx.financialImportRecord.findFirst({ where: { id: importRecordId, statement: { operatingGroupId: context.operatingGroupId } }, select: { id: true, candidateAmountMinor: true } });
+      await this.lockFinancialRows(tx, [`import-record:${importRecordId}`, `transaction:${transactionId}`]);
+      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, currency: true, reconciliationStatus: true } });
+      const record = await tx.financialImportRecord.findFirst({ where: { id: importRecordId, statement: { operatingGroupId: context.operatingGroupId } }, select: { id: true, candidateAmountMinor: true, statement: { select: { currency: true } } } });
       if (!transaction || !record) throw new FinancialNotFoundError();
+      if (transaction.currency !== record.statement.currency) throw new FinancialValidationError('Evidence and transaction currencies must match.');
       const [transactionMatched, recordMatched] = await Promise.all([
         tx.financialTransactionEvidence.aggregate({ where: { transactionId, role: 'PRIMARY' }, _sum: { matchedAmountMinor: true } }),
         tx.financialTransactionEvidence.aggregate({ where: { importRecordId }, _sum: { matchedAmountMinor: true } }),
@@ -284,18 +308,21 @@ export class FinancialControlService {
       if (record.candidateAmountMinor && (recordMatched._sum.matchedAmountMinor ?? BigInt(0)) + matchedAmountMinor > record.candidateAmountMinor) throw new FinancialValidationError('Match exceeds the imported record amount.');
       const evidence = await tx.financialTransactionEvidence.create({ data: { transactionId, importRecordId, matchedAmountMinor, method, role, confidenceBasisPoints: typeof input.confidenceBasisPoints === 'number' ? input.confidenceBasisPoints : null, matchedByUserId: context.userId } });
       const total = (transactionMatched._sum.matchedAmountMinor ?? BigInt(0)) + (role === 'PRIMARY' ? matchedAmountMinor : BigInt(0));
-      await tx.financialTransaction.update({ where: { id: transactionId }, data: { reconciliationStatus: total === transaction.amountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' } });
+      if (transaction.reconciliationStatus !== 'RECONCILED') {
+        await tx.financialTransaction.update({ where: { id: transactionId }, data: { reconciliationStatus: total === transaction.amountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' } });
+      }
       await tx.financialImportRecord.update({ where: { id: importRecordId }, data: { status: record.candidateAmountMinor && (recordMatched._sum.matchedAmountMinor ?? BigInt(0)) + matchedAmountMinor === record.candidateAmountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, transactionId, actorUserId: context.userId, action: 'EVIDENCE_MATCHED', metadata: { importRecordId, matchedAmountMinor: matchedAmountMinor.toString(), method } } });
       return { ...evidence, matchedAmountMinor: evidence.matchedAmountMinor.toString() };
     });
   }
 
-  async replaceAllocations(transactionId: string, rawAllocations: unknown, context: FinancialAuthorization) {
+  async replaceAllocations(transactionId: string, rawAllocations: unknown, context: FinancialAuthorization, requireComplete = true) {
     if (!Array.isArray(rawAllocations) || rawAllocations.length === 0) throw new FinancialValidationError('At least one allocation is required.');
     return this.database.$transaction(async (tx) => {
-      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, companyId: true, reconciliationStatus: true } });
+      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, companyId: true, reconciliationStatus: true, direction: true } });
       if (!transaction) throw new FinancialNotFoundError();
+      if (transaction.direction === 'TRANSFER') throw new FinancialValidationError('Transfers are assigned to source and destination accounts, not operational allocations.');
       if (transaction.reconciliationStatus === 'RECONCILED') throw new FinancialConflictError('Reconciled allocations require an explicit review workflow.');
       const allocations = await Promise.all(rawAllocations.map(async (raw) => {
         if (!raw || typeof raw !== 'object') throw new FinancialValidationError('Allocation is invalid.');
@@ -305,27 +332,30 @@ export class FinancialControlService {
         return allocation;
       }));
       const total = allocations.reduce((sum, allocation) => sum + allocation.amountMinor, BigInt(0));
-      if (total !== transaction.amountMinor) throw new FinancialValidationError('Allocations must exactly equal the transaction amount.');
+      if (total > transaction.amountMinor) throw new FinancialValidationError('Allocations cannot exceed the transaction amount.');
+      if (requireComplete && total !== transaction.amountMinor) throw new FinancialValidationError('Allocations must exactly equal the transaction amount.');
       await tx.financialAllocation.deleteMany({ where: { transactionId } });
       await tx.financialAllocation.createMany({ data: allocations.map((allocation) => ({ ...allocation, transactionId })) });
       const evidence = await tx.financialTransactionEvidence.aggregate({ where: { transactionId, role: 'PRIMARY' }, _sum: { matchedAmountMinor: true } });
       if ((evidence._sum.matchedAmountMinor ?? BigInt(0)) === transaction.amountMinor) {
-        await tx.financialTransaction.update({ where: { id: transactionId }, data: { reconciliationStatus: 'RECONCILED', dataStatus: 'VERIFIED', reviewedByUserId: context.userId, reviewedAt: new Date() } });
+        await tx.financialTransaction.update({ where: { id: transactionId }, data: total === transaction.amountMinor ? { reconciliationStatus: 'RECONCILED', dataStatus: 'VERIFIED', reviewedByUserId: context.userId, reviewedAt: new Date() } : { reconciliationStatus: 'NEEDS_REVIEW' } });
       }
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: transaction.companyId, transactionId, actorUserId: context.userId, action: 'ALLOCATIONS_REPLACED', metadata: { totalMinor: total.toString(), allocationCount: allocations.length } } });
-      return { allocationCount: allocations.length, totalMinor: total.toString() };
+      return { allocationCount: allocations.length, totalMinor: total.toString(), remainingMinor: (transaction.amountMinor - total).toString(), allocationStatus: total === transaction.amountMinor ? 'COMPLETE' : 'PARTIAL' };
     });
   }
 
   async overview(context: FinancialAuthorization) {
-    const [transactions, statements, missingExpectations] = await Promise.all([
+    const [transactions, statementStatuses, rawRecordsImported, missingExpectations] = await Promise.all([
       this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
-      this.database.financialStatement.count({ where: { operatingGroupId: context.operatingGroupId } }),
+      this.database.financialStatement.groupBy({ by: ['importStatus'], where: { operatingGroupId: context.operatingGroupId }, _count: { _all: true } }),
+      this.database.financialImportRecord.count({ where: { statement: { operatingGroupId: context.operatingGroupId } } }),
       this.database.financialExpectation.count({ where: { operatingGroupId: context.operatingGroupId, status: { in: ['OPEN', 'PARTIALLY_MATCHED', 'MISSING'] } } }),
     ]);
     const inflowMinor = transactions.filter((item) => item.direction === 'INFLOW').reduce((sum, item) => sum + item.amountMinor, BigInt(0));
     const outflowMinor = transactions.filter((item) => item.direction === 'OUTFLOW').reduce((sum, item) => sum + item.amountMinor, BigInt(0));
-    const reconciledMinor = transactions.filter((item) => item.reconciliationStatus === 'RECONCILED').reduce((sum, item) => sum + item.amountMinor, BigInt(0));
+    const reconciledMinor = transactions.filter((item) => item.direction !== 'TRANSFER' && item.reconciliationStatus === 'RECONCILED').reduce((sum, item) => sum + item.amountMinor, BigInt(0));
+    const operatingTransactions = transactions.filter((item) => item.direction !== 'TRANSFER');
     const totalMinor = inflowMinor + outflowMinor;
     const unresolvedMinor = totalMinor - reconciledMinor;
     const exceptions = {
@@ -335,14 +365,61 @@ export class FinancialControlService {
       possibleDuplicates: transactions.filter((item) => item.reconciliationStatus === 'DUPLICATE_SUSPECTED').length,
       uncategorizedExpenses: transactions.filter((item) => item.direction === 'OUTFLOW' && !item.categoryId).length,
       missingAssignments: transactions.filter((item) => item.direction === 'OUTFLOW' && item.allocations.length === 0).length,
-      ownerRecovery: transactions.filter((item) => item.recoverableFromOwner && item.recoveryStatus !== 'RECOVERED').length,
+      ownerRecovery: transactions.filter((item) => item.recoverableFromOwner && !['RECOVERED', 'WAIVED'].includes(item.recoveryStatus)).length,
       missingExpected: missingExpectations,
     };
-    return { inflowMinor: inflowMinor.toString(), outflowMinor: outflowMinor.toString(), reconciledMinor: reconciledMinor.toString(), unresolvedMinor: unresolvedMinor.toString(), reconciliationBasisPoints: totalMinor === BigInt(0) ? null : Number((reconciledMinor * BigInt(10000)) / totalMinor), unresolvedTransactionCount: transactions.filter((item) => item.reconciliationStatus !== 'RECONCILED').length, statementsImported: statements, exceptions };
+    const countStatus = (statuses: string[]) => statementStatuses.filter((row) => statuses.includes(row.importStatus)).reduce((sum, row) => sum + row._count._all, 0);
+    const fullyReconciledCount = operatingTransactions.filter((item) => item.reconciliationStatus === 'RECONCILED').length;
+    const completenessBasisPoints = operatingTransactions.length === 0 ? null : Math.min(10000, Math.max(0, Math.floor((fullyReconciledCount * 10000) / operatingTransactions.length)));
+    return {
+      inflowMinor: inflowMinor.toString(), outflowMinor: outflowMinor.toString(), operatingNetMinor: (inflowMinor - outflowMinor).toString(), reconciledMinor: reconciledMinor.toString(), unresolvedMinor: unresolvedMinor.toString(),
+      reconciliationBasisPoints: totalMinor === BigInt(0) ? null : Number((reconciledMinor * BigInt(10000)) / totalMinor), completenessBasisPoints,
+      unresolvedTransactionCount: operatingTransactions.filter((item) => item.reconciliationStatus !== 'RECONCILED').length,
+      statementsRegistered: countStatus(['UPLOADED', 'IMPORTING', 'IMPORTED', 'NEEDS_REVIEW', 'FAILED']),
+      statementsImportedSuccessfully: countStatus(['IMPORTED']), statementsImportFailed: countStatus(['FAILED']), statementsPending: countStatus(['UPLOADED', 'IMPORTING', 'NEEDS_REVIEW']), rawRecordsImported,
+      transactionsNeedingReview: operatingTransactions.filter((item) => item.reconciliationStatus !== 'RECONCILED').length,
+      fullyReconciledCount, transferCount: transactions.filter((item) => item.direction === 'TRANSFER').length,
+      exceptions: { ...exceptions, duplicateCandidates: exceptions.possibleDuplicates, uncategorizedTransactions: operatingTransactions.filter((item) => !item.categoryId).length, unassignedOperationalDimensions: operatingTransactions.filter((item) => item.allocations.length === 0).length, outstandingOwnerRecoveries: exceptions.ownerRecovery, partialReconciliations: exceptions.partialMatches },
+    };
+  }
+
+  async updateOwnerRecovery(transactionId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    const action = enumValue(input.action, ['RECORD', 'WAIVE'] as const, 'Recovery action');
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`transaction:${transactionId}`]);
+      const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, companyId: true, owner: { select: { companyId: true } }, recoverableFromOwner: true, expectedRecoveryMinor: true, recoveredAmountMinor: true, waivedAmountMinor: true, recoveryStatus: true } });
+      if (!transaction) throw new FinancialNotFoundError();
+      if (!transaction.recoverableFromOwner || transaction.expectedRecoveryMinor <= BigInt(0)) throw new FinancialValidationError('Transaction is not owner recoverable.');
+      if (transaction.companyId && transaction.owner?.companyId && transaction.companyId !== transaction.owner.companyId) throw new FinancialValidationError('Owner recovery crosses company boundaries.');
+      if (['RECOVERED', 'WAIVED'].includes(transaction.recoveryStatus)) throw new FinancialConflictError('Owner recovery is already closed.');
+      const now = new Date();
+      const recoveryNotes = optionalText(input.notes, 2000);
+      let recoveredAmountMinor = transaction.recoveredAmountMinor;
+      let waivedAmountMinor = transaction.waivedAmountMinor;
+      let recoveryStatus: 'OPEN' | 'PARTIAL' | 'RECOVERED' | 'WAIVED';
+      if (action === 'RECORD') {
+        recoveredAmountMinor += parsePositiveMinorUnits(input.amount);
+        if (recoveredAmountMinor + waivedAmountMinor > transaction.expectedRecoveryMinor) throw new FinancialValidationError('Recovery exceeds the recoverable amount.');
+        recoveryStatus = recoveredAmountMinor === transaction.expectedRecoveryMinor ? 'RECOVERED' : 'PARTIAL';
+      } else {
+        waivedAmountMinor = transaction.expectedRecoveryMinor - recoveredAmountMinor;
+        if (waivedAmountMinor <= BigInt(0)) throw new FinancialValidationError('No owner recovery balance remains to waive.');
+        recoveryStatus = 'WAIVED';
+      }
+      const updated = await tx.financialTransaction.update({ where: { id: transactionId }, data: { recoveredAmountMinor, waivedAmountMinor, recoveryStatus, recoveryNotes, lastRecoveryAt: now, waivedAt: action === 'WAIVE' ? now : null, waivedByUserId: action === 'WAIVE' ? context.userId : null } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: transaction.companyId, transactionId, actorUserId: context.userId, action: action === 'WAIVE' ? 'OWNER_RECOVERY_WAIVED' : 'OWNER_RECOVERY_RECORDED', before: { recoveredAmountMinor: transaction.recoveredAmountMinor.toString(), waivedAmountMinor: transaction.waivedAmountMinor.toString(), recoveryStatus: transaction.recoveryStatus }, after: { recoveredAmountMinor: recoveredAmountMinor.toString(), waivedAmountMinor: waivedAmountMinor.toString(), recoveryStatus }, metadata: recoveryNotes ? { notes: recoveryNotes } : undefined } });
+      return { recoveredAmountMinor: updated.recoveredAmountMinor.toString(), waivedAmountMinor: updated.waivedAmountMinor.toString(), outstandingAmountMinor: (updated.expectedRecoveryMinor - updated.recoveredAmountMinor - updated.waivedAmountMinor).toString(), recoveryStatus: updated.recoveryStatus };
+    });
   }
 
   fingerprint(parts: Array<string | number | bigint | null | undefined>) {
     return createHash('sha256').update(parts.map((part) => String(part ?? '')).join('\u001f')).digest('hex');
+  }
+
+  private async lockFinancialRows(database: Prisma.TransactionClient, keys: string[]) {
+    for (const key of [...new Set(keys)].sort()) {
+      await database.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text AS lock_result`;
+    }
   }
 
   private async validateDimensions(input: { companyId: string | null; sourceId: string | null; categoryId: string | null; customerId: string | null; vendorId: string | null; ownerId: string | null }, context: FinancialAuthorization) {

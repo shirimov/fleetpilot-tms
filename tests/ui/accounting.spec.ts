@@ -30,6 +30,9 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await page.getByPlaceholder('Bank of America Operating').fill(`Operating Bank ${suffix}`);
     await page.getByRole('button', { name: 'Add source' }).click();
     await expect(page.getByText(`Operating Bank ${suffix}`, { exact: true })).toBeVisible();
+    await page.getByPlaceholder('Bank of America Operating').fill(`Reserve Bank ${suffix}`);
+    await page.getByRole('button', { name: 'Add source' }).click();
+    await expect(page.getByText(`Reserve Bank ${suffix}`, { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Statements' }).click();
     const uploadForm = page.getByRole('heading', { name: 'Upload statement' }).locator('xpath=ancestor::form');
@@ -54,6 +57,19 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await transaction.getByRole('combobox').nth(2).selectOption({ label: `Truck ${truck.unitNumber}` });
     await transaction.getByRole('button', { name: 'Allocate' }).click();
     await expect(transaction.getByText(/RECONCILED/)).toBeVisible();
+
+    const transactionForm = page.getByRole('heading', { name: 'Add normalized transaction' }).locator('xpath=ancestor::form');
+    await transactionForm.locator('input[name="transactionDate"]').fill('2026-08-03');
+    await transactionForm.getByPlaceholder('Description').fill('Move operating cash');
+    await transactionForm.getByPlaceholder('48320.00').fill('1000.00');
+    await transactionForm.locator('select[name="direction"]').selectOption('TRANSFER');
+    await transactionForm.locator('select[name="sourceId"]').selectOption({ label: `Operating Bank ${suffix}` });
+    await transactionForm.locator('select[name="destinationSourceId"]').selectOption({ label: `Reserve Bank ${suffix}` });
+    await transactionForm.getByRole('button', { name: 'Add transaction' }).click();
+    await expect(page.getByText('Move operating cash', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Overview' }).click();
+    await expect(page.getByText('Transfers').locator('xpath=..').getByText('1', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Audit Center' }).click();
     await expect(page.getByText('Possible duplicates')).toBeVisible();
