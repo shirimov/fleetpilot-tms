@@ -34,6 +34,7 @@ const PAGE_MODULES: ReadonlyArray<[prefix: string, module: FleetPilotModule]> = 
   ['/inbox', 'administration'],
   ['/hr', 'hr'],
   ['/finance', 'finance'],
+  ['/accounting', 'finance'],
   ['/settlements', 'finance'],
   ['/loads', 'operations'],
   ['/dispatch', 'operations'],

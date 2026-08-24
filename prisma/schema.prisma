@@ -115,6 +115,13 @@ model Company {
   telegramDeliveries     TelegramDelivery[]
   telegramPendingActions TelegramPendingAction[]
   telegramUpdateRequests TelegramUpdateRequest[]
+  operatingGroupLink     OperatingGroupCompany?
+  financialSources       FinancialSource[]
+  financialTransactions  FinancialTransaction[]
+  financialAllocations   FinancialAllocation[]
+  financialExpectations  FinancialExpectation[]
+  financialParties       FinancialParty[]
+  financialAuditEvents   FinancialAuditEvent[]
 }
 
 enum CompanyMembershipRole {
@@ -134,26 +141,34 @@ model User {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  authAccounts             AuthAccount[]
-  emailSignInTokens        EmailSignInToken[]
-  memberships              CompanyMembership[]
-  taskComments             TaskComment[]
-  taskActivities           TaskActivity[]
-  taskChecklistItems       TaskChecklistItem[]
-  taskAttachments          TaskAttachment[]
-  assignedTaskCards        TaskCard[]              @relation("TaskCardAssignee")
-  taskMentions             TaskMention[]           @relation("MentionedTaskUser")
-  createdTaskMentions      TaskMention[]           @relation("TaskMentionCreator")
-  loadActivities           LoadActivity[]
-  uploadedLoadDocuments    LoadDocument[]
-  uploadedTrailerDocuments TrailerDocument[]
-  telegramUserLinks        TelegramUserLink[]
-  telegramLinkTokens       TelegramLinkToken[]
-  telegramDeliveries       TelegramDelivery[]
-  telegramPendingActions   TelegramPendingAction[] @relation("TelegramPendingActionUser")
-  requestedTelegramUpdates TelegramUpdateRequest[] @relation("TelegramUpdateRequester")
-  assignedTelegramUpdates  TelegramUpdateRequest[] @relation("TelegramUpdateAssignee")
-  employeeProfile          Employee?
+  authAccounts                  AuthAccount[]
+  emailSignInTokens             EmailSignInToken[]
+  memberships                   CompanyMembership[]
+  taskComments                  TaskComment[]
+  taskActivities                TaskActivity[]
+  taskChecklistItems            TaskChecklistItem[]
+  taskAttachments               TaskAttachment[]
+  assignedTaskCards             TaskCard[]                     @relation("TaskCardAssignee")
+  taskMentions                  TaskMention[]                  @relation("MentionedTaskUser")
+  createdTaskMentions           TaskMention[]                  @relation("TaskMentionCreator")
+  loadActivities                LoadActivity[]
+  uploadedLoadDocuments         LoadDocument[]
+  uploadedTrailerDocuments      TrailerDocument[]
+  telegramUserLinks             TelegramUserLink[]
+  telegramLinkTokens            TelegramLinkToken[]
+  telegramDeliveries            TelegramDelivery[]
+  telegramPendingActions        TelegramPendingAction[]        @relation("TelegramPendingActionUser")
+  requestedTelegramUpdates      TelegramUpdateRequest[]        @relation("TelegramUpdateRequester")
+  assignedTelegramUpdates       TelegramUpdateRequest[]        @relation("TelegramUpdateAssignee")
+  employeeProfile               Employee?
+  operatingGroupMemberships     OperatingGroupMembership[]
+  importedFinancialStatements   FinancialStatement[]           @relation("FinancialStatementImporter")
+  createdFinancialTransactions  FinancialTransaction[]         @relation("FinancialTransactionCreator")
+  reviewedFinancialTransactions FinancialTransaction[]         @relation("FinancialTransactionReviewer")
+  waivedFinancialTransactions   FinancialTransaction[]         @relation("FinancialTransactionWaiver")
+  matchedFinancialEvidence      FinancialTransactionEvidence[] @relation("FinancialEvidenceMatcher")
+  createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
+  financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
 
   @@index([activeCompanyId])
 }
@@ -377,41 +392,46 @@ model TelegramPendingAction {
 }
 
 model Truck {
-  id               String            @id @default(cuid())
-  unitNumber       String            @unique
-  vin              String?
-  year             Int?
-  make             String?
-  model            String?
-  status           TruckStatus       @default(ACTIVE)
-  companyId        String
-  company          Company           @relation(fields: [companyId], references: [id])
-  cabType          CabType           @default(SLEEPER)
-  isOwnerOp        Boolean           @default(false)
-  ownerName        String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  drivers          Driver[]
-  loads            Load[]
-  settlements      Settlement[]
-  truckInspections TruckInspection[]
+  id                    String                 @id @default(cuid())
+  unitNumber            String                 @unique
+  vin                   String?
+  year                  Int?
+  make                  String?
+  model                 String?
+  status                TruckStatus            @default(ACTIVE)
+  companyId             String
+  company               Company                @relation(fields: [companyId], references: [id])
+  cabType               CabType                @default(SLEEPER)
+  isOwnerOp             Boolean                @default(false)
+  ownerName             String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  drivers               Driver[]
+  loads                 Load[]
+  settlements           Settlement[]
+  truckInspections      TruckInspection[]
+  financialAllocations  FinancialAllocation[]
+  financialExpectations FinancialExpectation[]
 }
 
 model Customer {
-  id        String            @id @default(cuid())
-  companyId String
-  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name      String
-  status    CustomerStatus    @default(ACTIVE)
-  mcNumber  String?
-  dotNumber String?
-  email     String?
-  phone     String?
-  notes     String?           @db.Text
-  contacts  CustomerContact[]
-  loads     Load[]
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
+  id                    String                 @id @default(cuid())
+  companyId             String
+  company               Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name                  String
+  status                CustomerStatus         @default(ACTIVE)
+  mcNumber              String?
+  dotNumber             String?
+  email                 String?
+  phone                 String?
+  notes                 String?                @db.Text
+  contacts              CustomerContact[]
+  loads                 Load[]
+  financialAllocations  FinancialAllocation[]
+  financialExpectations FinancialExpectation[]
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  financialTransactions FinancialTransaction[]
 
   @@unique([companyId, name])
   @@index([companyId, status, name])
@@ -434,77 +454,81 @@ model CustomerContact {
 }
 
 model Trailer {
-  id            String               @id @default(cuid())
-  companyId     String
-  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unitNumber    String
-  equipmentType TrailerEquipmentType @default(DRY_VAN)
-  status        TrailerStatus        @default(AVAILABLE)
-  vin           String?
-  plate         String?
-  state         String?
-  notes         String?              @db.Text
-  loads         Load[]
-  documents     TrailerDocument[]
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
+  id                   String                @id @default(cuid())
+  companyId            String
+  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unitNumber           String
+  equipmentType        TrailerEquipmentType  @default(DRY_VAN)
+  status               TrailerStatus         @default(AVAILABLE)
+  vin                  String?
+  plate                String?
+  state                String?
+  notes                String?               @db.Text
+  loads                Load[]
+  documents            TrailerDocument[]
+  financialAllocations FinancialAllocation[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 
   @@unique([companyId, unitNumber])
   @@index([companyId, status, equipmentType])
 }
 
 model Driver {
-  id                 String              @id @default(cuid())
-  companyId          String?
-  company            Company?            @relation("DriverCompany", fields: [companyId], references: [id])
-  firstName          String
-  lastName           String
-  phone              String?
-  email              String?
-  licenseNum         String?
-  payType            DriverPayType       @default(PERCENTAGE)
-  payRate            Float
-  truckId            String?
-  truck              Truck?              @relation(fields: [truckId], references: [id])
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  loads              Load[]
-  settlements        Settlement[]
-  driverOrientations DriverOrientation[]
+  id                   String                @id @default(cuid())
+  companyId            String?
+  company              Company?              @relation("DriverCompany", fields: [companyId], references: [id])
+  firstName            String
+  lastName             String
+  phone                String?
+  email                String?
+  licenseNum           String?
+  payType              DriverPayType         @default(PERCENTAGE)
+  payRate              Float
+  truckId              String?
+  truck                Truck?                @relation(fields: [truckId], references: [id])
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  loads                Load[]
+  settlements          Settlement[]
+  driverOrientations   DriverOrientation[]
+  financialAllocations FinancialAllocation[]
 
   @@index([companyId])
 }
 
 model Load {
-  id            String         @id @default(cuid())
-  loadNumber    String         @unique
-  referenceNum  String?
-  status        LoadStatus     @default(DRAFT)
-  origin        String
-  destination   String
-  pickupDate    DateTime?
-  deliveryDate  DateTime?
-  miles         Float?
-  rate          Float
-  fuelSurcharge Float?         @default(0)
-  truckId       String?
-  truck         Truck?         @relation(fields: [truckId], references: [id])
-  driverId      String?
-  driver        Driver?        @relation(fields: [driverId], references: [id])
-  trailerId     String?
-  trailer       Trailer?       @relation(fields: [trailerId], references: [id])
-  customerId    String?
-  customer      Customer?      @relation(fields: [customerId], references: [id])
-  companyId     String
-  company       Company        @relation(fields: [companyId], references: [id])
-  notes         String?        @db.Text
-  invoiceNumber String?
-  stops         LoadStop[]
-  documents     LoadDocument[]
-  activities    LoadActivity[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  settlement    Settlement?
+  id                    String                 @id @default(cuid())
+  loadNumber            String                 @unique
+  referenceNum          String?
+  status                LoadStatus             @default(DRAFT)
+  origin                String
+  destination           String
+  pickupDate            DateTime?
+  deliveryDate          DateTime?
+  miles                 Float?
+  rate                  Float
+  fuelSurcharge         Float?                 @default(0)
+  truckId               String?
+  truck                 Truck?                 @relation(fields: [truckId], references: [id])
+  driverId              String?
+  driver                Driver?                @relation(fields: [driverId], references: [id])
+  trailerId             String?
+  trailer               Trailer?               @relation(fields: [trailerId], references: [id])
+  customerId            String?
+  customer              Customer?              @relation(fields: [customerId], references: [id])
+  companyId             String
+  company               Company                @relation(fields: [companyId], references: [id])
+  notes                 String?                @db.Text
+  invoiceNumber         String?
+  stops                 LoadStop[]
+  documents             LoadDocument[]
+  activities            LoadActivity[]
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  settlement            Settlement?
+  financialAllocations  FinancialAllocation[]
+  financialExpectations FinancialExpectation[]
 
   @@index([companyId, status, pickupDate])
   @@index([companyId, truckId, pickupDate, deliveryDate])
@@ -805,6 +829,7 @@ model Employee {
   payments                EmployeePayment[]
   scheduleDays            EmployeeScheduleDay[]
   skills                  EmployeeSkill[]
+  financialAllocations    FinancialAllocation[]
 
   @@index([companyId])
   @@index([companyId, employmentStatus])
@@ -928,6 +953,476 @@ model EscrowTx {
   description String
   date        DateTime       @default(now())
   createdAt   DateTime       @default(now())
+}
+
+enum FinancialSourceType {
+  BANK_ACCOUNT
+  CREDIT_CARD
+  FUEL_CARD
+  TOLL_ACCOUNT
+  TMS_SETTLEMENT
+  CUSTOMER_SETTLEMENT
+  OWNER_SETTLEMENT
+  CASH
+  OTHER
+}
+
+enum FinancialStatementType {
+  BANK_STATEMENT
+  CREDIT_CARD_STATEMENT
+  FUEL_STATEMENT
+  TOLL_STATEMENT
+  TMS_SETTLEMENT
+  CUSTOMER_SETTLEMENT
+  OWNER_SETTLEMENT
+  REPAIR_INVOICE
+  INSURANCE_STATEMENT
+  OTHER
+}
+
+enum FinancialImportStatus {
+  UPLOADED
+  IMPORTING
+  IMPORTED
+  NEEDS_REVIEW
+  FAILED
+}
+
+enum FinancialImportRecordStatus {
+  UNREVIEWED
+  MATCHED
+  PARTIALLY_MATCHED
+  DUPLICATE_SUSPECTED
+  NEEDS_REVIEW
+}
+
+enum FinancialDirection {
+  INFLOW
+  OUTFLOW
+  TRANSFER
+}
+
+enum FinancialTransactionStatus {
+  DRAFT
+  POSTED
+  VOIDED
+}
+
+enum FinancialReconciliationStatus {
+  UNREVIEWED
+  MATCHED
+  PARTIALLY_MATCHED
+  UNMATCHED
+  MISSING_EXPECTED
+  DUPLICATE_SUSPECTED
+  NEEDS_REVIEW
+  RECONCILED
+}
+
+enum FinancialMatchMethod {
+  EXACT
+  PARTIAL
+  SPLIT
+  MANUAL
+  SUGGESTED
+}
+
+enum FinancialEvidenceRole {
+  PRIMARY
+  CORROBORATING
+}
+
+enum FinancialCategoryType {
+  INCOME
+  DIRECT_EXPENSE
+  EQUIPMENT_FINANCING
+  OVERHEAD
+  OTHER
+}
+
+enum FinancialPartyType {
+  VENDOR
+  OWNER_OPERATOR
+  OTHER
+}
+
+enum FinancialRecoveryStatus {
+  NOT_APPLICABLE
+  EXPECTED
+  PARTIALLY_RECOVERED
+  OPEN
+  PARTIAL
+  RECOVERED
+  WAIVED
+}
+
+enum FinancialExpectationStatus {
+  OPEN
+  PARTIALLY_MATCHED
+  MATCHED
+  MISSING
+  CANCELLED
+}
+
+enum FinancialDataStatus {
+  RAW
+  NORMALIZED
+  REVIEWED
+  VERIFIED
+}
+
+model OperatingGroup {
+  id           String                     @id @default(cuid())
+  name         String
+  currency     String                     @default("USD")
+  createdAt    DateTime                   @default(now())
+  updatedAt    DateTime                   @updatedAt
+  companies    OperatingGroupCompany[]
+  memberships  OperatingGroupMembership[]
+  sources      FinancialSource[]
+  statements   FinancialStatement[]
+  categories   FinancialCategory[]
+  parties      FinancialParty[]
+  transactions FinancialTransaction[]
+  expectations FinancialExpectation[]
+  auditEvents  FinancialAuditEvent[]
+}
+
+model OperatingGroupCompany {
+  operatingGroupId String
+  companyId        String         @unique
+  joinedAt         DateTime       @default(now())
+  operatingGroup   OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([operatingGroupId, companyId])
+  @@index([operatingGroupId])
+}
+
+model OperatingGroupMembership {
+  operatingGroupId String
+  userId           String
+  role             CompanyMembershipRole
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  operatingGroup   OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([operatingGroupId, userId])
+  @@index([userId, role])
+}
+
+model FinancialSource {
+  id                   String                 @id @default(cuid())
+  operatingGroupId     String
+  companyId            String?
+  name                 String
+  type                 FinancialSourceType
+  institution          String?
+  provider             String?
+  currency             String                 @default("USD")
+  lastFour             String?
+  isActive             Boolean                @default(true)
+  metadata             Json?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  operatingGroup       OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company              Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  statements           FinancialStatement[]
+  transactions         FinancialTransaction[] @relation("FinancialTransactionSource")
+  destinationTransfers FinancialTransaction[] @relation("FinancialTransactionDestination")
+  expectations         FinancialExpectation[]
+
+  @@unique([operatingGroupId, name])
+  @@index([operatingGroupId, type, isActive])
+  @@index([companyId])
+}
+
+model FinancialStatement {
+  id                 String                  @id @default(cuid())
+  operatingGroupId   String
+  sourceId           String
+  type               FinancialStatementType
+  periodStart        DateTime
+  periodEnd          DateTime
+  statementDate      DateTime?
+  originalFilename   String
+  displayFilename    String
+  mimeType           String
+  byteSize           Int
+  storageKey         String                  @unique
+  checksumSha256     String
+  importStatus       FinancialImportStatus   @default(UPLOADED)
+  currency           String                  @default("USD")
+  sourceTotalMinor   BigInt?
+  importedRowCount   Int                     @default(0)
+  matchedRowCount    Int                     @default(0)
+  unresolvedRowCount Int                     @default(0)
+  importedByUserId   String
+  importedAt         DateTime?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  operatingGroup     OperatingGroup          @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  source             FinancialSource         @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  importedBy         User                    @relation("FinancialStatementImporter", fields: [importedByUserId], references: [id], onDelete: Restrict)
+  records            FinancialImportRecord[]
+
+  @@unique([operatingGroupId, checksumSha256])
+  @@index([operatingGroupId, createdAt])
+  @@index([sourceId, periodStart, periodEnd])
+  @@index([importStatus, createdAt])
+}
+
+model FinancialImportRecord {
+  id                   String                         @id @default(cuid())
+  statementId          String
+  sourceRowIndex       Int
+  rawDescription       String?
+  rawDate              String?
+  rawAmount            String?
+  rawReference         String?
+  rawMetadata          Json?
+  candidateDate        DateTime?
+  candidateAmountMinor BigInt?
+  candidateDirection   FinancialDirection?
+  candidateDescription String?
+  fingerprintSha256    String
+  status               FinancialImportRecordStatus    @default(UNREVIEWED)
+  createdAt            DateTime                       @default(now())
+  statement            FinancialStatement             @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  evidence             FinancialTransactionEvidence[]
+
+  @@unique([statementId, sourceRowIndex])
+  @@index([statementId, status])
+  @@index([fingerprintSha256])
+}
+
+model FinancialCategory {
+  id               String                 @id @default(cuid())
+  operatingGroupId String
+  name             String
+  type             FinancialCategoryType
+  isActive         Boolean                @default(true)
+  isSystemDefault  Boolean                @default(false)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  operatingGroup   OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  transactions     FinancialTransaction[]
+  allocations      FinancialAllocation[]
+
+  @@unique([operatingGroupId, name])
+  @@index([operatingGroupId, type, isActive])
+}
+
+model FinancialParty {
+  id                 String                 @id @default(cuid())
+  operatingGroupId   String
+  companyId          String?
+  type               FinancialPartyType
+  name               String
+  externalReference  String?
+  isActive           Boolean                @default(true)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  operatingGroup     OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company            Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transactionVendor  FinancialTransaction[] @relation("FinancialTransactionVendor")
+  transactionOwner   FinancialTransaction[] @relation("FinancialTransactionOwner")
+  allocations        FinancialAllocation[]
+  expectationParties FinancialExpectation[]
+
+  @@unique([operatingGroupId, type, name])
+  @@index([companyId, type])
+}
+
+model FinancialTransaction {
+  id                    String                         @id @default(cuid())
+  operatingGroupId      String
+  companyId             String?
+  sourceId              String?
+  destinationSourceId   String?
+  transactionDate       DateTime
+  amountMinor           BigInt
+  currency              String                         @default("USD")
+  direction             FinancialDirection
+  description           String
+  categoryId            String?
+  vendorId              String?
+  ownerId               String?
+  customerId            String?
+  status                FinancialTransactionStatus     @default(DRAFT)
+  reconciliationStatus  FinancialReconciliationStatus  @default(UNREVIEWED)
+  dataStatus            FinancialDataStatus            @default(NORMALIZED)
+  memo                  String?
+  reference             String?
+  fingerprintSha256     String?
+  recoverableFromOwner  Boolean                        @default(false)
+  expectedRecoveryMinor BigInt                         @default(0)
+  recoveredAmountMinor  BigInt                         @default(0)
+  waivedAmountMinor     BigInt                         @default(0)
+  recoveryStatus        FinancialRecoveryStatus        @default(NOT_APPLICABLE)
+  recoveryNotes         String?
+  lastRecoveryAt        DateTime?
+  waivedAt              DateTime?
+  waivedByUserId        String?
+  createdByUserId       String
+  reviewedByUserId      String?
+  reviewedAt            DateTime?
+  createdAt             DateTime                       @default(now())
+  updatedAt             DateTime                       @updatedAt
+  operatingGroup        OperatingGroup                 @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company               Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source                FinancialSource?               @relation("FinancialTransactionSource", fields: [sourceId], references: [id], onDelete: Restrict)
+  destinationSource     FinancialSource?               @relation("FinancialTransactionDestination", fields: [destinationSourceId], references: [id], onDelete: Restrict)
+  category              FinancialCategory?             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  vendor                FinancialParty?                @relation("FinancialTransactionVendor", fields: [vendorId], references: [id], onDelete: Restrict)
+  owner                 FinancialParty?                @relation("FinancialTransactionOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  customer              Customer?                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy             User                           @relation("FinancialTransactionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  reviewedBy            User?                          @relation("FinancialTransactionReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  waivedBy              User?                          @relation("FinancialTransactionWaiver", fields: [waivedByUserId], references: [id], onDelete: Restrict)
+  evidence              FinancialTransactionEvidence[]
+  allocations           FinancialAllocation[]
+  expectationMatches    FinancialExpectationMatch[]
+  auditEvents           FinancialAuditEvent[]
+
+  @@index([operatingGroupId, transactionDate])
+  @@index([companyId, transactionDate])
+  @@index([destinationSourceId, transactionDate])
+  @@index([reconciliationStatus, transactionDate])
+  @@index([categoryId, transactionDate])
+  @@index([fingerprintSha256])
+}
+
+model FinancialTransactionEvidence {
+  id                    String                @id @default(cuid())
+  transactionId         String
+  importRecordId        String
+  matchedAmountMinor    BigInt
+  method                FinancialMatchMethod
+  role                  FinancialEvidenceRole @default(PRIMARY)
+  confidenceBasisPoints Int?
+  matchedByUserId       String
+  matchedAt             DateTime              @default(now())
+  transaction           FinancialTransaction  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  importRecord          FinancialImportRecord @relation(fields: [importRecordId], references: [id], onDelete: Restrict)
+  matchedBy             User                  @relation("FinancialEvidenceMatcher", fields: [matchedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([transactionId, importRecordId])
+  @@index([importRecordId, matchedAt])
+  @@index([transactionId, matchedAt])
+}
+
+model FinancialAllocation {
+  id            String               @id @default(cuid())
+  transactionId String
+  amountMinor   BigInt
+  categoryId    String
+  companyId     String?
+  truckId       String?
+  trailerId     String?
+  driverId      String?
+  employeeId    String?
+  loadId        String?
+  customerId    String?
+  partyId       String?
+  businessType  String?
+  memo          String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  category      FinancialCategory    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  company       Company?             @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck         Truck?               @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  trailer       Trailer?             @relation(fields: [trailerId], references: [id], onDelete: Restrict)
+  driver        Driver?              @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  employee      Employee?            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  load          Load?                @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  customer      Customer?            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  party         FinancialParty?      @relation(fields: [partyId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId])
+  @@index([categoryId])
+  @@index([companyId])
+  @@index([truckId])
+  @@index([trailerId])
+  @@index([driverId])
+  @@index([employeeId])
+  @@index([loadId])
+  @@index([customerId])
+  @@index([partyId])
+}
+
+model FinancialExpectation {
+  id                  String                      @id @default(cuid())
+  operatingGroupId    String
+  companyId           String?
+  sourceId            String?
+  customerId          String?
+  partyId             String?
+  loadId              String?
+  truckId             String?
+  expectedAmountMinor BigInt
+  matchedAmountMinor  BigInt                      @default(0)
+  currency            String                      @default("USD")
+  direction           FinancialDirection
+  description         String
+  expectedDateStart   DateTime
+  expectedDateEnd     DateTime
+  reference           String?
+  status              FinancialExpectationStatus  @default(OPEN)
+  createdByUserId     String
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  operatingGroup      OperatingGroup              @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company             Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source              FinancialSource?            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  customer            Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  party               FinancialParty?             @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  load                Load?                       @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  truck               Truck?                      @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  createdBy           User                        @relation("FinancialExpectationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  matches             FinancialExpectationMatch[]
+
+  @@index([operatingGroupId, status, expectedDateStart])
+  @@index([companyId, expectedDateStart])
+  @@index([customerId])
+  @@index([partyId])
+  @@index([loadId])
+}
+
+model FinancialExpectationMatch {
+  id                 String               @id @default(cuid())
+  expectationId      String
+  transactionId      String
+  matchedAmountMinor BigInt
+  matchedAt          DateTime             @default(now())
+  expectation        FinancialExpectation @relation(fields: [expectationId], references: [id], onDelete: Restrict)
+  transaction        FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+
+  @@unique([expectationId, transactionId])
+  @@index([transactionId])
+}
+
+model FinancialAuditEvent {
+  id               String                @id @default(cuid())
+  operatingGroupId String
+  companyId        String?
+  transactionId    String?
+  action           String
+  actorUserId      String
+  before           Json?
+  after            Json?
+  metadata         Json?
+  occurredAt       DateTime              @default(now())
+  operatingGroup   OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company          Company?              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transaction      FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  actor            User                  @relation("FinancialAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([operatingGroupId, occurredAt, id])
+  @@index([transactionId, occurredAt, id])
+  @@index([actorUserId, occurredAt, id])
 }
 
 model DriverOrientation {
