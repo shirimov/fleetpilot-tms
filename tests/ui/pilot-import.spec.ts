@@ -9,7 +9,7 @@ async function issueToken(userId: string, email: string) {
   return token;
 }
 
-test('OWNER reviews and posts a synthetic Pilot XLS without invoice-level double counting', async ({ page }) => {
+test('OWNER explicitly reparses an unposted legacy preview and then posts without double counting', async ({ page }) => {
   test.setTimeout(90_000);
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const company = await prisma.company.create({ data: { name: `Pilot UI ${suffix}` } });
@@ -28,8 +28,25 @@ test('OWNER reviews and posts a synthetic Pilot XLS without invoice-level double
     await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920001.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920001' })) });
     await page.getByRole('button', { name: 'Parse statement' }).click();
     await expect(page.getByRole('heading', { name: '920001' })).toBeVisible();
+    const imported = await prisma.pilotProviderInvoice.findFirstOrThrow({ where: { operatingGroupId: group.id, invoiceNumber: '920001' } });
+    await prisma.$transaction([
+      prisma.pilotProviderInvoice.update({ where: { id: imported.id }, data: { parseVersion: 'pilot-biff-v1', status: 'NEEDS_REVIEW', parsedTotalMinor: BigInt(1010000), differenceMinor: BigInt(999900) } }),
+      prisma.pilotImportIssue.create({ data: { invoiceId: imported.id, code: 'AMOUNT_MISMATCH', message: 'Synthetic v1 mismatch.' } }),
+      prisma.financialAuditEvent.updateMany({ where: { pilotProviderInvoiceId: imported.id, action: 'PILOT_INVOICE_PARSED' }, data: { metadata: { parseVersion: 'pilot-biff-v1' } } }),
+    ]);
+    await page.reload();
+    await page.getByRole('button', { name: 'Pilot Fuel Imports' }).click();
+    await page.getByRole('button', { name: /Invoice 920001 .* NEEDS_REVIEW/ }).click();
+    await expect(page.getByRole('button', { name: 'Reparse invoice' })).toBeVisible();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Reparse invoice' }).click();
+    await expect(page.getByText('Parser pilot-biff-v2')).toBeVisible();
     await expect(page.getByRole('button', { name: /Invoice 920001 .* READY_TO_POST/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reparse invoice' })).toHaveCount(0);
     await expect(page.getByText('No issues in this view.')).toBeVisible();
+    expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(0);
+    expect(await prisma.financialExpectation.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(0);
+    expect(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: imported.id, action: 'PILOT_INVOICE_REPARSED' } })).toBe(1);
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Post reconciled invoice' }).click();
     await expect(page.getByRole('button', { name: /Invoice 920001 .* POSTED/ })).toBeVisible();
