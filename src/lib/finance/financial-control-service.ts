@@ -178,20 +178,25 @@ export class FinancialControlService {
   }
 
   async updateCategory(categoryId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
-    const existing = await this.requireCategory(categoryId, context);
-    const parentCategoryId = input.parentCategoryId === undefined ? existing.parentCategoryId : optionalText(input.parentCategoryId);
-    if (parentCategoryId === categoryId) throw new FinancialValidationError('A category cannot be its own parent.');
-    if (parentCategoryId) {
-      await this.requireCategory(parentCategoryId, context);
-      const descendants = await this.categoryDescendantIds(categoryId, context);
-      if (descendants.has(parentCategoryId)) throw new FinancialValidationError('Category hierarchy cannot contain a cycle.');
-    }
-    return this.database.financialCategory.update({ where: { id: categoryId }, data: {
-      name: input.name === undefined ? undefined : text(input.name, 'Category name'),
-      type: input.type === undefined ? undefined : enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
-      isActive: typeof input.isActive === 'boolean' ? input.isActive : undefined,
-      parentCategoryId,
-    } });
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`financial-category:${categoryId}`]);
+      const existing = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId } });
+      if (!existing) throw new FinancialNotFoundError();
+      const parentCategoryId = input.parentCategoryId === undefined ? existing.parentCategoryId : optionalText(input.parentCategoryId);
+      if (parentCategoryId === categoryId) throw new FinancialValidationError('A category cannot be its own parent.');
+      if (parentCategoryId) {
+        const parent = await tx.financialCategory.findFirst({ where: { id: parentCategoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
+        if (!parent) throw new FinancialValidationError('Category is outside this operating group.');
+        const descendants = await this.categoryDescendantIds(categoryId, context);
+        if (descendants.has(parentCategoryId)) throw new FinancialValidationError('Category hierarchy cannot contain a cycle.');
+      }
+      return tx.financialCategory.update({ where: { id: categoryId }, data: {
+        name: input.name === undefined ? undefined : text(input.name, 'Category name'),
+        type: input.type === undefined ? undefined : enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
+        isActive: typeof input.isActive === 'boolean' ? input.isActive : undefined,
+        parentCategoryId,
+      } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   async listPrograms(context: FinancialAuthorization) {
@@ -450,6 +455,7 @@ export class FinancialControlService {
         },
       });
       if (!transaction) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       const onlyCreationAudit = transaction.auditEvents.every(({ action }) => action === 'TRANSACTION_CREATED');
       const safe = transaction.status === 'DRAFT'
         && ['UNREVIEWED', 'UNMATCHED', 'DUPLICATE_SUSPECTED', 'NEEDS_REVIEW'].includes(transaction.reconciliationStatus)
@@ -473,6 +479,7 @@ export class FinancialControlService {
       await this.lockFinancialRows(tx, [`transaction:${transactionId}`]);
       const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId } });
       if (!transaction) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (transaction.status === 'VOIDED') throw new FinancialConflictError('This transaction is already voided.');
       await tx.financialTransaction.update({ where: { id: transactionId }, data: { status: 'VOIDED' } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: transaction.companyId, transactionId, actorUserId: context.userId, action: 'TRANSACTION_VOIDED', before: { status: transaction.status }, after: { status: 'VOIDED' } } });
@@ -525,6 +532,7 @@ export class FinancialControlService {
         tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { amountMinor: true, direction: true, currency: true } }),
       ]);
       if (!expectation || !transaction) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (expectation.direction !== transaction.direction) throw new FinancialValidationError('Expected and actual directions must match.');
       if (expectation.currency !== transaction.currency) throw new FinancialValidationError('Expected and actual currencies must match.');
       if (expectation.matchedAmountMinor + matchedAmountMinor > expectation.expectedAmountMinor) throw new FinancialValidationError('Match exceeds the expected amount.');
@@ -548,6 +556,7 @@ export class FinancialControlService {
       const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, currency: true, reconciliationStatus: true } });
       const record = await tx.financialImportRecord.findFirst({ where: { id: importRecordId, statement: { operatingGroupId: context.operatingGroupId } }, select: { id: true, candidateAmountMinor: true, statement: { select: { currency: true } } } });
       if (!transaction || !record) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (transaction.currency !== record.statement.currency) throw new FinancialValidationError('Evidence and transaction currencies must match.');
       const [transactionMatched, recordMatched] = await Promise.all([
         tx.financialTransactionEvidence.aggregate({ where: { transactionId, role: 'PRIMARY' }, _sum: { matchedAmountMinor: true } }),
@@ -571,6 +580,7 @@ export class FinancialControlService {
     return this.database.$transaction(async (tx) => {
       const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, companyId: true, reconciliationStatus: true, direction: true } });
       if (!transaction) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (transaction.direction === 'TRANSFER') throw new FinancialValidationError('Transfers are assigned to source and destination accounts, not operational allocations.');
       if (transaction.reconciliationStatus === 'RECONCILED') throw new FinancialConflictError('Reconciled allocations require an explicit review workflow.');
       const allocations = await Promise.all(rawAllocations.map(async (raw) => {
@@ -596,7 +606,7 @@ export class FinancialControlService {
 
   async overview(context: FinancialAuthorization) {
     const [transactions, statementStatuses, rawRecordsImported, missingExpectations] = await Promise.all([
-      this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
+      this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, role: 'ECONOMIC' }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
       this.database.financialStatement.groupBy({ by: ['importStatus'], where: { operatingGroupId: context.operatingGroupId }, _count: { _all: true } }),
       this.database.financialImportRecord.count({ where: { statement: { operatingGroupId: context.operatingGroupId } } }),
       this.database.financialExpectation.count({ where: { operatingGroupId: context.operatingGroupId, status: { in: ['OPEN', 'PARTIALLY_MATCHED', 'MISSING'] } } }),
@@ -638,6 +648,7 @@ export class FinancialControlService {
       await this.lockFinancialRows(tx, [`transaction:${transactionId}`]);
       const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, companyId: true, owner: { select: { companyId: true } }, recoverableFromOwner: true, expectedRecoveryMinor: true, recoveredAmountMinor: true, waivedAmountMinor: true, recoveryStatus: true } });
       if (!transaction) throw new FinancialNotFoundError();
+      await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (!transaction.recoverableFromOwner || transaction.expectedRecoveryMinor <= BigInt(0)) throw new FinancialValidationError('Transaction is not owner recoverable.');
       if (transaction.companyId && transaction.owner?.companyId && transaction.companyId !== transaction.owner.companyId) throw new FinancialValidationError('Owner recovery crosses company boundaries.');
       if (['RECOVERED', 'WAIVED'].includes(transaction.recoveryStatus)) throw new FinancialConflictError('Owner recovery is already closed.');
@@ -668,6 +679,16 @@ export class FinancialControlService {
   private async lockFinancialRows(database: Prisma.TransactionClient, keys: string[]) {
     for (const key of [...new Set(keys)].sort()) {
       await database.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))::text AS lock_result`;
+    }
+  }
+
+  private async rejectProviderOwnedTransaction(database: Prisma.TransactionClient, transactionId: string) {
+    const providerOwned = await database.financialTransaction.findUnique({
+      where: { id: transactionId },
+      select: { pilotFuelingEvent: { select: { id: true } }, pilotInvoiceAdjustment: { select: { id: true } } },
+    });
+    if (providerOwned?.pilotFuelingEvent || providerOwned?.pilotInvoiceAdjustment) {
+      throw new FinancialConflictError('This transaction belongs to a posted provider invoice and cannot be mutated independently.');
     }
   }
 
