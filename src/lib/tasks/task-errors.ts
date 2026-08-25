@@ -46,3 +46,10 @@ export class InvalidTaskDestinationIndexError extends Error {
     this.name = 'InvalidTaskDestinationIndexError';
   }
 }
+
+export class TaskDeleteProtectedError extends Error {
+  constructor(message = 'This task has activity or collaboration history and cannot be permanently deleted.') {
+    super(message);
+    this.name = 'TaskDeleteProtectedError';
+  }
+}

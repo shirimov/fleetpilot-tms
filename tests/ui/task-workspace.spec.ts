@@ -220,6 +220,29 @@ async function mockTaskApis(page: Page) {
   }
   await route.fulfill({ json: telegramSummary });
   });
+  await page.route('**/api/tasks/cards/*/delete-policy', async (route) => {
+    const cardId = new URL(route.request().url()).pathname.split('/').at(-2);
+    if (cardId === 'card-inspection') {
+      await route.fulfill({ json: { canPermanentlyDelete: true, isProtected: true, explanation: 'This task has activity or collaboration history and cannot be permanently deleted.' } });
+      return;
+    }
+    if (cardId === 'card-rate') {
+      await route.fulfill({ json: { canPermanentlyDelete: true, isProtected: false, explanation: null } });
+      return;
+    }
+    await route.fulfill({ json: { canPermanentlyDelete: false, isProtected: false, explanation: null } });
+  });
+  await page.route('**/api/tasks/cards?*', async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.fallback();
+      return;
+    }
+    const cardId = new URL(route.request().url()).searchParams.get('id');
+    for (const board of project.boards) {
+      board.cards = board.cards.filter(({ id }) => id !== cardId);
+    }
+    await route.fulfill({ json: { success: true } });
+  });
   await page.route('**/api/tasks/cards', async (route) => {
     if (route.request().method() === 'PATCH') {
       const body = route.request().postDataJSON() as Record<string, string | null> & { id: string };
@@ -467,6 +490,30 @@ test('supports checklist and comment collaboration in the task drawer', async ({
   await expect(drawer.getByText('Inspection is complete.')).toBeVisible();
   await drawer.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(drawer).toBeHidden();
+});
+
+test('shows permanent delete only to authorized users and explains protected history', async ({ page }) => {
+  await mockTaskApis(page);
+  await page.goto('/tasks');
+
+  await page.getByText('Complete trailer inspection', { exact: true }).first().click();
+  let drawer = page.getByRole('dialog');
+  await expect(drawer.getByText('This task has activity or collaboration history and cannot be permanently deleted.')).toBeVisible();
+  await expect(drawer.getByRole('button', { name: 'Delete Permanently' })).toHaveCount(0);
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+
+  await page.getByText('Confirm driver availability', { exact: true }).first().click();
+  drawer = page.getByRole('dialog');
+  await expect(drawer.getByRole('heading', { name: 'Permanent deletion' })).toHaveCount(0);
+  await drawer.getByRole('button', { name: 'Close', exact: true }).click();
+
+  await page.getByText('Review carrier rate confirmation', { exact: true }).first().click();
+  drawer = page.getByRole('dialog');
+  await expect(drawer.getByRole('button', { name: 'Delete Permanently' })).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
+  await drawer.getByRole('button', { name: 'Delete Permanently' }).click();
+  await expect(drawer).toBeHidden();
+  await expect(page.getByText('Review carrier rate confirmation', { exact: true })).toHaveCount(0);
 });
 
 test('shows Telegram collaboration state and requests an update for a connected assignee', async ({

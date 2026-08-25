@@ -268,6 +268,11 @@ Report missing scripts or failures truthfully.
 
 ## Completion Report
 
+> **Archive Task status:** Task-card archiving remains deferred. Protected tasks
+> cannot be permanently deleted and require the future Archive Task workflow.
+> Project archiving is separate and does not grant or substitute for permanent
+> task deletion.
+
 At the end, provide:
 
 1. changed files
