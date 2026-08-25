@@ -1,6 +1,15 @@
 'use client'
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import Sidebar from '@/components/Sidebar'
+import { TruckImportPanel } from '@/components/fleet/TruckImportPanel'
+
+type CompanyOption = { id: string; name: string }
+type TruckItem = {
+  id: string; unitNumber: string; vin: string | null; year: number | null; make: string | null; model: string | null;
+  status: string; companyId: string; company?: CompanyOption; cabType: string; isOwnerOp: boolean; ownerName: string | null;
+}
+type VinResult = { Variable?: string; Value?: string }
 
 const defaultForm = { unitNumber: '', vin: '', year: '', make: '', model: '', status: 'ACTIVE', companyId: '', cabType: 'SLEEPER', isOwnerOp: false, ownerName: '' }
 
@@ -23,8 +32,8 @@ const statusColor: Record<string, string> = {
 }
 
 export default function TrucksPage() {
-  const [trucks, setTrucks] = useState<any[]>([])
-  const [companies, setCompanies] = useState<any[]>([])
+  const [trucks, setTrucks] = useState<TruckItem[]>([])
+  const [companies, setCompanies] = useState<CompanyOption[]>([])
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(defaultForm)
@@ -54,7 +63,7 @@ export default function TrucksPage() {
     try {
       const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/${form.vin.trim()}?format=json`)
       const data = await res.json()
-      const get = (name: string) => data.Results?.find((r: any) => r.Variable === name)?.Value || ''
+      const get = (name: string) => (data.Results as VinResult[] | undefined)?.find((result) => result.Variable === name)?.Value || ''
       const make  = get('Make')
       const model = get('Model')
       const year  = get('Model Year')
@@ -75,7 +84,7 @@ export default function TrucksPage() {
     setVinLooking(false)
   }
 
-  const openEdit = (t: any) => {
+  const openEdit = (t: TruckItem) => {
     setVinError('')
     setVinSuccess('')
     setEditId(t.id)
@@ -94,7 +103,7 @@ export default function TrucksPage() {
     setShowForm(true)
   }
 
-  const submit = async (e: any) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const url = editId ? `/api/trucks/${editId}` : '/api/trucks'
     const method = editId ? 'PATCH' : 'POST'
@@ -227,6 +236,8 @@ export default function TrucksPage() {
             </form>
           </div>
         )}
+
+        <TruckImportPanel onCommitted={loadData} />
 
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {trucks.length === 0 ? (
