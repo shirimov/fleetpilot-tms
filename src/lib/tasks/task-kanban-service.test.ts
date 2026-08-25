@@ -379,6 +379,60 @@ test('TaskService supports deterministic Kanban movement', async (t) => {
 
 });
 
+test('task lifecycle views preserve local-day completion history and isolate archived work', async () => {
+  const project = await taskService.createProject({ name: `Lifecycle ${testSuffix}` });
+  projectIds.push(project.id);
+  const todo = project.boards.find(({ status }) => status === 'TODO');
+  const done = project.boards.find(({ status }) => status === 'DONE');
+  assert.ok(todo);
+  assert.ok(done);
+
+  const data = [
+    { id: `active-${testSuffix}`, title: 'Active', boardId: todo.id, status: 'TODO' as const },
+    { id: `today-${testSuffix}`, title: 'Completed today', boardId: done.id, status: 'DONE' as const, completedAt: new Date('2026-08-25T08:00:00Z') },
+    { id: `old-${testSuffix}`, title: 'Completed before today', boardId: done.id, status: 'DONE' as const, completedAt: new Date('2026-08-24T08:00:00Z') },
+    { id: `archived-${testSuffix}`, title: 'Archived', boardId: todo.id, status: 'TODO' as const, isArchived: true, archivedAt: new Date('2026-08-25T09:00:00Z') },
+  ];
+  await prisma.taskCard.createMany({ data: data.map((card, order) => ({ ...card, projectId: project.id, order })) });
+
+  const active = await taskService.getProjectBoard(project.id, undefined, { view: 'active', period: 'today', timeZone: 'Asia/Ashgabat', now: new Date('2026-08-25T12:00:00Z') });
+  assert.deepEqual(active.boards.flatMap(({ cards }) => cards.map(({ title }) => title)).sort(), ['Active', 'Completed today']);
+
+  const completed = await taskService.getProjectBoard(project.id, undefined, { view: 'completed', period: 'all', timeZone: 'Asia/Ashgabat', now: new Date('2026-08-25T12:00:00Z') });
+  assert.deepEqual(completed.boards.flatMap(({ cards }) => cards.map(({ title }) => title)).sort(), ['Completed before today', 'Completed today']);
+
+  const archived = await taskService.getProjectBoard(project.id, undefined, { view: 'archived', period: 'all', timeZone: 'Asia/Ashgabat' });
+  assert.deepEqual(archived.boards.flatMap(({ cards }) => cards.map(({ title }) => title)), ['Archived']);
+
+  await taskService.moveCard({ cardId: `active-${testSuffix}`, sourceBoardId: todo.id, destinationBoardId: done.id, destinationIndex: 2 });
+  const firstCompletion = (await prisma.taskCard.findUniqueOrThrow({ where: { id: `active-${testSuffix}` } })).completedAt;
+  assert.ok(firstCompletion);
+  await taskService.updateCard({ id: `active-${testSuffix}`, status: 'DONE' });
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: `active-${testSuffix}` } })).completedAt?.getTime(), firstCompletion.getTime());
+  await taskService.moveCard({ cardId: `active-${testSuffix}`, sourceBoardId: done.id, destinationBoardId: todo.id, destinationIndex: 0 });
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: `active-${testSuffix}` } })).completedAt, null);
+  await taskService.updateCard({ id: `active-${testSuffix}`, status: 'CANCELLED' });
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: `active-${testSuffix}` } })).completedAt, null);
+});
+
+test('completed-today visibility follows local midnight rather than UTC midnight', async () => {
+  const project = await taskService.createProject({ name: `Local day ${testSuffix}` });
+  projectIds.push(project.id);
+  const done = project.boards.find(({ status }) => status === 'DONE');
+  assert.ok(done);
+  await prisma.taskCard.createMany({ data: [
+    { projectId: project.id, boardId: done.id, title: 'LA 11:55 PM', status: 'DONE', completedAt: new Date('2026-08-25T06:55:00Z') },
+    { projectId: project.id, boardId: done.id, title: 'LA previous day', status: 'DONE', completedAt: new Date('2026-08-24T06:59:59Z') },
+  ] });
+  const board = await taskService.getProjectBoard(project.id, undefined, {
+    view: 'active',
+    period: 'today',
+    timeZone: 'America/Los_Angeles',
+    now: new Date('2026-08-25T06:57:00Z'),
+  });
+  assert.deepEqual(board.boards.flatMap(({ cards }) => cards.map(({ title }) => title)), ['LA 11:55 PM']);
+});
+
 test('optimistic move is immutable so a failed request can restore its snapshot', () => {
   const boards: KanbanColumn[] = [
     {

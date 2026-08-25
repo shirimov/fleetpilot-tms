@@ -150,6 +150,7 @@ model User {
   taskAttachments               TaskAttachment[]
   assignedTaskCards             TaskCard[]                     @relation("TaskCardAssignee")
   createdTaskCards              TaskCard[]                     @relation("TaskCardCreator")
+  archivedTaskCards             TaskCard[]                     @relation("TaskCardArchiver")
   taskMentions                  TaskMention[]                  @relation("MentionedTaskUser")
   createdTaskMentions           TaskMention[]                  @relation("TaskMentionCreator")
   loadActivities                LoadActivity[]
@@ -1557,6 +1558,8 @@ enum TaskActivityAction {
   MENTION_ADDED
   MENTION_RESOLVED
   TASK_DELETED
+  TASK_ARCHIVED
+  TASK_UNARCHIVED
 }
 
 enum TaskActivityActorType {
@@ -1637,6 +1640,10 @@ model TaskCard {
   assigneeUser            User?                   @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
   createdByUserId         String?
   createdByUser           User?                   @relation("TaskCardCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  isArchived              Boolean                 @default(false)
+  archivedAt              DateTime?
+  archivedByUserId        String?
+  archivedByUser          User?                   @relation("TaskCardArchiver", fields: [archivedByUserId], references: [id], onDelete: SetNull)
   dueDate                 DateTime?
   effort                  Int                     @default(3)
   expectedDurationMinutes Int?
@@ -1660,6 +1667,8 @@ model TaskCard {
 
   @@index([assigneeUserId])
   @@index([createdByUserId])
+  @@index([archivedByUserId])
+  @@index([projectId, isArchived, status, completedAt])
   @@index([assigneeUserId, dueDate, status])
 }
 

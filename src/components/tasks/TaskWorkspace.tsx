@@ -5,6 +5,7 @@ import type { TaskPriority, TaskStatus } from '@prisma/client';
 import type { KanbanCardFieldUpdate, KanbanProject } from '@/lib/tasks/kanban-types';
 import { moveCardInBoardState, updateCardInBoardState } from '@/lib/tasks/kanban-state';
 import type { TaskAssignee } from '@/lib/tasks/task-types';
+import type { TaskCompletionPeriod, TaskLifecycleView } from '@/lib/tasks/task-types';
 import { localDateTimeToIso } from '@/lib/tasks/task-deadline';
 import {
   EMPTY_TASK_FILTERS,
@@ -80,6 +81,8 @@ export default function TaskWorkspace() {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [project, setProject] = useState<KanbanProject | null>(null);
   const [view, setView] = useState<TaskView>('board');
+  const [lifecycleView, setLifecycleView] = useState<TaskLifecycleView>('active');
+  const [completionPeriod, setCompletionPeriod] = useState<TaskCompletionPeriod>('today');
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS);
   const [sort, setSort] = useState<TaskSort>('board');
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -165,7 +168,7 @@ export default function TaskWorkspace() {
     setError(null);
     try {
       const response = await fetch(
-        `/api/tasks/projects/${selectedProjectId}/board`,
+        `/api/tasks/projects/${selectedProjectId}/board?view=${lifecycleView}&period=${completionPeriod}`,
       );
       const body = (await response.json()) as KanbanProject | RequestError;
       if (!response.ok) {
@@ -186,7 +189,7 @@ export default function TaskWorkspace() {
     } finally {
       setLoadingBoard(false);
     }
-  }, [selectedProjectId]);
+  }, [completionPeriod, lifecycleView, selectedProjectId]);
 
   useEffect(() => {
     setSelectedCardId(null);
@@ -208,7 +211,7 @@ export default function TaskWorkspace() {
     [project, selectedCardId],
   );
   const filtersActive = hasActiveTaskFilters(filters);
-  const movementDisabled = filtersActive || sort !== 'board';
+  const movementDisabled = lifecycleView !== 'active' || filtersActive || sort !== 'board';
   const selectedProject = projects.find(({ id }) => id === selectedProjectId);
   const creationStatuses = useMemo(() => {
     if (!project) return [];
@@ -490,7 +493,7 @@ export default function TaskWorkspace() {
               ref={addTaskTriggerRef}
               type="button"
               onClick={openCreateTask}
-              disabled={!project}
+              disabled={!project || lifecycleView !== 'active'}
               aria-describedby={!project ? 'add-task-prerequisite' : undefined}
               title={!project ? 'Create a project before adding tasks' : undefined}
               className="rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/15 hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:opacity-40"
@@ -499,6 +502,28 @@ export default function TaskWorkspace() {
             </button>
           </div>
         </header>
+
+        <nav className="mb-4 flex flex-wrap items-center gap-2" aria-label="Task lifecycle view">
+          {(['active', 'completed', 'archived'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setLifecycleView(option)}
+              aria-pressed={lifecycleView === option}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold uppercase tracking-wide ${lifecycleView === option ? 'bg-blue-500 text-white' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}
+            >
+              {option}
+            </button>
+          ))}
+          {lifecycleView === 'completed' && (
+            <Select label="Completion period" value={completionPeriod} onChange={(value) => setCompletionPeriod(value as TaskCompletionPeriod)}>
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month">This month</option>
+              <option value="all">All completed</option>
+            </Select>
+          )}
+        </nav>
 
         <div className="mb-4 flex flex-col gap-3 border-y border-white/8 py-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex items-center gap-1" aria-label="Task view">
@@ -569,7 +594,7 @@ export default function TaskWorkspace() {
 
         {movementDisabled && view === 'board' && project && (
           <p className="mb-3 text-xs text-slate-500">
-            Dragging is paused while filters or custom sorting are active.
+            Dragging is available only in the unfiltered Active view using board order.
           </p>
         )}
         {moving && <p role="status" className="mb-3 text-xs font-medium text-blue-300">Saving task move…</p>}
@@ -633,6 +658,7 @@ export default function TaskWorkspace() {
           onStatusChange={changeTaskStatus}
           onDescriptionSaved={reconcileDescription}
           onDeleted={removeDeletedTask}
+          onArchived={removeDeletedTask}
         />
       )}
       {showCreateProject && (

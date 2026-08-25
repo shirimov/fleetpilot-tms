@@ -172,11 +172,14 @@ test('capacity reports overload, due today, overdue, and weighted progress', asy
     { projectId, boardId: board.id, title: 'Due', assigneeUserId: memberId, effort: 3, expectedDurationMinutes: 510, dueDate: new Date(bounds.start.getTime() + 3_600_000) },
     { projectId, boardId: board.id, title: 'Overdue', assigneeUserId: memberId, effort: 2, expectedDurationMinutes: 30, dueDate: new Date(bounds.start.getTime() - 1) },
     { projectId, boardId: board.id, title: 'Done', assigneeUserId: memberId, effort: 1, expectedDurationMinutes: 15, status: 'DONE' },
+    { projectId, boardId: board.id, title: 'Archived workload', assigneeUserId: memberId, effort: 5, expectedDurationMinutes: 900, dueDate: new Date(bounds.start.getTime() - 1), isArchived: true, archivedAt: bounds.start },
+    { projectId, boardId: board.id, title: 'Archived completion', assigneeUserId: memberId, effort: 5, status: 'DONE', completedAt: bounds.start, isArchived: true, archivedAt: bounds.start },
   ] });
   const result = await capacity.forEmployeeDay(companyId, employeeId, new Date('2026-08-23T18:00:00Z'));
   assert.equal(result.assignedRemainingExpectedMinutes, 540); assert.equal(result.freeCapacityMinutes, -150);
   assert.equal(result.utilizationPercentage, 138.5); assert.equal(result.overloaded, true);
   assert.equal(result.dueTodayCount, 1); assert.equal(result.overdueCount, 1); assert.equal(result.weightedCompletion.percentage, 16.7);
+  assert.equal(result.openTaskCount, 2);
 });
 
 test('zero capacity distinguishes nonworking availability from assigned work', async () => {
@@ -211,13 +214,14 @@ test('zero capacity distinguishes nonworking availability from assigned work', a
 
 test('current workload uses completed and open effort in the employee-local month', async () => {
   const board = await prisma.taskBoard.findFirstOrThrow({ where: { projectId } });
-  const titles = ['Done two', 'Done three', 'Open five', 'Cancelled five'];
+  const titles = ['Done two', 'Done three', 'Open five', 'Cancelled five', 'Archived done five'];
   await prisma.taskCard.deleteMany({ where: { projectId, title: { in: titles } } });
   await prisma.taskCard.createMany({ data: [
     { projectId, boardId: board.id, title: titles[0], assigneeUserId: secondMemberId, effort: 2, status: 'DONE', completedAt: new Date('2026-08-05T12:00:00Z') },
     { projectId, boardId: board.id, title: titles[1], assigneeUserId: secondMemberId, effort: 3, status: 'DONE', completedAt: new Date('2026-08-20T12:00:00Z') },
     { projectId, boardId: board.id, title: titles[2], assigneeUserId: secondMemberId, effort: 5, status: 'IN_PROGRESS' },
     { projectId, boardId: board.id, title: titles[3], assigneeUserId: secondMemberId, effort: 5, status: 'CANCELLED' },
+    { projectId, boardId: board.id, title: titles[4], assigneeUserId: secondMemberId, effort: 5, status: 'DONE', completedAt: new Date('2026-08-20T12:00:00Z'), isArchived: true, archivedAt: new Date('2026-08-21T12:00:00Z') },
   ] });
   const result = await capacity.weightedPeriods(companyId, secondEmployeeId, new Date('2026-08-23T18:00:00Z'));
   assert.deepEqual(result.currentWorkload, { completedEffort: 5, totalEffort: 10, percentage: 50 });

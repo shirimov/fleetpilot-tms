@@ -188,7 +188,7 @@ async function mockTaskApis(page: Page) {
     }
     await route.fallback();
   });
-  await page.route('**/api/tasks/projects/project-1/board', async (route) => {
+  await page.route('**/api/tasks/projects/project-1/board*', async (route) => {
     await route.fulfill({ json: project });
   });
   await page.route('**/api/tasks/mentions*', async (route) => {
@@ -231,6 +231,9 @@ async function mockTaskApis(page: Page) {
       return;
     }
     await route.fulfill({ json: { canPermanentlyDelete: false, isProtected: false, explanation: null } });
+  });
+  await page.route('**/api/tasks/cards/*/archive-policy', async (route) => {
+    await route.fulfill({ json: { canArchive: true, canRestore: false, isArchived: false } });
   });
   await page.route('**/api/tasks/cards?*', async (route) => {
     if (route.request().method() !== 'DELETE') {
@@ -418,6 +421,18 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/tasks');
   await expect(page.getByLabel('Project')).toHaveValue('project-1');
   await expect(page.getByText('Coordinate dispatch, safety, and maintenance work.')).toBeVisible();
+});
+
+test('defaults to Active and requests explicit Completed and Archived lifecycle views', async ({ page }) => {
+  await expect(page.getByRole('button', { name: 'active', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  const completedRequest = page.waitForRequest((request) => request.url().includes('/board?view=completed&period=today'));
+  await page.getByRole('button', { name: 'completed', exact: true }).click();
+  await completedRequest;
+  await expect(page.getByLabel('Completion period')).toHaveValue('today');
+  const archivedRequest = page.waitForRequest((request) => request.url().includes('/board?view=archived'));
+  await page.getByRole('button', { name: 'archived', exact: true }).click();
+  await archivedRequest;
+  await expect(page.getByRole('button', { name: '+ Add task' })).toBeDisabled();
 });
 
 test('switches views, filters tasks, and keeps the legacy group visible', async ({

@@ -145,6 +145,32 @@ test('legacy creator-null safe task is OWNER-only', async () => {
   assert.equal(await prisma.taskCard.count({ where: { id: card.id } }), 0);
 });
 
+test('archive authority is independent from permanent deletion authority', async () => {
+  const card = await createSafeCard(actor('creator', 'MEMBER'), users.assignee);
+  await assert.rejects(service.setCardArchived(card.id, true, actor('assignee', 'MEMBER')), AuthorizationDeniedError);
+  await assert.rejects(service.setCardArchived(card.id, true, actor('member', 'MEMBER')), AuthorizationDeniedError);
+  await assert.rejects(service.setCardArchived(card.id, true, actor('foreignCreator', 'MEMBER', foreignCompanyId)), TaskNotFoundError);
+  await service.setCardArchived(card.id, true, actor('admin', 'ADMIN'));
+  const archived = await prisma.taskCard.findUniqueOrThrow({ where: { id: card.id } });
+  assert.equal(archived.isArchived, true);
+  assert.equal(archived.archivedByUserId, users.admin);
+  assert.ok(archived.archivedAt);
+  const event = await prisma.taskActivity.findFirstOrThrow({ where: { cardId: card.id, action: 'TASK_ARCHIVED' } });
+  assert.equal(event.actorUserId, users.admin);
+  await service.setCardArchived(card.id, false, actor('creator', 'MEMBER'));
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: card.id } })).isArchived, false);
+  await service.setCardArchived(card.id, true, actor('owner', 'OWNER'));
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: card.id } })).isArchived, true);
+});
+
+test('archiving and unarchiving preserves completion provenance', async () => {
+  const completedAt = new Date('2026-08-25T12:00:00Z');
+  const card = await prisma.taskCard.create({ data: { projectId, boardId, title: `Completed archive ${suffix}`, status: 'DONE', completedAt, createdByUserId: users.creator } });
+  await service.setCardArchived(card.id, true, actor('creator', 'MEMBER'));
+  await service.setCardArchived(card.id, false, actor('creator', 'MEMBER'));
+  assert.equal((await prisma.taskCard.findUniqueOrThrow({ where: { id: card.id } })).completedAt?.getTime(), completedAt.getTime());
+});
+
 test('current collaboration and Telegram dependencies each protect permanent deletion', async (t) => {
   const creator = actor('creator', 'MEMBER');
   const cases: Array<[string, (cardId: string) => Promise<unknown>]> = [

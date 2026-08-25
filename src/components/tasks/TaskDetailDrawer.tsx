@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
 import type { KanbanCard, KanbanCardFieldUpdate, KanbanColumn } from '@/lib/tasks/kanban-types';
-import type { TaskAssignee, TaskDeletePolicy } from '@/lib/tasks/task-types';
+import type { TaskArchivePolicy, TaskAssignee, TaskDeletePolicy } from '@/lib/tasks/task-types';
 import type { TaskStatus } from '@prisma/client';
 import MarkdownContent from './MarkdownContent';
 import TaskAttachments from './TaskAttachments';
@@ -65,6 +65,7 @@ type Props = {
   onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
   onDescriptionSaved: (cardId: string, description: string, updatedAt: string) => void;
   onDeleted: (cardId: string) => void;
+  onArchived: (cardId: string) => void;
 };
 
 const actionLabels: Record<string, string> = {
@@ -91,6 +92,8 @@ const actionLabels: Record<string, string> = {
   MENTION_ADDED: 'mentioned a teammate',
   MENTION_RESOLVED: 'resolved a mention',
   TASK_DELETED: 'deleted the task',
+  TASK_ARCHIVED: 'archived the task',
+  TASK_UNARCHIVED: 'restored the task',
 };
 
 async function responseJson<ResponseBody>(response: Response): Promise<ResponseBody> {
@@ -108,7 +111,7 @@ function activityDetails(metadata: unknown): string | null {
   return typeof values.content === 'string' ? values.content : null;
 }
 
-export default function TaskDetailDrawer({ card, board, onClose, assignees, statuses, now, updating, onUpdateCard, onStatusChange, onDescriptionSaved, onDeleted }: Props) {
+export default function TaskDetailDrawer({ card, board, onClose, assignees, statuses, now, updating, onUpdateCard, onStatusChange, onDescriptionSaved, onDeleted, onArchived }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -126,31 +129,35 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
   >([]);
   const [telegramSummary, setTelegramSummary] = useState<TelegramSummary>(null);
   const [deletePolicy, setDeletePolicy] = useState<TaskDeletePolicy | null>(null);
+  const [archivePolicy, setArchivePolicy] = useState<TaskArchivePolicy | null>(null);
 
   const loadCollaboration = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [checklistResponse, commentsResponse, activityResponse, telegramResponse, deletePolicyResponse] =
+      const [checklistResponse, commentsResponse, activityResponse, telegramResponse, deletePolicyResponse, archivePolicyResponse] =
         await Promise.all([
           fetch(`/api/tasks/cards/${card.id}/checklist`),
           fetch(`/api/tasks/cards/${card.id}/comments`),
           fetch(`/api/tasks/cards/${card.id}/activity`),
           fetch(`/api/tasks/cards/${card.id}/telegram`),
           fetch(`/api/tasks/cards/${card.id}/delete-policy`),
+          fetch(`/api/tasks/cards/${card.id}/archive-policy`),
         ]);
-      const [items, thread, timeline, telegram, policy] = await Promise.all([
+      const [items, thread, timeline, telegram, policy, archive] = await Promise.all([
         responseJson<ChecklistItem[]>(checklistResponse),
         responseJson<Comment[]>(commentsResponse),
         responseJson<Activity[]>(activityResponse),
         responseJson<TelegramSummary>(telegramResponse),
         responseJson<TaskDeletePolicy>(deletePolicyResponse),
+        responseJson<TaskArchivePolicy>(archivePolicyResponse),
       ]);
       setChecklist(items);
       setComments(thread);
       setActivities(timeline);
       setTelegramSummary(telegram);
       setDeletePolicy(policy);
+      setArchivePolicy(archive);
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -422,6 +429,25 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
     }
   }
 
+  async function changeArchiveState(archived: boolean) {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/tasks/cards/${card.id}/archive`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived }),
+      });
+      await responseJson<{ ok: true }>(response);
+      onArchived(card.id);
+    } catch (archiveError) {
+      setError(archiveError instanceof Error ? archiveError.message : 'The task lifecycle could not be changed.');
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <ModalLayer
       className="fixed inset-0 z-50 flex justify-end"
@@ -657,6 +683,14 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
               </ol>
             )}
           </section>
+
+          {(archivePolicy?.canArchive || archivePolicy?.canRestore) && (
+            <section aria-labelledby="archive-task-heading" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+              <h3 id="archive-task-heading" className="text-sm font-semibold text-amber-100">Archive</h3>
+              <p className="mt-2 text-sm text-slate-400">Archived tasks leave active workflows and capacity reporting while retaining collaboration history.</p>
+              <button type="button" disabled={pending} onClick={() => void changeArchiveState(!archivePolicy.isArchived)} className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-40">{archivePolicy.isArchived ? 'Unarchive Task' : 'Archive Task'}</button>
+            </section>
+          )}
 
           {deletePolicy?.canPermanentlyDelete ? (
             <section aria-labelledby="delete-task-heading" className="rounded-xl border border-rose-400/20 bg-rose-400/5 p-4">

@@ -196,6 +196,17 @@ export class TelegramDeliveryService {
     const now = new Date();
     const expiresAt = new Date(Date.now() + PENDING_ACTION_TTL_MS);
     return this.database.$transaction(async (transaction) => {
+      const card = await transaction.taskCard.findFirst({
+        where: {
+          id: input.taskCardId,
+          assigneeUserId: input.userId,
+          isArchived: false,
+          status: { notIn: ['DONE', 'CANCELLED'] },
+          project: { companyId: input.companyId },
+        },
+        select: { id: true },
+      });
+      if (!card) throw new TaskNotFoundError();
       await transaction.telegramPendingAction.updateMany({
         where: {
           companyId: input.companyId,
@@ -238,6 +249,7 @@ export class TelegramDeliveryService {
           consumedAt: null,
           invalidatedAt: null,
           expiresAt: { gt: now },
+          taskCard: { isArchived: false, status: { not: 'CANCELLED' } },
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       });
@@ -269,6 +281,7 @@ export class TelegramDeliveryService {
       const card = await transaction.taskCard.findFirst({
         where: {
           id: input.taskCardId,
+          isArchived: false,
           project: { companyId: input.companyId },
         },
         include: {
@@ -402,6 +415,7 @@ export class TelegramDeliveryService {
       select: {
         id: true,
         status: true,
+        isArchived: true,
         assigneeUserId: true,
       },
     });
@@ -437,6 +451,7 @@ export class TelegramDeliveryService {
       assigneeTelegramUsername: link?.telegramUsername ?? null,
       canRequestUpdate:
         telegramAvailable &&
+        !card.isArchived &&
         Boolean(card.assigneeUserId && link?.enabled) &&
         isOpenTask(card.status),
       latestRequest,
