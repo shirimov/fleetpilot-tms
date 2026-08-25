@@ -149,6 +149,7 @@ model User {
   taskChecklistItems            TaskChecklistItem[]
   taskAttachments               TaskAttachment[]
   assignedTaskCards             TaskCard[]                     @relation("TaskCardAssignee")
+  createdTaskCards              TaskCard[]                     @relation("TaskCardCreator")
   taskMentions                  TaskMention[]                  @relation("MentionedTaskUser")
   createdTaskMentions           TaskMention[]                  @relation("TaskMentionCreator")
   loadActivities                LoadActivity[]
@@ -1634,6 +1635,8 @@ model TaskCard {
   assignedTo              String?
   assigneeUserId          String?
   assigneeUser            User?                   @relation("TaskCardAssignee", fields: [assigneeUserId], references: [id], onDelete: SetNull)
+  createdByUserId         String?
+  createdByUser           User?                   @relation("TaskCardCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   dueDate                 DateTime?
   effort                  Int                     @default(3)
   expectedDurationMinutes Int?
@@ -1656,6 +1659,7 @@ model TaskCard {
   updatedAt               DateTime                @updatedAt
 
   @@index([assigneeUserId])
+  @@index([createdByUserId])
   @@index([assigneeUserId, dueDate, status])
 }
 

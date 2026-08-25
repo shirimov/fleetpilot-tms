@@ -336,6 +336,17 @@ export default function TaskWorkspace() {
     } : current);
   }
 
+  function removeDeletedTask(cardId: string) {
+    setProject((current) => current ? {
+      ...current,
+      boards: current.boards.map((board) => ({
+        ...board,
+        cards: board.cards.filter((card) => card.id !== cardId),
+      })),
+    } : current);
+    setSelectedCardId(null);
+  }
+
   function openCreateTask() {
     if (!project || creationStatuses.length === 0) return;
     setNewTaskTitle('');
@@ -621,6 +632,7 @@ export default function TaskWorkspace() {
           onUpdateCard={updateTaskCard}
           onStatusChange={changeTaskStatus}
           onDescriptionSaved={reconcileDescription}
+          onDeleted={removeDeletedTask}
         />
       )}
       {showCreateProject && (

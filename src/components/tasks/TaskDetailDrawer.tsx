@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ModalLayer from '@/components/ui/ModalLayer';
 import type { KanbanCard, KanbanCardFieldUpdate, KanbanColumn } from '@/lib/tasks/kanban-types';
-import type { TaskAssignee } from '@/lib/tasks/task-types';
+import type { TaskAssignee, TaskDeletePolicy } from '@/lib/tasks/task-types';
 import type { TaskStatus } from '@prisma/client';
 import MarkdownContent from './MarkdownContent';
 import TaskAttachments from './TaskAttachments';
@@ -64,6 +64,7 @@ type Props = {
   onUpdateCard: (cardId: string, changes: KanbanCardFieldUpdate) => Promise<void>;
   onStatusChange: (cardId: string, status: TaskStatus) => Promise<void>;
   onDescriptionSaved: (cardId: string, description: string, updatedAt: string) => void;
+  onDeleted: (cardId: string) => void;
 };
 
 const actionLabels: Record<string, string> = {
@@ -107,7 +108,7 @@ function activityDetails(metadata: unknown): string | null {
   return typeof values.content === 'string' ? values.content : null;
 }
 
-export default function TaskDetailDrawer({ card, board, onClose, assignees, statuses, now, updating, onUpdateCard, onStatusChange, onDescriptionSaved }: Props) {
+export default function TaskDetailDrawer({ card, board, onClose, assignees, statuses, now, updating, onUpdateCard, onStatusChange, onDescriptionSaved, onDeleted }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -124,28 +125,32 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
     Array<{ id: string; displayName: string }>
   >([]);
   const [telegramSummary, setTelegramSummary] = useState<TelegramSummary>(null);
+  const [deletePolicy, setDeletePolicy] = useState<TaskDeletePolicy | null>(null);
 
   const loadCollaboration = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [checklistResponse, commentsResponse, activityResponse, telegramResponse] =
+      const [checklistResponse, commentsResponse, activityResponse, telegramResponse, deletePolicyResponse] =
         await Promise.all([
           fetch(`/api/tasks/cards/${card.id}/checklist`),
           fetch(`/api/tasks/cards/${card.id}/comments`),
           fetch(`/api/tasks/cards/${card.id}/activity`),
           fetch(`/api/tasks/cards/${card.id}/telegram`),
+          fetch(`/api/tasks/cards/${card.id}/delete-policy`),
         ]);
-      const [items, thread, timeline, telegram] = await Promise.all([
+      const [items, thread, timeline, telegram, policy] = await Promise.all([
         responseJson<ChecklistItem[]>(checklistResponse),
         responseJson<Comment[]>(commentsResponse),
         responseJson<Activity[]>(activityResponse),
         responseJson<TelegramSummary>(telegramResponse),
+        responseJson<TaskDeletePolicy>(deletePolicyResponse),
       ]);
       setChecklist(items);
       setComments(thread);
       setActivities(timeline);
       setTelegramSummary(telegram);
+      setDeletePolicy(policy);
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -158,8 +163,12 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
   }, [card.id]);
 
   const refreshActivity = useCallback(async () => {
-    const response = await fetch(`/api/tasks/cards/${card.id}/activity`);
-    setActivities(await responseJson<Activity[]>(response));
+    const [activityResponse, deletePolicyResponse] = await Promise.all([
+      fetch(`/api/tasks/cards/${card.id}/activity`),
+      fetch(`/api/tasks/cards/${card.id}/delete-policy`),
+    ]);
+    setActivities(await responseJson<Activity[]>(activityResponse));
+    setDeletePolicy(await responseJson<TaskDeletePolicy>(deletePolicyResponse));
   }, [card.id]);
 
   useEffect(() => {
@@ -391,6 +400,26 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
         setEditingComment(null);
       }
     });
+  }
+
+  async function permanentlyDeleteTask() {
+    if (pending || !deletePolicy?.canPermanentlyDelete || deletePolicy.isProtected) return;
+    if (!window.confirm('Permanently delete this task? This action cannot be undone.')) return;
+    setPending(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/tasks/cards?id=${encodeURIComponent(card.id)}`, {
+        method: 'DELETE',
+      });
+      await responseJson<{ success: true }>(response);
+      onDeleted(card.id);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'The task could not be permanently deleted.');
+      const policyResponse = await fetch(`/api/tasks/cards/${card.id}/delete-policy`);
+      if (policyResponse.ok) setDeletePolicy(await responseJson<TaskDeletePolicy>(policyResponse));
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -628,6 +657,20 @@ export default function TaskDetailDrawer({ card, board, onClose, assignees, stat
               </ol>
             )}
           </section>
+
+          {deletePolicy?.canPermanentlyDelete ? (
+            <section aria-labelledby="delete-task-heading" className="rounded-xl border border-rose-400/20 bg-rose-400/5 p-4">
+              <h3 id="delete-task-heading" className="text-sm font-semibold text-rose-200">Permanent deletion</h3>
+              {deletePolicy.isProtected ? (
+                <p className="mt-2 text-sm text-rose-100">{deletePolicy.explanation}</p>
+              ) : (
+                <>
+                  <p className="mt-2 text-sm text-slate-400">Only safe tasks without activity or collaboration history can be permanently deleted.</p>
+                  <button type="button" disabled={pending} onClick={() => void permanentlyDeleteTask()} className="mt-3 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-40">Delete Permanently</button>
+                </>
+              )}
+            </section>
+          ) : null}
         </div>
       </aside>
     </ModalLayer>

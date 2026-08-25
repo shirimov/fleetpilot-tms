@@ -7,6 +7,7 @@ import {
   TaskMoveConflictError,
   TaskNotFoundError,
   TaskProjectNotFoundError,
+  TaskDeleteProtectedError,
 } from './task-errors';
 import { TaskValidationError } from './task-validation';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
@@ -40,7 +41,8 @@ export function taskRouteErrorResponse(error: unknown): NextResponse {
 
   if (
     error instanceof TaskMoveConflictError ||
-    error instanceof TaskBoardStatusUnmappedError
+    error instanceof TaskBoardStatusUnmappedError ||
+    error instanceof TaskDeleteProtectedError
   ) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }

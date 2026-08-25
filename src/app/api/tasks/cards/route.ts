@@ -55,7 +55,12 @@ export async function DELETE(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const cardId = validateTaskCardId(searchParams.get('id'));
     const context = await taskAuthorizationService.requireCard(cardId);
-    await taskService.deleteCard(cardId, { userId: context.user.id });
+    await taskService.deleteCard(cardId, {
+      userId: context.user.id,
+      displayName: context.user.displayName,
+      companyId: context.companyId,
+      role: context.role,
+    });
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -149,24 +149,6 @@ test('TaskService persists activity atomically and serves a stable timeline', as
     );
   });
 
-  await t.test('deletion preserves activity after cardId is set null', async () => {
-    await taskService.deleteCard(cardId);
-
-    const deletionActivity = await prisma.taskActivity.findFirstOrThrow({
-      where: {
-        action: 'TASK_DELETED',
-        entityType: 'TASK_CARD',
-        entityId: cardId,
-      },
-    });
-
-    assert.equal(deletionActivity.cardId, null);
-    assert.equal(deletionActivity.entityId, cardId);
-    assert.match(deletionActivity.entityTitle ?? '', /Activity card/);
-
-    const deletedCardTimeline = await taskService.getCardActivity(cardId);
-    assert.ok(deletedCardTimeline.length > 0);
-  });
 });
 
 test('description autosave race guard ignores stale responses', () => {

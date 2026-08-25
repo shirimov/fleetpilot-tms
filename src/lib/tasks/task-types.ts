@@ -94,6 +94,12 @@ export type TaskCompanyActor = TaskMutationActor & {
   displayName: string;
 };
 
+export type TaskDeletePolicy = {
+  canPermanentlyDelete: boolean;
+  isProtected: boolean;
+  explanation: string | null;
+};
+
 export type CreateTaskChecklistItemInput = {
   cardId: string;
   content: string;

@@ -10,6 +10,7 @@ import type {
   TaskActivityEvent,
   TaskCompanyActor,
   TaskMutationActor,
+  TaskDeletePolicy,
   UpdateTaskCardInput,
   UpdateTaskChecklistItemInput,
   UpdateTaskCommentInput,
@@ -33,6 +34,7 @@ import {
   TaskMoveConflictError,
   TaskNotFoundError,
   TaskProjectNotFoundError,
+  TaskDeleteProtectedError,
 } from './task-errors';
 import { TaskValidationError } from './task-validation';
 import { telegramDeliveryService } from '@/lib/integrations/telegram-delivery-service';
@@ -117,6 +119,17 @@ const projectBoardSelect = {
 } satisfies Prisma.TaskProjectSelect;
 
 export class TaskService {
+  private readonly deleteDependencyCount = {
+    labels: true,
+    comments: true,
+    checklistItems: true,
+    attachments: true,
+    mentions: true,
+    telegramDeliveries: true,
+    telegramPendingActions: true,
+    telegramUpdateRequests: true,
+  } as const;
+
   constructor(
     private readonly database: PrismaClient = prisma,
     private readonly activityService: ActivityService = defaultActivityService,
@@ -216,6 +229,7 @@ export class TaskService {
           description: input.description,
           priority: input.priority || 'MEDIUM',
           assigneeUserId: input.assigneeUserId,
+          createdByUserId: actor?.userId,
           status: destinationBoard.status,
           dueDate: input.dueDate,
           effort: input.effort ?? 3,
@@ -530,13 +544,37 @@ export class TaskService {
 
   async deleteCard(
     cardId: string,
-    actor?: TaskMutationActor,
+    actor: TaskCompanyActor,
   ): Promise<void> {
     await this.database.$transaction(async (transaction) => {
-      const existing = await transaction.taskCard.findUnique({
-        where: { id: cardId },
+      const existing = await transaction.taskCard.findFirst({
+        where: { id: cardId, project: { companyId: actor.companyId } },
+        include: {
+          _count: {
+            select: this.deleteDependencyCount,
+          },
+        },
       });
       if (!existing) throw new TaskNotFoundError();
+
+      if (actor.role !== 'OWNER' && existing.createdByUserId !== actor.userId) {
+        throw new AuthorizationDeniedError();
+      }
+
+      const nonCreationActivityCount = await transaction.taskActivity.count({
+        where: {
+          entityType: 'TASK_CARD',
+          entityId: existing.id,
+          action: { not: 'TASK_CREATED' },
+        },
+      });
+      const dependencyCount = Object.values(existing._count).reduce(
+        (total, count) => total + count,
+        0,
+      );
+      if (nonCreationActivityCount > 0 || dependencyCount > 0) {
+        throw new TaskDeleteProtectedError();
+      }
 
       await this.activityService.record(transaction, {
         action: 'TASK_DELETED',
@@ -555,6 +593,46 @@ export class TaskService {
 
       await transaction.taskCard.delete({ where: { id: cardId } });
     });
+  }
+
+  async getCardDeletePolicy(
+    cardId: string,
+    actor: TaskCompanyActor,
+  ): Promise<TaskDeletePolicy> {
+    const card = await this.database.taskCard.findFirst({
+      where: { id: cardId, project: { companyId: actor.companyId } },
+      select: {
+        createdByUserId: true,
+        _count: { select: this.deleteDependencyCount },
+      },
+    });
+    if (!card) throw new TaskNotFoundError();
+
+    const canPermanentlyDelete =
+      actor.role === 'OWNER' || card.createdByUserId === actor.userId;
+    if (!canPermanentlyDelete) {
+      return { canPermanentlyDelete: false, isProtected: false, explanation: null };
+    }
+
+    const nonCreationActivityCount = await this.database.taskActivity.count({
+      where: {
+        entityType: 'TASK_CARD',
+        entityId: cardId,
+        action: { not: 'TASK_CREATED' },
+      },
+    });
+    const dependencyCount = Object.values(card._count).reduce(
+      (total, count) => total + count,
+      0,
+    );
+    const isProtected = nonCreationActivityCount > 0 || dependencyCount > 0;
+    return {
+      canPermanentlyDelete: true,
+      isProtected,
+      explanation: isProtected
+        ? 'This task has activity or collaboration history and cannot be permanently deleted.'
+        : null,
+    };
   }
 
   async getCardActivity(cardId: string, companyId?: string) {

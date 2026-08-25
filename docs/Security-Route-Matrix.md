@@ -45,7 +45,9 @@ models are reviewed and implemented.
 | `/api/tasks` | GET | projects | yes | yes | MEMBER | C | U/X/I | protected |
 | `/api/tasks` | POST | project | yes | yes | MEMBER | M | U/X/I | protected |
 | `/api/tasks/projects/[id]/board` | GET | board/cards | yes | yes | MEMBER | C | U/X/I | protected |
-| `/api/tasks/cards` | POST, PATCH, DELETE | cards | yes | yes | MEMBER | C/M | U/X/I | protected |
+| `/api/tasks/cards` | POST, PATCH | cards | yes | yes | MEMBER | C/M | U/X/I | protected |
+| `/api/tasks/cards` | DELETE | cards | yes | direct company + canonical creator | OWNER or creator; safe/history-free only | C/M | U/X/I/R | protected |
+| `/api/tasks/cards/[id]/delete-policy` | GET | permanent-delete eligibility | yes | direct company + canonical creator | MEMBER; policy returned server-side | C | U/X/I/R | protected |
 | `/api/tasks/cards/[id]/move` | POST | card ordering | yes | yes | MEMBER | M | U/X/I | protected |
 | `/api/tasks/cards/[id]/activity` | GET | activity | yes | yes | MEMBER | C | U/X/I | protected |
 | `/api/tasks/cards/[id]/checklist` | GET, POST, PATCH | checklist | yes | yes | MEMBER | C/M | U/X/I | protected |
