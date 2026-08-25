@@ -3,7 +3,9 @@ import { Prisma, PrismaClient, type PilotImportIssueCode } from '@prisma/client'
 import { prisma } from '@/lib/prisma';
 import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
+import { financialStatementStorage } from './financial-statement-storage';
 import { PILOT_XLS_PARSER_VERSION, pilotXlsParser, type PilotParsedInvoice, type PilotParsedRow } from './pilot-xls-parser';
+import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 
 type DocumentMetadata = {
   originalFilename: string;
@@ -22,12 +24,20 @@ type IssueInput = {
   adjustmentId?: string;
 };
 
+type ReparseOverrides = {
+  categoryBySourceRow: Map<number, string>;
+  truckByEventKey: Map<string, string>;
+};
+
 const json = (value: unknown) => JSON.parse(JSON.stringify(value, (_, item) => typeof item === 'bigint' ? item.toString() : item));
 const hash = (parts: Array<string | number | bigint | null | undefined>) => createHash('sha256').update(parts.map((part) => String(part ?? '')).join('\u001f')).digest('hex');
 const lastFour = (value: string) => value.replace(/\D/g, '').slice(-4) || null;
 
 export class PilotImportService {
-  constructor(private readonly database: PrismaClient = prisma) {}
+  constructor(
+    private readonly database: PrismaClient = prisma,
+    private readonly statementStorage: PrivateFileStorage = financialStatementStorage,
+  ) {}
 
   async createImport(bytes: Uint8Array, metadata: DocumentMetadata, sourceId: string, context: FinancialAuthorization) {
     const parsed = pilotXlsParser.parse(bytes);
@@ -70,7 +80,14 @@ export class PilotImportService {
     }
   }
 
-  private async persistRows(tx: Prisma.TransactionClient, invoiceId: string, statementId: string, parsed: PilotParsedInvoice, context: FinancialAuthorization) {
+  private async persistRows(
+    tx: Prisma.TransactionClient,
+    invoiceId: string,
+    statementId: string,
+    parsed: PilotParsedInvoice,
+    context: FinancialAuthorization,
+    overrides?: ReparseOverrides,
+  ) {
     const mappings = await tx.pilotProductMapping.findMany({ where: { operatingGroupId: context.operatingGroupId, provider: 'PILOT', providerAccountHash: parsed.providerAccountHash, isActive: true }, select: { productCode: true, categoryId: true, productType: true } });
     const mappingByCode = new Map(mappings.map((item) => [item.productCode, item]));
     const units = [...new Set(parsed.rows.filter((row) => row.kind === 'PRODUCT').map((row) => row.sourceUnitNumber).filter(Boolean))];
@@ -87,29 +104,31 @@ export class PilotImportService {
       }
       if (row.kind === 'ADJUSTMENT') {
         const mapping = mappingByCode.get(`ADJUSTMENT:${row.adjustmentType}`);
+        const categoryId = overrides?.categoryBySourceRow.get(row.sourceRowIndex) ?? mapping?.categoryId;
         const adjustment = await tx.pilotInvoiceAdjustment.create({ data: {
           invoiceId, importRecordId: record.id, fingerprint: row.fingerprint, sourceLineIdentity: row.sourceLineIdentity,
           type: row.adjustmentType, description: row.description, transactionDate: row.transactionDate,
-          signedAmountMinor: row.signedAmountMinor ?? BigInt(0), categoryId: mapping?.categoryId,
+          signedAmountMinor: row.signedAmountMinor ?? BigInt(0), categoryId,
         } });
         if (seenLines.has(row.fingerprint)) issues.push({ code: 'DUPLICATE_LINE', message: `Row ${row.sourceRowIndex} duplicates another adjustment row.`, adjustmentId: adjustment.id });
         seenLines.add(row.fingerprint);
         if (row.signedAmountMinor === null || row.signedAmountMinor === BigInt(0)) issues.push({ code: 'INVALID_AMOUNT', message: `Row ${row.sourceRowIndex} has an invalid adjustment amount.`, adjustmentId: adjustment.id });
         if (!row.transactionDate && row.rawTransactionDate) issues.push({ code: 'INVALID_DATE', message: `Row ${row.sourceRowIndex} has an invalid date.`, adjustmentId: adjustment.id });
         if (row.adjustmentType === 'OTHER') issues.push({ code: 'UNKNOWN_ADJUSTMENT', message: `Row ${row.sourceRowIndex} requires adjustment review.`, adjustmentId: adjustment.id });
-        if (!mapping) issues.push({ code: 'MISSING_CATEGORY', message: `Row ${row.sourceRowIndex} requires an accounting category.`, adjustmentId: adjustment.id });
+        if (!categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Row ${row.sourceRowIndex} requires an accounting category.`, adjustmentId: adjustment.id });
         continue;
       }
       const stableEventKey = row.eventKeyHash ?? hash([invoiceId, 'invalid-event', row.sourceRowIndex]);
       let eventId = eventIds.get(stableEventKey);
       if (!eventId) {
         const candidates = trucksByUnit.get(row.sourceUnitNumber) ?? [];
-        const matchStatus = candidates.length === 1 ? 'MATCHED' : candidates.length > 1 ? 'AMBIGUOUS' : 'UNMATCHED';
+        const preservedTruckId = row.eventKeyHash ? overrides?.truckByEventKey.get(row.eventKeyHash) : undefined;
+        const matchStatus = preservedTruckId ? 'MANUALLY_MATCHED' : candidates.length === 1 ? 'MATCHED' : candidates.length > 1 ? 'AMBIGUOUS' : 'UNMATCHED';
         const event = await tx.pilotFuelingEvent.create({ data: {
           invoiceId, eventKeyHash: stableEventKey, ticketHash: hash([row.ticketReference]), authorizationHash: hash([row.authorizationReference]), cardLastFour: lastFour(row.cardReference),
           sourceUnitNumber: row.sourceUnitNumber, locationNumber: row.locationNumber || null, city: row.city || null, state: row.state || null,
           purchaseOrderContext: row.purchaseOrderContext || null, sourceDriverName: row.sourceDriverName, transactionDate: row.transactionDate ?? parsed.billingDate,
-          odometer: row.odometer, truckId: candidates.length === 1 ? candidates[0].id : null, truckMatchStatus: matchStatus,
+          odometer: row.odometer, truckId: preservedTruckId ?? (candidates.length === 1 ? candidates[0].id : null), truckMatchStatus: matchStatus,
         } });
         eventId = event.id; eventIds.set(stableEventKey, event.id);
         if (!row.eventKeyHash) issues.push({ code: 'INVALID_STRUCTURE', message: `Row ${row.sourceRowIndex} lacks a stable ticket/authorization identity.`, eventId: event.id });
@@ -121,17 +140,18 @@ export class PilotImportService {
         if (row.outsidePeriod) issues.push({ code: 'OUTSIDE_PERIOD', message: `Row ${row.sourceRowIndex} falls outside the derived invoice period.`, eventId: event.id });
       }
       const mapping = mappingByCode.get(row.productCode);
+      const categoryId = overrides?.categoryBySourceRow.get(row.sourceRowIndex) ?? mapping?.categoryId;
       const line = await tx.pilotFuelProductLine.create({ data: {
         invoiceId, eventId, importRecordId: record.id, lineFingerprint: row.lineFingerprint, sourceLineIdentity: row.sourceLineIdentity,
         sourceProductCode: row.productCode, productType: mapping?.productType ?? row.productType, quantity: row.quantity ?? '0', unitPrice: row.unitPrice ?? '0',
-        amountMinor: row.amountMinor ?? BigInt(0), retailAmountMinor: row.retailAmountMinor, savingsMinor: row.savingsMinor, taxMinor: row.taxMinor, discountMinor: row.discountMinor, categoryId: mapping?.categoryId,
+        amountMinor: row.amountMinor ?? BigInt(0), retailAmountMinor: row.retailAmountMinor, savingsMinor: row.savingsMinor, taxMinor: row.taxMinor, discountMinor: row.discountMinor, categoryId,
       } });
       if (seenLines.has(row.lineFingerprint)) issues.push({ code: 'DUPLICATE_LINE', message: `Row ${row.sourceRowIndex} duplicates another product row.`, productLineId: line.id, eventId });
       seenLines.add(row.lineFingerprint);
       if (row.amountMinor === null || row.amountMinor <= BigInt(0)) issues.push({ code: 'INVALID_AMOUNT', message: `Row ${row.sourceRowIndex} has an invalid product amount.`, productLineId: line.id, eventId });
       if (row.quantity === null || new Prisma.Decimal(row.quantity).lte(0)) issues.push({ code: 'INVALID_QUANTITY', message: `Row ${row.sourceRowIndex} has an invalid quantity.`, productLineId: line.id, eventId });
       if (row.productType === 'UNKNOWN_PRODUCT') issues.push({ code: 'UNKNOWN_PRODUCT', message: `Product code ${row.productCode} requires review.`, productLineId: line.id, eventId });
-      if (!mapping) issues.push({ code: 'MISSING_CATEGORY', message: `Product code ${row.productCode} requires an accounting category.`, productLineId: line.id, eventId });
+      if (!categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Product code ${row.productCode} requires an accounting category.`, productLineId: line.id, eventId });
     }
     if (parsed.differenceMinor !== BigInt(0)) issues.push({ code: 'AMOUNT_MISMATCH', message: `Parsed rows differ from the invoice control total by ${parsed.differenceMinor.toString()} minor units.` });
     if (issues.length) await tx.pilotImportIssue.createMany({ data: issues.map((issue) => ({ invoiceId, ...issue })) });
@@ -162,7 +182,174 @@ export class PilotImportService {
       adjustments: { include: { category: { select: { id: true, name: true } } } }, issues: { orderBy: [{ status: 'asc' }, { createdAt: 'asc' }] },
     } });
     if (!invoice) throw new FinancialNotFoundError();
-    return json(invoice);
+    return json({ ...invoice, canReparse: invoice.status === 'NEEDS_REVIEW' && invoice.parseVersion !== PILOT_XLS_PARSER_VERSION });
+  }
+
+  async reparseInvoice(invoiceId: string, context: FinancialAuthorization) {
+    const source = await this.database.pilotInvoiceDocument.findFirst({
+      where: {
+        invoiceId,
+        role: 'STRUCTURED_SOURCE',
+        invoice: { operatingGroupId: context.operatingGroupId },
+      },
+      select: { statement: { select: { storageKey: true, checksumSha256: true } } },
+    });
+    if (!source) throw new FinancialConflictError('The immutable Pilot source document is unavailable for reparse.');
+    let bytes: Uint8Array;
+    try {
+      bytes = await this.statementStorage.get(source.statement.storageKey);
+    } catch {
+      throw new FinancialConflictError('The immutable Pilot source document could not be read safely.');
+    }
+    const checksumSha256 = createHash('sha256').update(bytes).digest('hex');
+    if (checksumSha256 !== source.statement.checksumSha256) throw new FinancialConflictError('The immutable Pilot source document failed its checksum validation.');
+    const parsed = pilotXlsParser.parse(bytes);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.reparseInvoiceTransaction(invoiceId, parsed, checksumSha256, context);
+        return this.getInvoice(invoiceId, context);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'P2034' || attempt === 2) throw error;
+      }
+    }
+    throw new FinancialConflictError('Pilot invoice reparse could not be serialized safely.');
+  }
+
+  private async reparseInvoiceTransaction(invoiceId: string, parsed: PilotParsedInvoice, checksumSha256: string, context: FinancialAuthorization) {
+    await this.database.$transaction(async (tx) => {
+      await this.lock(tx, `pilot-invoice:${invoiceId}`);
+      const invoice = await tx.pilotProviderInvoice.findFirst({
+        where: { id: invoiceId, operatingGroupId: context.operatingGroupId },
+        include: {
+          documents: { where: { role: 'STRUCTURED_SOURCE' }, include: { statement: true } },
+          events: { include: { productLines: { include: { importRecord: { select: { sourceRowIndex: true } } } } } },
+          adjustments: { include: { importRecord: { select: { sourceRowIndex: true } } } },
+          issues: true,
+        },
+      });
+      if (!invoice) throw new FinancialNotFoundError();
+      const document = invoice.documents[0];
+      if (!document || invoice.documents.length !== 1 || document.statement.checksumSha256 !== checksumSha256) {
+        throw new FinancialConflictError('The immutable Pilot source document changed before reparse.');
+      }
+
+      const transactionCount = await tx.financialTransaction.count({ where: { OR: [{ pilotFuelingEvent: { invoiceId } }, { pilotInvoiceAdjustment: { invoiceId } }] } });
+      const allocationCount = await tx.financialAllocation.count({ where: { OR: [{ pilotProductLine: { invoiceId } }, { pilotAdjustment: { invoiceId } }] } });
+      const evidenceCount = await tx.financialTransactionEvidence.count({ where: { importRecord: { statementId: document.statementId } } });
+      const postedAuditCount = await tx.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_POSTED' } });
+      const hasPostedState = invoice.status === 'POSTED' || invoice.postedAt !== null || invoice.postedByUserId !== null
+        || invoice.expectationId !== null || invoice.events.some((event) => event.transactionId !== null)
+        || invoice.adjustments.some((adjustment) => adjustment.transactionId !== null)
+        || transactionCount > 0 || allocationCount > 0 || evidenceCount > 0 || postedAuditCount > 0;
+      if (hasPostedState) throw new FinancialConflictError('Posted or economically linked Pilot invoices cannot be reparsed.');
+
+      this.validateReparseIdentity(invoice, parsed);
+      if (invoice.parseVersion === PILOT_XLS_PARSER_VERSION) return;
+      if (invoice.status !== 'NEEDS_REVIEW') throw new FinancialConflictError('Only unposted Pilot invoices requiring review can be reparsed.');
+
+      const manualTruckIds = [...new Set(invoice.events
+        .filter((event) => event.truckMatchStatus === 'MANUALLY_MATCHED' && event.truckId)
+        .map((event) => event.truckId!))];
+      const validManualTrucks = await tx.truck.findMany({
+        where: { id: { in: manualTruckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      if (validManualTrucks.length !== manualTruckIds.length) throw new FinancialConflictError('A preserved manual truck match is no longer valid for this operating group.');
+      const truckByEventKey = new Map(invoice.events
+        .filter((event) => event.truckMatchStatus === 'MANUALLY_MATCHED' && event.truckId)
+        .map((event) => [event.eventKeyHash, event.truckId!]));
+
+      const categoryRows = [
+        ...invoice.events.flatMap((event) => event.productLines.map((line) => ({ sourceRowIndex: line.importRecord.sourceRowIndex, categoryId: line.categoryId }))),
+        ...invoice.adjustments.map((adjustment) => ({ sourceRowIndex: adjustment.importRecord.sourceRowIndex, categoryId: adjustment.categoryId })),
+      ];
+      const categoryIds = [...new Set(categoryRows.map((row) => row.categoryId).filter((id): id is string => Boolean(id)))];
+      const validCategories = await tx.financialCategory.findMany({ where: { id: { in: categoryIds }, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
+      const validCategoryIds = new Set(validCategories.map(({ id }) => id));
+      const categoryBySourceRow = new Map(categoryRows
+        .filter((row): row is { sourceRowIndex: number; categoryId: string } => Boolean(row.categoryId) && validCategoryIds.has(row.categoryId!))
+        .map((row) => [row.sourceRowIndex, row.categoryId]));
+
+      const beforeIssueCounts = this.issueCounts(invoice.issues);
+      const before = {
+        parseVersion: invoice.parseVersion,
+        status: invoice.status,
+        invoiceTotalMinor: invoice.invoiceTotalMinor.toString(),
+        parsedTotalMinor: invoice.parsedTotalMinor.toString(),
+        differenceMinor: invoice.differenceMinor.toString(),
+        issueCounts: beforeIssueCounts,
+        eventCount: invoice.events.length,
+        productLineCount: invoice.events.reduce((sum, event) => sum + event.productLines.length, 0),
+        adjustmentCount: invoice.adjustments.length,
+      };
+
+      await tx.pilotImportIssue.deleteMany({ where: { invoiceId } });
+      await tx.pilotFuelProductLine.deleteMany({ where: { invoiceId } });
+      await tx.pilotInvoiceAdjustment.deleteMany({ where: { invoiceId } });
+      await tx.pilotFuelingEvent.deleteMany({ where: { invoiceId } });
+      await tx.financialImportRecord.deleteMany({ where: { statementId: document.statementId } });
+
+      await this.persistRows(tx, invoiceId, document.statementId, parsed, context, { categoryBySourceRow, truckByEventKey });
+      const afterIssueRows = await tx.pilotImportIssue.findMany({ where: { invoiceId }, select: { code: true, status: true } });
+      const openIssueCount = afterIssueRows.filter((issue) => issue.status === 'OPEN').length;
+      const nextStatus = parsed.differenceMinor === BigInt(0) && openIssueCount === 0 ? 'READY_TO_POST' : 'NEEDS_REVIEW';
+      await tx.pilotProviderInvoice.update({ where: { id: invoiceId }, data: {
+        parsedTotalMinor: parsed.parsedTotalMinor,
+        differenceMinor: parsed.differenceMinor,
+        parseVersion: PILOT_XLS_PARSER_VERSION,
+        status: nextStatus,
+      } });
+      await tx.financialStatement.update({ where: { id: document.statementId }, data: {
+        importStatus: nextStatus === 'READY_TO_POST' ? 'IMPORTED' : 'NEEDS_REVIEW',
+        importedRowCount: parsed.rows.length,
+        matchedRowCount: 0,
+        unresolvedRowCount: openIssueCount,
+        importedAt: new Date(),
+      } });
+      const after = {
+        parseVersion: PILOT_XLS_PARSER_VERSION,
+        status: nextStatus,
+        invoiceTotalMinor: parsed.invoiceTotalMinor.toString(),
+        parsedTotalMinor: parsed.parsedTotalMinor.toString(),
+        differenceMinor: parsed.differenceMinor.toString(),
+        issueCounts: this.issueCounts(afterIssueRows),
+        eventCount: await tx.pilotFuelingEvent.count({ where: { invoiceId } }),
+        productLineCount: await tx.pilotFuelProductLine.count({ where: { invoiceId } }),
+        adjustmentCount: await tx.pilotInvoiceAdjustment.count({ where: { invoiceId } }),
+      };
+      await tx.financialAuditEvent.create({ data: {
+        operatingGroupId: context.operatingGroupId,
+        companyId: context.activeCompanyId,
+        actorUserId: context.userId,
+        pilotProviderInvoiceId: invoiceId,
+        action: 'PILOT_INVOICE_REPARSED',
+        before,
+        after,
+        metadata: { sourceStatementId: document.statementId, sourceChecksumSha256: checksumSha256 },
+      } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }
+
+  private validateReparseIdentity(invoice: {
+    provider: string; providerAccountHash: string; invoiceNumber: string; invoiceTotalMinor: bigint;
+    billingDate: Date; dueDate: Date | null; periodStart: Date; periodEnd: Date;
+  }, parsed: PilotParsedInvoice) {
+    const sameDate = (left: Date | null, right: Date | null) => left?.getTime() === right?.getTime();
+    if (invoice.provider !== parsed.provider || invoice.providerAccountHash !== parsed.providerAccountHash
+      || invoice.invoiceNumber !== parsed.invoiceNumber || invoice.invoiceTotalMinor !== parsed.invoiceTotalMinor
+      || !sameDate(invoice.billingDate, parsed.billingDate) || !sameDate(invoice.dueDate, parsed.dueDate)
+      || !sameDate(invoice.periodStart, parsed.periodStart) || !sameDate(invoice.periodEnd, parsed.periodEnd)) {
+      throw new FinancialConflictError('The stored source does not match the existing Pilot invoice control identity.');
+    }
+  }
+
+  private issueCounts(issues: Array<{ code: string; status: string }>) {
+    return issues.reduce<Record<string, number>>((counts, issue) => {
+      const key = `${issue.status}:${issue.code}`;
+      counts[key] = (counts[key] ?? 0) + 1;
+      return counts;
+    }, {});
   }
 
   async resolveIssue(invoiceId: string, issueId: string, input: Record<string, unknown>, context: FinancialAuthorization) {

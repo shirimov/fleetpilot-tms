@@ -8,16 +8,38 @@ import { FinancialControlService } from './financial-control-service';
 import { FinancialConflictError, FinancialValidationError } from './financial-control-errors';
 import { PilotImportService } from './pilot-import-service';
 import { pilotXlsFixture } from '../../../tests/fixtures/pilot-xls';
+import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const control = new FinancialControlService(prisma);
 const importer = new PilotImportService(prisma);
+class MemoryStatementStorage implements PrivateFileStorage {
+  readonly files = new Map<string, Uint8Array>();
+  async put(bytes: Uint8Array) { const key = randomUUID(); this.files.set(key, bytes); return key; }
+  async get(storageKey: string) { const bytes = this.files.get(storageKey); if (!bytes) throw new Error('missing test source'); return bytes; }
+  async delete(storageKey: string) { this.files.delete(storageKey); }
+}
+const statementStorage = new MemoryStatementStorage();
+const reparseImporter = new PilotImportService(prisma, statementStorage);
 let companyId = ''; let foreignCompanyId = ''; let userId = ''; let groupId = ''; let sourceId = ''; let truckId = ''; let foreignTruckId = ''; let fuelCategoryId = ''; let adjustmentCategoryId = '';
 const importedInvoiceIds: string[] = [];
 const providerAccountHash = createHash('sha256').update('123456789').digest('hex');
 
 function context(): FinancialAuthorization { return { userId, role: 'OWNER', activeCompanyId: companyId, operatingGroupId: groupId, companyIds: [companyId] }; }
 function metadata(name: string) { return { originalFilename: `${name}.xls`, displayFilename: `${name}.xls`, mimeType: 'application/vnd.ms-excel', byteSize: 1000, storageKey: randomUUID(), checksumSha256: name.padEnd(64, '0').slice(0, 64) }; }
+async function storedMetadata(name: string, bytes: Uint8Array) {
+  const storageKey = await statementStorage.put(bytes);
+  return { ...metadata(name), byteSize: bytes.byteLength, storageKey, checksumSha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+async function markAsFaultyV1(invoiceId: string, parsedTotalMinor: bigint) {
+  const invoice = await prisma.pilotProviderInvoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { invoiceTotalMinor: true } });
+  await prisma.$transaction([
+    prisma.pilotProviderInvoice.update({ where: { id: invoiceId }, data: { parseVersion: 'pilot-biff-v1', status: 'NEEDS_REVIEW', parsedTotalMinor, differenceMinor: parsedTotalMinor - invoice.invoiceTotalMinor } }),
+    prisma.pilotImportIssue.create({ data: { invoiceId, code: 'AMOUNT_MISMATCH', message: 'Faulty v1 parser mismatch.' } }),
+    prisma.financialAuditEvent.updateMany({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_PARSED' }, data: { metadata: { parseVersion: 'pilot-biff-v1', differenceMinor: (parsedTotalMinor - invoice.invoiceTotalMinor).toString() } } }),
+  ]);
+}
 
 before(async () => {
   const company = await prisma.company.create({ data: { name: `Pilot ${suffix}` } }); companyId = company.id;
@@ -101,6 +123,121 @@ test('Pilot mismatch and unknown data remain blocked for explicit review', async
   assert.ok(codes.includes('AMOUNT_MISMATCH'));
   await assert.rejects(() => importer.postInvoice(String(preview.id), context()), FinancialConflictError);
   assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910002' } }), 0);
+});
+
+test('explicit v1 to v2 reparse rebuilds review state without creating economics and is idempotent', async () => {
+  const bytes = pilotXlsFixture({ invoiceNumber: '910011', productCode: '999', unitNumber: 'missing' });
+  const preview = await reparseImporter.createImport(bytes, await storedMetadata('pilot-910011', bytes), sourceId, context());
+  const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
+  await markAsFaultyV1(invoiceId, BigInt(519527057));
+
+  const [first, concurrent] = await Promise.all([
+    reparseImporter.reparseInvoice(invoiceId, context()),
+    reparseImporter.reparseInvoice(invoiceId, context()),
+  ]);
+  for (const reparsed of [first, concurrent]) {
+    assert.equal(reparsed.parseVersion, 'pilot-biff-v2');
+    assert.equal(reparsed.status, 'NEEDS_REVIEW');
+    assert.equal(reparsed.invoiceTotalMinor, '10100');
+    assert.equal(reparsed.parsedTotalMinor, '10100');
+    assert.equal(reparsed.differenceMinor, '0');
+    assert.equal(reparsed.canReparse, false);
+  }
+  const codes = (first.issues as Array<{ code: string }>).map(({ code }) => code);
+  assert.ok(codes.includes('UNMATCHED_TRUCK'));
+  assert.ok(codes.includes('UNKNOWN_PRODUCT'));
+  assert.ok(codes.includes('MISSING_CATEGORY'));
+  assert.equal(codes.includes('AMOUNT_MISMATCH'), false);
+  assert.equal(await prisma.financialTransaction.count({ where: { OR: [{ pilotFuelingEvent: { invoiceId } }, { pilotInvoiceAdjustment: { invoiceId } }] } }), 0);
+  assert.equal(await prisma.financialAllocation.count({ where: { OR: [{ pilotProductLine: { invoiceId } }, { pilotAdjustment: { invoiceId } }] } }), 0);
+  assert.equal(await prisma.financialExpectation.count({ where: { pilotProviderInvoice: { id: invoiceId } } }), 0);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_POSTED' } }), 0);
+  const reparseEvents = await prisma.financialAuditEvent.findMany({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_REPARSED' } });
+  assert.equal(reparseEvents.length, 1);
+  assert.deepEqual(reparseEvents[0].before, {
+    parseVersion: 'pilot-biff-v1', status: 'NEEDS_REVIEW', invoiceTotalMinor: '10100', parsedTotalMinor: '519527057', differenceMinor: '519516957',
+    issueCounts: { 'OPEN:AMOUNT_MISMATCH': 1, 'OPEN:MISSING_CATEGORY': 1, 'OPEN:UNMATCHED_TRUCK': 1, 'OPEN:UNKNOWN_PRODUCT': 1 },
+    eventCount: 1, productLineCount: 1, adjustmentCount: 0,
+  });
+  assert.equal((reparseEvents[0].after as { parseVersion: string }).parseVersion, 'pilot-biff-v2');
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_PARSED' } }), 1);
+
+  await reparseImporter.reparseInvoice(invoiceId, context());
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_REPARSED' } }), 1);
+});
+
+test('reparse preserves valid manual truck and category resolutions', async () => {
+  const bytes = pilotXlsFixture({ invoiceNumber: '910012', productCode: '999', unitNumber: 'missing' });
+  const preview = await reparseImporter.createImport(bytes, await storedMetadata('pilot-910012', bytes), sourceId, context());
+  const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
+  const issues = preview.issues as Array<{ id: string; code: string }>;
+  await reparseImporter.resolveIssue(invoiceId, issues.find(({ code }) => code === 'UNMATCHED_TRUCK')!.id, { action: 'MATCH_TRUCK', truckId }, context());
+  await reparseImporter.resolveIssue(invoiceId, issues.find(({ code }) => code === 'MISSING_CATEGORY')!.id, { action: 'SET_CATEGORY', categoryId: fuelCategoryId }, context());
+  await markAsFaultyV1(invoiceId, BigInt(20200));
+  const reparsed = await reparseImporter.reparseInvoice(invoiceId, context());
+  assert.equal((reparsed.events as Array<{ truckId: string; truckMatchStatus: string }>)[0].truckId, truckId);
+  assert.equal((reparsed.events as Array<{ truckId: string; truckMatchStatus: string }>)[0].truckMatchStatus, 'MANUALLY_MATCHED');
+  assert.equal((reparsed.events as Array<{ productLines: Array<{ category: { id: string } }> }>)[0].productLines[0].category.id, fuelCategoryId);
+  const remainingCodes = (reparsed.issues as Array<{ code: string }>).map(({ code }) => code);
+  assert.equal(remainingCodes.includes('UNMATCHED_TRUCK'), false);
+  assert.equal(remainingCodes.includes('MISSING_CATEGORY'), false);
+  assert.ok(remainingCodes.includes('UNKNOWN_PRODUCT'));
+  assert.equal(remainingCodes.includes('AMOUNT_MISMATCH'), false);
+});
+
+test('posted Pilot invoices reject reparse without changing canonical economics', async () => {
+  const bytes = pilotXlsFixture({ invoiceNumber: '910013' });
+  const preview = await reparseImporter.createImport(bytes, await storedMetadata('pilot-910013', bytes), sourceId, context());
+  const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
+  await reparseImporter.postInvoice(invoiceId, context());
+  const transactionCount = await prisma.financialTransaction.count({ where: { reference: '910013', operatingGroupId: groupId } });
+  await assert.rejects(() => reparseImporter.reparseInvoice(invoiceId, context()), /cannot be reparsed/);
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910013', operatingGroupId: groupId } }), transactionCount);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_REPARSED' } }), 0);
+});
+
+test('wrong and malformed stored sources fail before modifying the existing preview', async () => {
+  for (const [invoiceNumber, replacement] of [
+    ['910014', pilotXlsFixture({ invoiceNumber: '999999' })],
+    ['910015', new TextEncoder().encode('not a Pilot XLS')],
+  ] as const) {
+    const bytes = pilotXlsFixture({ invoiceNumber });
+    const preview = await reparseImporter.createImport(bytes, await storedMetadata(`pilot-${invoiceNumber}`, bytes), sourceId, context());
+    const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
+    await markAsFaultyV1(invoiceId, BigInt(20200));
+    const document = await prisma.pilotInvoiceDocument.findFirstOrThrow({ where: { invoiceId, role: 'STRUCTURED_SOURCE' }, include: { statement: true } });
+    statementStorage.files.set(document.statement.storageKey, replacement);
+    await prisma.financialStatement.update({ where: { id: document.statementId }, data: { checksumSha256: createHash('sha256').update(replacement).digest('hex') } });
+    await assert.rejects(() => reparseImporter.reparseInvoice(invoiceId, context()));
+    const unchanged = await prisma.pilotProviderInvoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    assert.equal(unchanged.parseVersion, 'pilot-biff-v1');
+    assert.equal(unchanged.parsedTotalMinor, BigInt(20200));
+    assert.equal(await prisma.pilotImportIssue.count({ where: { invoiceId, code: 'AMOUNT_MISMATCH' } }), 1);
+    assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_REPARSED' } }), 0);
+  }
+});
+
+test('late reparse failure rolls back preview replacement and audit atomically', async () => {
+  const bytes = pilotXlsFixture({ invoiceNumber: '910016' });
+  const preview = await reparseImporter.createImport(bytes, await storedMetadata('pilot-910016', bytes), sourceId, context());
+  const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
+  await markAsFaultyV1(invoiceId, BigInt(20200));
+  const beforeLineIds = (await prisma.pilotFuelProductLine.findMany({ where: { invoiceId }, select: { id: true }, orderBy: { id: 'asc' } })).map(({ id }) => id);
+  const trigger = `reject_pilot_reparse_${suffix.replaceAll('-', '_')}`;
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION ${trigger}() RETURNS trigger AS $$ BEGIN IF NEW.action = 'PILOT_INVOICE_REPARSED' THEN RAISE EXCEPTION 'forced reparse rollback'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER ${trigger} BEFORE INSERT ON "FinancialAuditEvent" FOR EACH ROW EXECUTE FUNCTION ${trigger}()`);
+  try {
+    await assert.rejects(() => reparseImporter.reparseInvoice(invoiceId, context()), /forced reparse rollback/);
+  } finally {
+    await prisma.$executeRawUnsafe(`DROP TRIGGER ${trigger} ON "FinancialAuditEvent"`);
+    await prisma.$executeRawUnsafe(`DROP FUNCTION ${trigger}()`);
+  }
+  const unchanged = await prisma.pilotProviderInvoice.findUniqueOrThrow({ where: { id: invoiceId } });
+  assert.equal(unchanged.parseVersion, 'pilot-biff-v1');
+  assert.equal(unchanged.parsedTotalMinor, BigInt(20200));
+  assert.deepEqual((await prisma.pilotFuelProductLine.findMany({ where: { invoiceId }, select: { id: true }, orderBy: { id: 'asc' } })).map(({ id }) => id), beforeLineIds);
+  assert.equal(await prisma.pilotImportIssue.count({ where: { invoiceId, code: 'AMOUNT_MISMATCH' } }), 1);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: invoiceId, action: 'PILOT_INVOICE_REPARSED' } }), 0);
 });
 
 test('multiple product rows sharing a ticket post as one event transaction with line allocations', async () => {
