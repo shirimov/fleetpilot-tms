@@ -596,7 +596,7 @@ export class FinancialControlService {
 
   async overview(context: FinancialAuthorization) {
     const [transactions, statementStatuses, rawRecordsImported, missingExpectations] = await Promise.all([
-      this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
+      this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, role: 'ECONOMIC' }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
       this.database.financialStatement.groupBy({ by: ['importStatus'], where: { operatingGroupId: context.operatingGroupId }, _count: { _all: true } }),
       this.database.financialImportRecord.count({ where: { statement: { operatingGroupId: context.operatingGroupId } } }),
       this.database.financialExpectation.count({ where: { operatingGroupId: context.operatingGroupId, status: { in: ['OPEN', 'PARTIALLY_MATCHED', 'MISSING'] } } }),

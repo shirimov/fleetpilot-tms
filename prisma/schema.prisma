@@ -172,6 +172,10 @@ model User {
   createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
   financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
   createdAdminFeeAgreements     AdminFeeAgreement[]            @relation("AdminFeeAgreementCreator")
+  uploadedPilotInvoices         PilotProviderInvoice[]         @relation("PilotInvoiceUploader")
+  postedPilotInvoices           PilotProviderInvoice[]         @relation("PilotInvoicePoster")
+  resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
+  approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
 
   @@index([activeCompanyId])
 }
@@ -416,6 +420,7 @@ model Truck {
   financialAllocations  FinancialAllocation[]
   financialExpectations FinancialExpectation[]
   adminFeeAgreements    AdminFeeAgreement[]
+  pilotFuelingEvents    PilotFuelingEvent[]
 }
 
 model Customer {
@@ -1006,6 +1011,68 @@ enum FinancialDirection {
   TRANSFER
 }
 
+enum FinancialTransactionRole {
+  ECONOMIC
+  CASH_SETTLEMENT
+  RECOVERY
+}
+
+enum PilotInvoiceStatus {
+  UPLOADED
+  PARSED
+  NEEDS_REVIEW
+  READY_TO_POST
+  POSTED
+  FAILED
+}
+
+enum PilotDocumentRole {
+  STRUCTURED_SOURCE
+  DOCUMENTARY
+  SUPPLEMENTAL
+}
+
+enum PilotProductType {
+  TRUCK_DIESEL
+  REEFER_FUEL
+  DEF
+  UNKNOWN_PRODUCT
+}
+
+enum PilotTruckMatchStatus {
+  MATCHED
+  UNMATCHED
+  AMBIGUOUS
+  MANUALLY_MATCHED
+}
+
+enum PilotAdjustmentType {
+  FREIGHT_RATE
+  OTHER
+}
+
+enum PilotImportIssueCode {
+  UNMATCHED_TRUCK
+  AMBIGUOUS_TRUCK
+  UNKNOWN_PRODUCT
+  MISSING_CATEGORY
+  AMOUNT_MISMATCH
+  DUPLICATE_INVOICE
+  DUPLICATE_EVENT
+  DUPLICATE_LINE
+  UNKNOWN_ADJUSTMENT
+  INVALID_DATE
+  INVALID_AMOUNT
+  INVALID_QUANTITY
+  INVALID_STRUCTURE
+  OUTSIDE_PERIOD
+}
+
+enum PilotImportIssueStatus {
+  OPEN
+  RESOLVED
+}
+
 enum FinancialTransactionStatus {
   DRAFT
   POSTED
@@ -1096,22 +1163,24 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
-  id                 String                     @id @default(cuid())
-  name               String
-  currency           String                     @default("USD")
-  createdAt          DateTime                   @default(now())
-  updatedAt          DateTime                   @updatedAt
-  companies          OperatingGroupCompany[]
-  memberships        OperatingGroupMembership[]
-  sources            FinancialSource[]
-  statements         FinancialStatement[]
-  categories         FinancialCategory[]
-  programs           FinancialProgram[]
-  adminFeeAgreements AdminFeeAgreement[]
-  parties            FinancialParty[]
-  transactions       FinancialTransaction[]
-  expectations       FinancialExpectation[]
-  auditEvents        FinancialAuditEvent[]
+  id                   String                     @id @default(cuid())
+  name                 String
+  currency             String                     @default("USD")
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  companies            OperatingGroupCompany[]
+  memberships          OperatingGroupMembership[]
+  sources              FinancialSource[]
+  statements           FinancialStatement[]
+  categories           FinancialCategory[]
+  programs             FinancialProgram[]
+  adminFeeAgreements   AdminFeeAgreement[]
+  parties              FinancialParty[]
+  transactions         FinancialTransaction[]
+  expectations         FinancialExpectation[]
+  auditEvents          FinancialAuditEvent[]
+  pilotInvoices        PilotProviderInvoice[]
+  pilotProductMappings PilotProductMapping[]
 }
 
 model OperatingGroupCompany {
@@ -1158,6 +1227,7 @@ model FinancialSource {
   transactions         FinancialTransaction[] @relation("FinancialTransactionSource")
   destinationTransfers FinancialTransaction[] @relation("FinancialTransactionDestination")
   expectations         FinancialExpectation[]
+  pilotInvoices        PilotProviderInvoice[]
 
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
@@ -1192,6 +1262,7 @@ model FinancialStatement {
   source             FinancialSource         @relation(fields: [sourceId], references: [id], onDelete: Restrict)
   importedBy         User                    @relation("FinancialStatementImporter", fields: [importedByUserId], references: [id], onDelete: Restrict)
   records            FinancialImportRecord[]
+  pilotDocuments     PilotInvoiceDocument[]
 
   @@unique([operatingGroupId, checksumSha256])
   @@index([operatingGroupId, createdAt])
@@ -1217,6 +1288,8 @@ model FinancialImportRecord {
   createdAt            DateTime                       @default(now())
   statement            FinancialStatement             @relation(fields: [statementId], references: [id], onDelete: Restrict)
   evidence             FinancialTransactionEvidence[]
+  pilotProductLine     PilotFuelProductLine?
+  pilotAdjustment      PilotInvoiceAdjustment?
 
   @@unique([statementId, sourceRowIndex])
   @@index([statementId, status])
@@ -1224,20 +1297,23 @@ model FinancialImportRecord {
 }
 
 model FinancialCategory {
-  id               String                 @id @default(cuid())
-  operatingGroupId String
-  name             String
-  type             FinancialCategoryType
-  isActive         Boolean                @default(true)
-  isSystemDefault  Boolean                @default(false)
-  parentCategoryId String?
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  operatingGroup   OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  parentCategory   FinancialCategory?     @relation("FinancialCategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: Restrict)
-  childCategories  FinancialCategory[]    @relation("FinancialCategoryHierarchy")
-  transactions     FinancialTransaction[]
-  allocations      FinancialAllocation[]
+  id                   String                   @id @default(cuid())
+  operatingGroupId     String
+  name                 String
+  type                 FinancialCategoryType
+  isActive             Boolean                  @default(true)
+  isSystemDefault      Boolean                  @default(false)
+  parentCategoryId     String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  operatingGroup       OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  parentCategory       FinancialCategory?       @relation("FinancialCategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: Restrict)
+  childCategories      FinancialCategory[]      @relation("FinancialCategoryHierarchy")
+  transactions         FinancialTransaction[]
+  allocations          FinancialAllocation[]
+  pilotProductMappings PilotProductMapping[]
+  pilotProductLines    PilotFuelProductLine[]
+  pilotAdjustments     PilotInvoiceAdjustment[]
 
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
@@ -1284,55 +1360,58 @@ model FinancialParty {
 }
 
 model FinancialTransaction {
-  id                    String                         @id @default(cuid())
-  operatingGroupId      String
-  companyId             String?
-  sourceId              String?
-  destinationSourceId   String?
-  transactionDate       DateTime
-  amountMinor           BigInt
-  currency              String                         @default("USD")
-  direction             FinancialDirection
-  description           String
-  categoryId            String?
-  vendorId              String?
-  ownerId               String?
-  customerId            String?
-  status                FinancialTransactionStatus     @default(DRAFT)
-  reconciliationStatus  FinancialReconciliationStatus  @default(UNREVIEWED)
-  dataStatus            FinancialDataStatus            @default(NORMALIZED)
-  memo                  String?
-  reference             String?
-  fingerprintSha256     String?
-  recoverableFromOwner  Boolean                        @default(false)
-  expectedRecoveryMinor BigInt                         @default(0)
-  recoveredAmountMinor  BigInt                         @default(0)
-  waivedAmountMinor     BigInt                         @default(0)
-  recoveryStatus        FinancialRecoveryStatus        @default(NOT_APPLICABLE)
-  recoveryNotes         String?
-  lastRecoveryAt        DateTime?
-  waivedAt              DateTime?
-  waivedByUserId        String?
-  createdByUserId       String
-  reviewedByUserId      String?
-  reviewedAt            DateTime?
-  createdAt             DateTime                       @default(now())
-  updatedAt             DateTime                       @updatedAt
-  operatingGroup        OperatingGroup                 @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company               Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source                FinancialSource?               @relation("FinancialTransactionSource", fields: [sourceId], references: [id], onDelete: Restrict)
-  destinationSource     FinancialSource?               @relation("FinancialTransactionDestination", fields: [destinationSourceId], references: [id], onDelete: Restrict)
-  category              FinancialCategory?             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  vendor                FinancialParty?                @relation("FinancialTransactionVendor", fields: [vendorId], references: [id], onDelete: Restrict)
-  owner                 FinancialParty?                @relation("FinancialTransactionOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  customer              Customer?                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  createdBy             User                           @relation("FinancialTransactionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  reviewedBy            User?                          @relation("FinancialTransactionReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
-  waivedBy              User?                          @relation("FinancialTransactionWaiver", fields: [waivedByUserId], references: [id], onDelete: Restrict)
-  evidence              FinancialTransactionEvidence[]
-  allocations           FinancialAllocation[]
-  expectationMatches    FinancialExpectationMatch[]
-  auditEvents           FinancialAuditEvent[]
+  id                     String                         @id @default(cuid())
+  operatingGroupId       String
+  companyId              String?
+  sourceId               String?
+  destinationSourceId    String?
+  transactionDate        DateTime
+  amountMinor            BigInt
+  currency               String                         @default("USD")
+  direction              FinancialDirection
+  description            String
+  categoryId             String?
+  vendorId               String?
+  ownerId                String?
+  customerId             String?
+  status                 FinancialTransactionStatus     @default(DRAFT)
+  reconciliationStatus   FinancialReconciliationStatus  @default(UNREVIEWED)
+  dataStatus             FinancialDataStatus            @default(NORMALIZED)
+  role                   FinancialTransactionRole       @default(ECONOMIC)
+  memo                   String?
+  reference              String?
+  fingerprintSha256      String?
+  recoverableFromOwner   Boolean                        @default(false)
+  expectedRecoveryMinor  BigInt                         @default(0)
+  recoveredAmountMinor   BigInt                         @default(0)
+  waivedAmountMinor      BigInt                         @default(0)
+  recoveryStatus         FinancialRecoveryStatus        @default(NOT_APPLICABLE)
+  recoveryNotes          String?
+  lastRecoveryAt         DateTime?
+  waivedAt               DateTime?
+  waivedByUserId         String?
+  createdByUserId        String
+  reviewedByUserId       String?
+  reviewedAt             DateTime?
+  createdAt              DateTime                       @default(now())
+  updatedAt              DateTime                       @updatedAt
+  operatingGroup         OperatingGroup                 @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source                 FinancialSource?               @relation("FinancialTransactionSource", fields: [sourceId], references: [id], onDelete: Restrict)
+  destinationSource      FinancialSource?               @relation("FinancialTransactionDestination", fields: [destinationSourceId], references: [id], onDelete: Restrict)
+  category               FinancialCategory?             @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  vendor                 FinancialParty?                @relation("FinancialTransactionVendor", fields: [vendorId], references: [id], onDelete: Restrict)
+  owner                  FinancialParty?                @relation("FinancialTransactionOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  customer               Customer?                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy              User                           @relation("FinancialTransactionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  reviewedBy             User?                          @relation("FinancialTransactionReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  waivedBy               User?                          @relation("FinancialTransactionWaiver", fields: [waivedByUserId], references: [id], onDelete: Restrict)
+  evidence               FinancialTransactionEvidence[]
+  allocations            FinancialAllocation[]
+  expectationMatches     FinancialExpectationMatch[]
+  auditEvents            FinancialAuditEvent[]
+  pilotFuelingEvent      PilotFuelingEvent?
+  pilotInvoiceAdjustment PilotInvoiceAdjustment?
 
   @@index([operatingGroupId, transactionDate])
   @@index([companyId, transactionDate])
@@ -1362,34 +1441,38 @@ model FinancialTransactionEvidence {
 }
 
 model FinancialAllocation {
-  id            String               @id @default(cuid())
-  transactionId String
-  amountMinor   BigInt
-  categoryId    String
-  companyId     String?
-  truckId       String?
-  trailerId     String?
-  driverId      String?
-  employeeId    String?
-  loadId        String?
-  customerId    String?
-  partyId       String?
-  programId     String?
-  businessType  String?
-  memo          String?
-  createdAt     DateTime             @default(now())
-  updatedAt     DateTime             @updatedAt
-  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  category      FinancialCategory    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  company       Company?             @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  truck         Truck?               @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  trailer       Trailer?             @relation(fields: [trailerId], references: [id], onDelete: Restrict)
-  driver        Driver?              @relation(fields: [driverId], references: [id], onDelete: Restrict)
-  employee      Employee?            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
-  load          Load?                @relation(fields: [loadId], references: [id], onDelete: Restrict)
-  customer      Customer?            @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  party         FinancialParty?      @relation(fields: [partyId], references: [id], onDelete: Restrict)
-  program       FinancialProgram?    @relation(fields: [programId], references: [id], onDelete: Restrict)
+  id                 String                  @id @default(cuid())
+  transactionId      String
+  amountMinor        BigInt
+  categoryId         String
+  companyId          String?
+  truckId            String?
+  trailerId          String?
+  driverId           String?
+  employeeId         String?
+  loadId             String?
+  customerId         String?
+  partyId            String?
+  programId          String?
+  businessType       String?
+  memo               String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  transaction        FinancialTransaction    @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  category           FinancialCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  company            Company?                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck              Truck?                  @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  trailer            Trailer?                @relation(fields: [trailerId], references: [id], onDelete: Restrict)
+  driver             Driver?                 @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  employee           Employee?               @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  load               Load?                   @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  customer           Customer?               @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  party              FinancialParty?         @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  program            FinancialProgram?       @relation(fields: [programId], references: [id], onDelete: Restrict)
+  pilotProductLineId String?                 @unique
+  pilotAdjustmentId  String?                 @unique
+  pilotProductLine   PilotFuelProductLine?   @relation(fields: [pilotProductLineId], references: [id], onDelete: Restrict)
+  pilotAdjustment    PilotInvoiceAdjustment? @relation(fields: [pilotAdjustmentId], references: [id], onDelete: Restrict)
 
   @@index([transactionId])
   @@index([categoryId])
@@ -1430,35 +1513,36 @@ model AdminFeeAgreement {
 }
 
 model FinancialExpectation {
-  id                  String                      @id @default(cuid())
-  operatingGroupId    String
-  companyId           String?
-  sourceId            String?
-  customerId          String?
-  partyId             String?
-  loadId              String?
-  truckId             String?
-  expectedAmountMinor BigInt
-  matchedAmountMinor  BigInt                      @default(0)
-  currency            String                      @default("USD")
-  direction           FinancialDirection
-  description         String
-  expectedDateStart   DateTime
-  expectedDateEnd     DateTime
-  reference           String?
-  status              FinancialExpectationStatus  @default(OPEN)
-  createdByUserId     String
-  createdAt           DateTime                    @default(now())
-  updatedAt           DateTime                    @updatedAt
-  operatingGroup      OperatingGroup              @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company             Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source              FinancialSource?            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  customer            Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  party               FinancialParty?             @relation(fields: [partyId], references: [id], onDelete: Restrict)
-  load                Load?                       @relation(fields: [loadId], references: [id], onDelete: Restrict)
-  truck               Truck?                      @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  createdBy           User                        @relation("FinancialExpectationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  matches             FinancialExpectationMatch[]
+  id                   String                      @id @default(cuid())
+  operatingGroupId     String
+  companyId            String?
+  sourceId             String?
+  customerId           String?
+  partyId              String?
+  loadId               String?
+  truckId              String?
+  expectedAmountMinor  BigInt
+  matchedAmountMinor   BigInt                      @default(0)
+  currency             String                      @default("USD")
+  direction            FinancialDirection
+  description          String
+  expectedDateStart    DateTime
+  expectedDateEnd      DateTime
+  reference            String?
+  status               FinancialExpectationStatus  @default(OPEN)
+  createdByUserId      String
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  operatingGroup       OperatingGroup              @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company              Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source               FinancialSource?            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  customer             Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  party                FinancialParty?             @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  load                 Load?                       @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  truck                Truck?                      @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  createdBy            User                        @relation("FinancialExpectationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  matches              FinancialExpectationMatch[]
+  pilotProviderInvoice PilotProviderInvoice?
 
   @@index([operatingGroupId, status, expectedDateStart])
   @@index([companyId, expectedDateStart])
@@ -1481,24 +1565,221 @@ model FinancialExpectationMatch {
 }
 
 model FinancialAuditEvent {
-  id               String                @id @default(cuid())
-  operatingGroupId String
-  companyId        String?
-  transactionId    String?
-  action           String
-  actorUserId      String
-  before           Json?
-  after            Json?
-  metadata         Json?
-  occurredAt       DateTime              @default(now())
-  operatingGroup   OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company          Company?              @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  transaction      FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  actor            User                  @relation("FinancialAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  id                     String                @id @default(cuid())
+  operatingGroupId       String
+  companyId              String?
+  transactionId          String?
+  action                 String
+  actorUserId            String
+  pilotProviderInvoiceId String?
+  before                 Json?
+  after                  Json?
+  metadata               Json?
+  occurredAt             DateTime              @default(now())
+  operatingGroup         OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                Company?              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transaction            FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  actor                  User                  @relation("FinancialAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  pilotProviderInvoice   PilotProviderInvoice? @relation(fields: [pilotProviderInvoiceId], references: [id], onDelete: Restrict)
 
   @@index([operatingGroupId, occurredAt, id])
   @@index([transactionId, occurredAt, id])
   @@index([actorUserId, occurredAt, id])
+  @@index([pilotProviderInvoiceId, occurredAt, id])
+}
+
+model PilotProviderInvoice {
+  id                  String                   @id @default(cuid())
+  operatingGroupId    String
+  sourceId            String
+  provider            String                   @default("PILOT")
+  providerAccountHash String
+  invoiceNumber       String
+  billingDate         DateTime                 @db.Date
+  dueDate             DateTime?                @db.Date
+  periodStart         DateTime                 @db.Date
+  periodEnd           DateTime                 @db.Date
+  currency            String                   @default("USD")
+  invoiceTotalMinor   BigInt
+  parsedTotalMinor    BigInt
+  differenceMinor     BigInt
+  status              PilotInvoiceStatus       @default(UPLOADED)
+  parseVersion        String
+  expectationId       String?                  @unique
+  uploadedByUserId    String
+  postedByUserId      String?
+  postedAt            DateTime?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  operatingGroup      OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  source              FinancialSource          @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  expectation         FinancialExpectation?    @relation(fields: [expectationId], references: [id], onDelete: Restrict)
+  uploadedBy          User                     @relation("PilotInvoiceUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+  postedBy            User?                    @relation("PilotInvoicePoster", fields: [postedByUserId], references: [id], onDelete: Restrict)
+  documents           PilotInvoiceDocument[]
+  events              PilotFuelingEvent[]
+  productLines        PilotFuelProductLine[]
+  adjustments         PilotInvoiceAdjustment[]
+  issues              PilotImportIssue[]
+  auditEvents         FinancialAuditEvent[]
+
+  @@unique([operatingGroupId, provider, providerAccountHash, invoiceNumber])
+  @@index([operatingGroupId, status, billingDate])
+  @@index([sourceId, billingDate])
+}
+
+model PilotInvoiceDocument {
+  id          String               @id @default(cuid())
+  invoiceId   String
+  statementId String
+  role        PilotDocumentRole
+  createdAt   DateTime             @default(now())
+  invoice     PilotProviderInvoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  statement   FinancialStatement   @relation(fields: [statementId], references: [id], onDelete: Restrict)
+
+  @@unique([invoiceId, statementId])
+  @@unique([statementId, role])
+  @@index([invoiceId, role])
+}
+
+model PilotFuelingEvent {
+  id                   String                 @id @default(cuid())
+  invoiceId            String
+  eventKeyHash         String
+  ticketHash           String
+  authorizationHash    String
+  cardLastFour         String?
+  sourceUnitNumber     String
+  locationNumber       String?
+  city                 String?
+  state                String?
+  purchaseOrderContext String?
+  sourceDriverName     String?
+  transactionDate      DateTime               @db.Date
+  odometer             Decimal?               @db.Decimal(18, 2)
+  truckId              String?
+  truckMatchStatus     PilotTruckMatchStatus
+  transactionId        String?                @unique
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  invoice              PilotProviderInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  truck                Truck?                 @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  transaction          FinancialTransaction?  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  productLines         PilotFuelProductLine[]
+  issues               PilotImportIssue[]
+
+  @@unique([invoiceId, eventKeyHash])
+  @@index([invoiceId, transactionDate])
+  @@index([truckId, transactionDate])
+  @@index([invoiceId, truckMatchStatus])
+}
+
+model PilotFuelProductLine {
+  id                 String                @id @default(cuid())
+  invoiceId          String
+  eventId            String
+  importRecordId     String                @unique
+  lineFingerprint    String
+  sourceLineIdentity String
+  sourceProductCode  String
+  productType        PilotProductType
+  quantity           Decimal               @db.Decimal(18, 2)
+  unitPrice          Decimal               @db.Decimal(18, 7)
+  amountMinor        BigInt
+  retailAmountMinor  BigInt?
+  savingsMinor       BigInt?
+  taxMinor           BigInt?
+  discountMinor      BigInt?
+  currency           String                @default("USD")
+  categoryId         String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  invoice            PilotProviderInvoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  event              PilotFuelingEvent     @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  importRecord       FinancialImportRecord @relation(fields: [importRecordId], references: [id], onDelete: Restrict)
+  category           FinancialCategory?    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  allocation         FinancialAllocation?
+  issues             PilotImportIssue[]
+
+  @@unique([invoiceId, sourceLineIdentity])
+  @@index([invoiceId, lineFingerprint])
+  @@index([invoiceId, productType])
+  @@index([eventId, productType])
+  @@index([categoryId])
+}
+
+model PilotInvoiceAdjustment {
+  id                 String                @id @default(cuid())
+  invoiceId          String
+  importRecordId     String                @unique
+  fingerprint        String
+  sourceLineIdentity String
+  type               PilotAdjustmentType   @default(OTHER)
+  description        String
+  transactionDate    DateTime?             @db.Date
+  signedAmountMinor  BigInt
+  categoryId         String?
+  transactionId      String?               @unique
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  invoice            PilotProviderInvoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  importRecord       FinancialImportRecord @relation(fields: [importRecordId], references: [id], onDelete: Restrict)
+  category           FinancialCategory?    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  transaction        FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  allocation         FinancialAllocation?
+  issues             PilotImportIssue[]
+
+  @@unique([invoiceId, sourceLineIdentity])
+  @@index([invoiceId, fingerprint])
+  @@index([invoiceId, type])
+}
+
+model PilotImportIssue {
+  id                 String                  @id @default(cuid())
+  invoiceId          String
+  eventId            String?
+  productLineId      String?
+  adjustmentId       String?
+  code               PilotImportIssueCode
+  status             PilotImportIssueStatus  @default(OPEN)
+  message            String
+  resolutionMetadata Json?
+  resolvedByUserId   String?
+  resolvedAt         DateTime?
+  createdAt          DateTime                @default(now())
+  invoice            PilotProviderInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  event              PilotFuelingEvent?      @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  productLine        PilotFuelProductLine?   @relation(fields: [productLineId], references: [id], onDelete: Restrict)
+  adjustment         PilotInvoiceAdjustment? @relation(fields: [adjustmentId], references: [id], onDelete: Restrict)
+  resolvedBy         User?                   @relation("PilotIssueResolver", fields: [resolvedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceId, status, code])
+  @@index([eventId, status])
+  @@index([productLineId, status])
+  @@index([adjustmentId, status])
+}
+
+model PilotProductMapping {
+  id                  String            @id @default(cuid())
+  operatingGroupId    String
+  provider            String            @default("PILOT")
+  providerAccountHash String
+  productCode         String
+  productType         PilotProductType
+  categoryId          String
+  version             Int               @default(1)
+  isActive            Boolean           @default(true)
+  approvedByUserId    String
+  approvedAt          DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  operatingGroup      OperatingGroup    @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  category            FinancialCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  approvedBy          User              @relation("PilotProductMappingApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([operatingGroupId, provider, providerAccountHash, productCode])
+  @@index([categoryId, isActive])
+  @@index([approvedByUserId, approvedAt])
 }
 
 model DriverOrientation {
