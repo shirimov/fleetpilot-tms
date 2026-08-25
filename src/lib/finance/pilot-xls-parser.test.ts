@@ -7,6 +7,32 @@ import { MAX_PILOT_XLS_BYTES, PilotXlsParser } from './pilot-xls-parser';
 
 const parser = new PilotXlsParser();
 
+function withFloatingRkDividedBy100InvoiceAmounts(bytes: Uint8Array) {
+  const cfb = XLSX.CFB.read(Buffer.from(bytes), { type: 'buffer' });
+  const workbookEntry = XLSX.CFB.find(cfb, 'Workbook') ?? XLSX.CFB.find(cfb, 'Book');
+  assert.ok(workbookEntry?.content);
+  const workbookStream = Buffer.from(workbookEntry.content);
+  let replacements = 0;
+  for (let offset = 0; offset + 4 <= workbookStream.length;) {
+    const id = workbookStream.readUInt16LE(offset);
+    const length = workbookStream.readUInt16LE(offset + 2);
+    const start = offset + 4;
+    if (id === 0x0203 && length >= 14) {
+      const row = workbookStream.readUInt16LE(start);
+      const column = workbookStream.readUInt16LE(start + 2);
+      if (column === 18 && (row === 3 || row === 4)) {
+        workbookStream.writeUInt16LE(0x027e, offset);
+        workbookStream.writeUInt32LE(0x40e24fe1, start + 6); // BIFF RK 37503 with the divide-by-100 flag.
+        replacements += 1;
+      }
+    }
+    offset = start + length;
+  }
+  assert.equal(replacements, 2);
+  workbookEntry.content = workbookStream;
+  return new Uint8Array(XLSX.CFB.write(cfb, { type: 'buffer' }));
+}
+
 test('Pilot parser reads the exact legacy sheet with exact minor-unit reconciliation', () => {
   const parsed = parser.parse(pilotXlsFixture());
   assert.equal(parsed.invoiceNumber, '900001');
@@ -24,6 +50,17 @@ test('Pilot parser reads the exact legacy sheet with exact minor-unit reconcilia
     assert.equal(line.sourceUnitNumber, '125');
     assert.equal(line.outsidePeriod, false);
   }
+});
+
+test('Pilot parser honors the BIFF RK divide-by-100 flag for floating-point invoice amounts', () => {
+  const fixture = pilotXlsFixture({ amount: 375.03, total: 375.03 });
+  const parsed = parser.parse(withFloatingRkDividedBy100InvoiceAmounts(fixture));
+  assert.equal(parsed.invoiceTotalMinor, BigInt(37503));
+  assert.equal(parsed.parsedTotalMinor, BigInt(37503));
+  assert.equal(parsed.differenceMinor, BigInt(0));
+  const line = parsed.rows[0];
+  assert.equal(line.kind, 'PRODUCT');
+  if (line.kind === 'PRODUCT') assert.equal(line.amountMinor, BigInt(37503));
 });
 
 test('Pilot parser preserves mismatches for blocking review', () => {
@@ -73,6 +110,25 @@ test('unknown product code remains product detail and supported freight adjustme
   assert.equal(parsed.rows[1].kind, 'ADJUSTMENT');
   assert.equal(parsed.parsedTotalMinor, BigInt(9900));
   assert.equal(parsed.differenceMinor, BigInt(0));
+});
+
+test('Pilot parser accepts a provider freight correction carrying location context', () => {
+  const parsed = parser.parse(pilotXlsFixture({
+    total: 72.41,
+    rowsBeforeTotal: [[
+      '', '', '998', 'Knoxville TN', 'Incorrect Freight Ra', '', '', '08/24', '', '',
+      0, 0, 0, 0, 0, 0, -28.59, 0, -28.59, -28.59,
+    ]],
+  }));
+  assert.equal(parsed.parsedTotalMinor, BigInt(7241));
+  assert.equal(parsed.invoiceTotalMinor, BigInt(7241));
+  assert.equal(parsed.differenceMinor, BigInt(0));
+  const adjustment = parsed.rows.find((row) => row.kind === 'ADJUSTMENT');
+  assert.equal(adjustment?.kind, 'ADJUSTMENT');
+  if (adjustment?.kind === 'ADJUSTMENT') {
+    assert.equal(adjustment.adjustmentType, 'FREIGHT_RATE');
+    assert.equal(adjustment.signedAmountMinor, BigInt(-2859));
+  }
 });
 
 test('Pilot transaction dates preserve month boundaries, late billing dates, and fail closed for indeterminate leap years', () => {
