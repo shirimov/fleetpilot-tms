@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as XLSX from '@e965/xlsx';
 import { FinancialValidationError } from './financial-control-errors';
 
-export const PILOT_XLS_PARSER_VERSION = 'pilot-biff-v1';
+export const PILOT_XLS_PARSER_VERSION = 'pilot-biff-v2';
 export const MAX_PILOT_XLS_BYTES = 5 * 1024 * 1024;
 export const MAX_PILOT_ROWS = 5_000;
 export const MAX_PILOT_CELLS = 100_000;
@@ -142,7 +142,16 @@ function decimalString(value: bigint, scale: number) {
   return `${negative ? '-' : ''}${absolute / divisor}.${String(absolute % divisor).padStart(scale, '0')}`;
 }
 
-function exactDoubleCell(bits: bigint): ExactNumericCell {
+function divideRounded(numerator: bigint, denominator: bigint) {
+  const negative = numerator < BigInt(0);
+  const absolute = negative ? -numerator : numerator;
+  let quotient = absolute / denominator;
+  const remainder = absolute % denominator;
+  if (remainder * BigInt(2) >= denominator) quotient += BigInt(1);
+  return negative ? -quotient : quotient;
+}
+
+function exactDoubleCell(bits: bigint, divisor = BigInt(1)): ExactNumericCell {
   return {
     scaled(scale: number) {
       const sign = (bits >> BigInt(63)) === BigInt(0) ? BigInt(1) : -BigInt(1);
@@ -153,12 +162,9 @@ function exactDoubleCell(bits: bigint): ExactNumericCell {
       const significand = exponentBits === 0 ? fraction : (BigInt(1) << BigInt(52)) | fraction;
       const exponent = (exponentBits === 0 ? 1 - 1023 : exponentBits - 1023) - 52;
       const numerator = significand * (BigInt(10) ** BigInt(scale));
-      if (exponent >= 0) return sign * (numerator << BigInt(exponent));
-      const denominator = BigInt(1) << BigInt(-exponent);
-      let quotient = numerator / denominator;
-      const remainder = numerator % denominator;
-      if (remainder * BigInt(2) >= denominator) quotient += BigInt(1);
-      return sign * quotient;
+      if (exponent >= 0) return divideRounded(sign * (numerator << BigInt(exponent)), divisor);
+      const denominator = (BigInt(1) << BigInt(-exponent)) * divisor;
+      return sign * divideRounded(numerator, denominator);
     },
   };
 }
@@ -167,11 +173,10 @@ function exactRkCell(raw: number): ExactNumericCell {
   const dividedBy100 = (raw & 1) !== 0;
   if ((raw & 2) !== 0) {
     const signed = raw >> 2;
-    return { scaled: (scale) => BigInt(signed) * (BigInt(10) ** BigInt(scale)) / (dividedBy100 ? BigInt(100) : BigInt(1)) };
+    return { scaled: (scale) => divideRounded(BigInt(signed) * (BigInt(10) ** BigInt(scale)), dividedBy100 ? BigInt(100) : BigInt(1)) };
   }
   const bits = BigInt(raw & 0xfffffffc) << BigInt(32);
-  const base = exactDoubleCell(bits);
-  return { scaled: (scale) => dividedBy100 ? base.scaled(scale + 2) / BigInt(100) : base.scaled(scale) };
+  return exactDoubleCell(bits, dividedBy100 ? BigInt(100) : BigInt(1));
 }
 
 function biffNumericCells(workbookStream: Uint8Array, sheetOffset: number) {
@@ -330,12 +335,12 @@ export class PilotXlsParser {
         continue;
       }
       const supportedAdjustment = !productCode
-        && /^freight\s+ra(?:te)?$/i.test(rawMetadata.ticketNumber)
+        && /^(?:incorrect\s+)?freight\s+ra(?:te)?$/i.test(rawMetadata.ticketNumber)
         && Boolean(rawDate)
         && signedAmountMinor !== null
         && signedAmountMinor !== BigInt(0)
-        && !rawMetadata.cardNumber && !rawMetadata.unitNumber && !rawMetadata.locationNumber && !rawMetadata.location
-        && !rawMetadata.authorizationNumber && !rawMetadata.purchaseOrder && !rawMetadata.odometer;
+        && !rawMetadata.cardNumber && !rawMetadata.unitNumber && !rawMetadata.authorizationNumber
+        && !rawMetadata.purchaseOrder && !rawMetadata.odometer;
       if (supportedAdjustment) {
         const description = rawMetadata.ticketNumber;
         const fingerprint = hash([invoiceMatch[1], 'adjustment', description, rawDate, signedAmountMinor?.toString()]);
