@@ -66,7 +66,7 @@ export class CapacityService {
     const bounds = localDayBounds(date, timeZone);
     const [schedule, tasks] = await Promise.all([
       this.database.employeeScheduleDay.findUnique({ where: { employeeId_weekday: { employeeId, weekday: bounds.weekday } } }),
-      employee.userId ? this.database.taskCard.findMany({ where: { assigneeUserId: employee.userId, project: { companyId } }, select: { effort: true, status: true, expectedDurationMinutes: true, dueDate: true, completedAt: true } }) : [],
+      employee.userId ? this.database.taskCard.findMany({ where: { assigneeUserId: employee.userId, isArchived: false, project: { companyId, isArchived: false } }, select: { effort: true, status: true, expectedDurationMinutes: true, dueDate: true, completedAt: true } }) : [],
     ]);
     const open = tasks.filter((task) => !completeStatuses.has(task.status));
     const dueToday = open.filter((task) => task.dueDate && task.dueDate >= bounds.start && task.dueDate < bounds.end);
@@ -108,6 +108,7 @@ export class CapacityService {
     const forPeriod = async ({ start, end }: { start: Date; end: Date }) => weightedCompletion(await this.database.taskCard.findMany({
       where: {
         assigneeUserId: employee.userId,
+        isArchived: false,
         status: { not: 'CANCELLED' },
         project: { companyId, isArchived: false },
         OR: [{ status: { not: 'DONE' } }, { status: 'DONE', completedAt: { gte: start, lt: end } }],

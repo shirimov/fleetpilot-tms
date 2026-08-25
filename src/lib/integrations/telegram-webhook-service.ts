@@ -304,6 +304,8 @@ export class TelegramWebhookService {
         where: {
           id: parsed.taskCardId,
           assigneeUserId: actor.userId,
+          isArchived: false,
+          status: { not: 'CANCELLED' },
           project: { companyId: actor.companyId },
         },
         select: { id: true },
@@ -384,6 +386,7 @@ export class TelegramWebhookService {
     const tasks = await this.database.taskCard.findMany({
       where: {
         assigneeUserId: actor.userId,
+        isArchived: false,
         project: { companyId: actor.companyId },
         status: { notIn: ['DONE', 'CANCELLED'] },
         ...(dueOnly ? { dueDate: { not: null } } : {}),

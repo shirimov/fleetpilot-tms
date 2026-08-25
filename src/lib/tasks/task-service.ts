@@ -11,6 +11,9 @@ import type {
   TaskCompanyActor,
   TaskMutationActor,
   TaskDeletePolicy,
+  TaskArchivePolicy,
+  TaskCompletionPeriod,
+  TaskLifecycleView,
   UpdateTaskCardInput,
   UpdateTaskChecklistItemInput,
   UpdateTaskCommentInput,
@@ -38,6 +41,7 @@ import {
 } from './task-errors';
 import { TaskValidationError } from './task-validation';
 import { telegramDeliveryService } from '@/lib/integrations/telegram-delivery-service';
+import { localPeriodBounds } from '@/lib/workforce/capacity-service';
 
 const cardInclude = {
   labels: true,
@@ -81,6 +85,8 @@ const boardCardSelect = {
   blockedClearedAt: true,
   order: true,
   updatedAt: true,
+  completedAt: true,
+  isArchived: true,
   labels: {
     select: {
       id: true,
@@ -94,7 +100,7 @@ const boardCardSelect = {
   },
 } satisfies Prisma.TaskCardSelect;
 
-const projectBoardSelect = {
+function projectBoardSelect(cardWhere?: Prisma.TaskCardWhereInput) { return {
   id: true,
   name: true,
   description: true,
@@ -107,6 +113,7 @@ const projectBoardSelect = {
       order: true,
       status: true,
       cards: {
+        where: cardWhere,
         orderBy: [
           { order: 'asc' as const },
           { createdAt: 'asc' as const },
@@ -116,7 +123,7 @@ const projectBoardSelect = {
       },
     },
   },
-} satisfies Prisma.TaskProjectSelect;
+} satisfies Prisma.TaskProjectSelect; }
 
 export class TaskService {
   private readonly deleteDependencyCount = {
@@ -135,6 +142,14 @@ export class TaskService {
     private readonly activityService: ActivityService = defaultActivityService,
     private readonly attachmentStorage: TaskAttachmentStorage = taskAttachmentStorage,
   ) {}
+
+  async getUserTimeZone(companyId: string, userId: string) {
+    const employee = await this.database.employee.findFirst({
+      where: { companyId, userId },
+      select: { timezone: true },
+    });
+    return employee?.timezone || 'UTC';
+  }
 
   async getProjects(projectId?: string, companyId?: string) {
     return this.database.taskProject.findMany({
@@ -231,6 +246,7 @@ export class TaskService {
           assigneeUserId: input.assigneeUserId,
           createdByUserId: actor?.userId,
           status: destinationBoard.status,
+          completedAt: destinationBoard.status === 'DONE' ? new Date() : null,
           dueDate: input.dueDate,
           effort: input.effort ?? 3,
           expectedDurationMinutes: input.expectedDurationMinutes,
@@ -281,17 +297,45 @@ export class TaskService {
     });
   }
 
-  async getProjectBoard(projectId: string, companyId?: string) {
+  async getProjectBoard(
+    projectId: string,
+    companyId?: string,
+    lifecycle: { view: TaskLifecycleView; period: TaskCompletionPeriod; timeZone: string; now?: Date } = { view: 'active', period: 'today', timeZone: 'UTC' },
+  ) {
+    const periods = localPeriodBounds(lifecycle.now ?? new Date(), lifecycle.timeZone);
+    const completedAt = lifecycle.period === 'today'
+      ? periods.today
+      : lifecycle.period === 'week'
+        ? periods.thisWeek
+        : lifecycle.period === 'month'
+          ? periods.thisMonth
+          : undefined;
+    const cardWhere: Prisma.TaskCardWhereInput = lifecycle.view === 'archived'
+      ? { OR: [{ isArchived: true }, { isArchived: false, status: 'CANCELLED' }] }
+      : lifecycle.view === 'completed'
+        ? { isArchived: false, status: 'DONE', ...(completedAt ? { completedAt: { gte: completedAt.start, lt: completedAt.end } } : {}) }
+        : {
+            isArchived: false,
+            status: { not: 'CANCELLED' },
+            OR: [
+              { status: { not: 'DONE' } },
+              { status: 'DONE', completedAt: { gte: periods.today.start, lt: periods.today.end } },
+            ],
+          };
     const project = await this.database.taskProject.findFirst({
       where: { id: projectId, ...(companyId ? { companyId } : {}) },
-      select: projectBoardSelect,
+      select: projectBoardSelect(cardWhere),
     });
 
     if (!project) throw new TaskProjectNotFoundError();
     return project;
   }
 
-  async moveCard(input: MoveTaskCardInput, actor?: TaskMutationActor) {
+  async moveCard(input: MoveTaskCardInput, actor?: TaskMutationActor | TaskCompanyActor) {
+    const timeZone = actor && 'companyId' in actor
+      ? await this.getUserTimeZone(actor.companyId, actor.userId)
+      : 'UTC';
+    const today = localPeriodBounds(new Date(), timeZone).today;
     try {
       return await this.database.$transaction(
         async (transaction) => {
@@ -405,6 +449,7 @@ export class TaskService {
                 boardId: normalized.boardId,
                 status: normalized.status,
                 order: normalized.order,
+                completedAt: this.completedAtForStatus(normalized.card, normalized.status),
               },
             });
 
@@ -419,7 +464,14 @@ export class TaskService {
 
           const project = await transaction.taskProject.findUnique({
             where: { id: existing.projectId },
-            select: projectBoardSelect,
+            select: projectBoardSelect({
+              isArchived: false,
+              status: { not: 'CANCELLED' },
+              OR: [
+                { status: { not: 'DONE' } },
+                { status: 'DONE', completedAt: { gte: today.start, lt: today.end } },
+              ],
+            }),
           });
           if (!project) throw new TaskProjectNotFoundError();
           return project;
@@ -481,6 +533,9 @@ export class TaskService {
           description: input.description,
           priority: input.priority,
           status: input.status,
+          completedAt: input.status === undefined
+            ? undefined
+            : this.completedAtForStatus(existing, input.status),
           assignedTo: input.assignedTo,
           assigneeUserId: input.assigneeUserId,
           dueDate: input.dueDate,
@@ -592,6 +647,60 @@ export class TaskService {
       });
 
       await transaction.taskCard.delete({ where: { id: cardId } });
+    });
+  }
+
+  async getArchivePolicy(cardId: string, actor: TaskCompanyActor): Promise<TaskArchivePolicy> {
+    const card = await this.database.taskCard.findFirst({
+      where: { id: cardId, project: { companyId: actor.companyId } },
+      select: { createdByUserId: true, isArchived: true },
+    });
+    if (!card) throw new TaskNotFoundError();
+    const authorized = actor.role === 'OWNER' || actor.role === 'ADMIN' || card.createdByUserId === actor.userId;
+    return { canArchive: authorized && !card.isArchived, canRestore: authorized && card.isArchived, isArchived: card.isArchived };
+  }
+
+  async setCardArchived(cardId: string, archived: boolean, actor: TaskCompanyActor) {
+    return this.database.$transaction(async (transaction) => {
+      const card = await transaction.taskCard.findFirst({
+        where: { id: cardId, project: { companyId: actor.companyId } },
+      });
+      if (!card) throw new TaskNotFoundError();
+      const authorized = actor.role === 'OWNER' || actor.role === 'ADMIN' || card.createdByUserId === actor.userId;
+      if (!authorized) throw new AuthorizationDeniedError();
+      if (card.isArchived === archived) return card;
+      const updated = await transaction.taskCard.update({
+        where: { id: card.id },
+        data: archived
+          ? { isArchived: true, archivedAt: new Date(), archivedByUserId: actor.userId }
+          : { isArchived: false, archivedAt: null, archivedByUserId: null },
+      });
+      if (archived) {
+        const now = new Date();
+        await transaction.telegramPendingAction.updateMany({
+          where: {
+            taskCardId: card.id,
+            consumedAt: null,
+            invalidatedAt: null,
+          },
+          data: { invalidatedAt: now },
+        });
+        await transaction.telegramUpdateRequest.updateMany({
+          where: { taskCardId: card.id, status: 'PENDING' },
+          data: { status: 'CANCELLED' },
+        });
+      }
+      await this.activityService.record(transaction, {
+        action: archived ? 'TASK_ARCHIVED' : 'TASK_UNARCHIVED',
+        projectId: card.projectId,
+        cardId: card.id,
+        entityType: 'TASK_CARD',
+        entityId: card.id,
+        entityTitle: card.title,
+        ...this.activityActor(actor),
+        metadata: { archived },
+      });
+      return updated;
     });
   }
 
@@ -1470,6 +1579,8 @@ export class TaskService {
         where: {
           id: cardId,
           assigneeUserId: actor.userId,
+          isArchived: false,
+          status: { not: 'CANCELLED' },
           project: { companyId: actor.companyId },
         },
       });
@@ -1496,6 +1607,7 @@ export class TaskService {
         data: {
           boardId: destinationBoard.id,
           status: destinationBoard.status,
+          completedAt: this.completedAtForStatus(existing, destinationBoard.status),
         },
         include: cardInclude,
       });
@@ -1518,6 +1630,11 @@ export class TaskService {
     }
 
     return String(value);
+  }
+
+  private completedAtForStatus(card: Pick<TaskCard, 'status' | 'completedAt'>, status: TaskCard['status']) {
+    if (status === 'DONE') return card.status === 'DONE' ? card.completedAt ?? new Date() : new Date();
+    return null;
   }
 }
 

@@ -856,6 +856,86 @@ test('foreign-company task callbacks are denied for linked users', async () => {
   }
 });
 
+test('archiving invalidates Telegram actions and stale callbacks fail closed without resurrecting history', async () => {
+  const fixture = await createFixture();
+  try {
+    const invitation = await telegramLinkService.createLinkInvitation({
+      actorUserId: fixture.owner.id,
+      actorRole: 'OWNER',
+      companyId: fixture.company.id,
+      userId: fixture.member.id,
+    });
+    await telegramLinkService.consumeLinkToken({
+      token: parseStartToken(invitation.deepLink),
+      telegramUserId: BigInt(499),
+      telegramChatId: BigInt(499),
+      telegramUsername: 'archived_task_user',
+    });
+    installFetchMock(async (url) =>
+      url.includes('answerCallbackQuery')
+        ? okTelegramResponse(true)
+        : okTelegramResponse({ message_id: 99 }),
+    );
+    const request = await telegramDeliveryService.createUpdateRequest({
+      companyId: fixture.company.id,
+      requestedByUserId: fixture.owner.id,
+      requestedByRole: 'OWNER',
+      requestedByDisplayName: fixture.owner.displayName,
+      taskCardId: fixture.card.id,
+    });
+    await taskService.setCardArchived(fixture.card.id, true, {
+      userId: fixture.owner.id,
+      displayName: fixture.owner.displayName,
+      companyId: fixture.company.id,
+      role: 'OWNER',
+    });
+    assert.equal((await prisma.telegramUpdateRequest.findUniqueOrThrow({ where: { id: request.id } })).status, 'CANCELLED');
+    assert.ok((await prisma.telegramPendingAction.findFirstOrThrow({ where: { telegramUpdateRequestId: request.id } })).invalidatedAt);
+
+    await assert.rejects(
+      telegramWebhookService.handleUpdate({
+        update_id: 6991,
+        callback_query: {
+          id: 'archived-start',
+          data: createTelegramCallbackData('start', fixture.card.id),
+          from: { id: 499, username: 'archived_task_user' },
+          message: { message_id: 99, chat: { id: 499, type: 'private' } },
+        },
+      }),
+    );
+    await telegramWebhookService.handleUpdate({
+      update_id: 6992,
+      callback_query: {
+        id: 'archived-update',
+        data: createTelegramCallbackData('update', fixture.card.id),
+        from: { id: 499, username: 'archived_task_user' },
+        message: { message_id: 100, chat: { id: 499, type: 'private' } },
+      },
+    });
+    assert.equal(await prisma.telegramPendingAction.count({ where: { taskCardId: fixture.card.id, invalidatedAt: null, consumedAt: null } }), 0);
+
+    await taskService.setCardArchived(fixture.card.id, false, {
+      userId: fixture.owner.id,
+      displayName: fixture.owner.displayName,
+      companyId: fixture.company.id,
+      role: 'OWNER',
+    });
+    assert.equal((await prisma.telegramUpdateRequest.findUniqueOrThrow({ where: { id: request.id } })).status, 'CANCELLED');
+    assert.ok((await prisma.telegramPendingAction.findFirstOrThrow({ where: { telegramUpdateRequestId: request.id } })).invalidatedAt);
+    const replacement = await telegramDeliveryService.createUpdateRequest({
+      companyId: fixture.company.id,
+      requestedByUserId: fixture.owner.id,
+      requestedByRole: 'OWNER',
+      requestedByDisplayName: fixture.owner.displayName,
+      taskCardId: fixture.card.id,
+    });
+    assert.equal(replacement.status, 'PENDING');
+  } finally {
+    global.fetch = originalFetch;
+    await destroyFixture(fixture);
+  }
+});
+
 test('request update creates queue state, links responseCommentId/respondedAt, and disconnect invalidates future Telegram mutations', async () => {
   const fixture = await createFixture();
   try {

@@ -100,6 +100,15 @@ export type TaskDeletePolicy = {
   explanation: string | null;
 };
 
+export type TaskLifecycleView = 'active' | 'completed' | 'archived';
+export type TaskCompletionPeriod = 'today' | 'week' | 'month' | 'all';
+
+export type TaskArchivePolicy = {
+  canArchive: boolean;
+  canRestore: boolean;
+  isArchived: boolean;
+};
+
 export type CreateTaskChecklistItemInput = {
   cardId: string;
   content: string;

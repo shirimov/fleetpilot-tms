@@ -28,6 +28,8 @@ export type KanbanCard = {
   blockedClearedAt?: string | null;
   order: number;
   updatedAt: string;
+  completedAt?: string | null;
+  isArchived?: boolean;
   labels: KanbanLabel[];
   checklistItems?: Array<{ id: string; isCompleted: boolean }>;
 };
