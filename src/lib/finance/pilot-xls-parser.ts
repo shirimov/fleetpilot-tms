@@ -55,7 +55,18 @@ export type PilotParsedAdjustment = {
   sourceLineIdentity: string;
 };
 
-export type PilotParsedRow = PilotParsedProductLine | PilotParsedAdjustment;
+export type PilotParsedNonEconomicRow = {
+  kind: 'NON_ECONOMIC';
+  rowClass: 'PRODUCT_SUBTOTAL' | 'CARD_SUBTOTAL' | 'SAVINGS_SUBTOTAL' | 'AVERAGE_COST' | 'REPEATED_HEADER' | 'METADATA' | 'BLANK' | 'UNKNOWN_NON_ECONOMIC' | 'UNKNOWN_AMOUNT_BEARING';
+  sourceRowIndex: number;
+  rawMetadata: Record<string, string>;
+  rawTransactionDate: string;
+  transactionDate: Date | null;
+  signedAmountMinor: bigint | null;
+  fingerprint: string;
+};
+
+export type PilotParsedRow = PilotParsedProductLine | PilotParsedAdjustment | PilotParsedNonEconomicRow;
 
 export type PilotParsedInvoice = {
   provider: 'PILOT';
@@ -237,6 +248,29 @@ function safeRawMetadata(sheet: XLSX.WorkSheet, numerics: Map<string, ExactNumer
   return result;
 }
 
+function rowText(sheet: XLSX.WorkSheet, row: number) {
+  return Array.from({ length: expectedHeaders.length }, (_, column) => cellText(sheet, row, column)).filter(Boolean).join(' ');
+}
+
+function isRepeatedHeader(sheet: XLSX.WorkSheet, row: number) {
+  return expectedHeaders.every(([top, bottom], column) => {
+    const value = cellText(sheet, row, column);
+    return value === normalizeText(top) || value === normalizeText(bottom) || (!value && !top);
+  });
+}
+
+function nonEconomicClass(sheet: XLSX.WorkSheet, row: number, amount: bigint | null): PilotParsedNonEconomicRow['rowClass'] | null {
+  const text = rowText(sheet, row).toLowerCase();
+  if (!text && amount === null) return 'BLANK';
+  if (isRepeatedHeader(sheet, row)) return 'REPEATED_HEADER';
+  if (/\b(?:invoice\s*no|billing\s+date|due\s+date)\b/i.test(text)) return 'METADATA';
+  if (/\b(?:020|033|140)\s+subtotal\b/i.test(text)) return 'PRODUCT_SUBTOTAL';
+  if (/\bcard\s+subtotal\b/i.test(text)) return 'CARD_SUBTOTAL';
+  if (/\bsavings\s+sub\s*total\b/i.test(text)) return 'SAVINGS_SUBTOTAL';
+  if (/\baverage\s+cost\s+per\s+gallon\b/i.test(text)) return 'AVERAGE_COST';
+  return null;
+}
+
 export class PilotXlsParser {
   parse(bytes: Uint8Array): PilotParsedInvoice {
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_PILOT_XLS_BYTES) throw new FinancialValidationError('Pilot XLS must be between 1 byte and 5 MB.');
@@ -290,15 +324,33 @@ export class PilotXlsParser {
       const signedAmountMinor = numeric(numerics, row, 18, 2);
       const rawDate = rawMetadata.transactionDate;
       const transactionDate = resolveTransactionDate(rawDate, periodStart, periodEnd);
-      if (signedAmountMinor !== null) parsedTotalMinor += signedAmountMinor;
-      if (!productCode) {
-        const description = rawMetadata.ticketNumber || 'Pilot invoice adjustment';
+      const knownNonEconomic = nonEconomicClass(sheet, row, signedAmountMinor);
+      if (knownNonEconomic) {
+        rows.push({ kind: 'NON_ECONOMIC', rowClass: knownNonEconomic, sourceRowIndex: row + 1, rawMetadata, rawTransactionDate: rawDate, transactionDate, signedAmountMinor, fingerprint: hash([invoiceMatch[1], knownNonEconomic, row.toString(), rowText(sheet, row), signedAmountMinor?.toString()]) });
+        continue;
+      }
+      const supportedAdjustment = !productCode
+        && /^freight\s+ra(?:te)?$/i.test(rawMetadata.ticketNumber)
+        && Boolean(rawDate)
+        && signedAmountMinor !== null
+        && signedAmountMinor !== BigInt(0)
+        && !rawMetadata.cardNumber && !rawMetadata.unitNumber && !rawMetadata.locationNumber && !rawMetadata.location
+        && !rawMetadata.authorizationNumber && !rawMetadata.purchaseOrder && !rawMetadata.odometer;
+      if (supportedAdjustment) {
+        const description = rawMetadata.ticketNumber;
         const fingerprint = hash([invoiceMatch[1], 'adjustment', description, rawDate, signedAmountMinor?.toString()]);
-        rows.push({ kind: 'ADJUSTMENT', sourceRowIndex: row + 1, rawMetadata, description, adjustmentType: /freight\s*ra/i.test(description) ? 'FREIGHT_RATE' : 'OTHER', rawTransactionDate: rawDate, transactionDate, signedAmountMinor, fingerprint, sourceLineIdentity: hash([fingerprint, row.toString()]) });
+        parsedTotalMinor += signedAmountMinor;
+        rows.push({ kind: 'ADJUSTMENT', sourceRowIndex: row + 1, rawMetadata, description, adjustmentType: 'FREIGHT_RATE', rawTransactionDate: rawDate, transactionDate, signedAmountMinor, fingerprint, sourceLineIdentity: hash([fingerprint, row.toString()]) });
         continue;
       }
       const quantity = numeric(numerics, row, 10, 2); const unitPrice = numeric(numerics, row, 11, 7); const retail = numeric(numerics, row, 19, 2); const tax = numeric(numerics, row, 17, 2); const discount = numeric(numerics, row, 16, 2);
       const ticketReference = rawMetadata.ticketNumber; const authorizationReference = rawMetadata.authorizationNumber;
+      if (!productCode || !rawMetadata.unitNumber || !ticketReference || !authorizationReference || !rawDate || quantity === null || unitPrice === null || signedAmountMinor === null) {
+        const rowClass = signedAmountMinor === null ? 'UNKNOWN_NON_ECONOMIC' : 'UNKNOWN_AMOUNT_BEARING';
+        rows.push({ kind: 'NON_ECONOMIC', rowClass, sourceRowIndex: row + 1, rawMetadata, rawTransactionDate: rawDate, transactionDate, signedAmountMinor, fingerprint: hash([invoiceMatch[1], rowClass, row.toString(), rowText(sheet, row), signedAmountMinor?.toString()]) });
+        continue;
+      }
+      parsedTotalMinor += signedAmountMinor;
       const eventKeyHash = ticketReference && authorizationReference ? hash([invoiceMatch[1], ticketReference, authorizationReference]) : null;
       const location = rawMetadata.location; const stateMatch = location.match(/\s([A-Z]{2})$/); const state = stateMatch?.[1] ?? ''; const city = state ? location.slice(0, -state.length).trim() : location;
       const sourceUnitNumber = rawMetadata.unitNumber.trim();

@@ -43,6 +43,49 @@ test('Pilot parser identifies unknown products and dates outside the invoice per
   }
 });
 
+test('Pilot parser classifies summary, header, blank, and unknown rows as non-economic', () => {
+  const repeatedHeader = ['Card', 'Unit', '', 'Location', 'Ticket', 'Auth.', 'P.O.', 'Trans', 'Odometer', 'Fuel', 'Fuel', 'Fuel', 'Fuel', 'Oil', 'Oil', 'Cash', 'Misc./', 'Sales', 'Invoice', 'Retail'];
+  const parsed = parser.parse(pilotXlsFixture({
+    rowsBeforeTotal: [
+      ['020 Subtotal', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 101, ''],
+      ['033 Subtotal'],
+      ['140 Subtotal'],
+      ['Card Subtotal'],
+      ['Average Cost Per Gallon'],
+      ['Savings SubTotal'],
+      repeatedHeader,
+      [],
+      ['Provider note'],
+      ['Unsupported structural amount', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 25, ''],
+    ],
+  }));
+  assert.equal(parsed.parsedTotalMinor, BigInt(10100));
+  assert.equal(parsed.differenceMinor, BigInt(0));
+  assert.deepEqual(parsed.rows.slice(1).map((row) => row.kind === 'NON_ECONOMIC' ? row.rowClass : row.kind), [
+    'PRODUCT_SUBTOTAL', 'PRODUCT_SUBTOTAL', 'PRODUCT_SUBTOTAL', 'CARD_SUBTOTAL', 'AVERAGE_COST', 'SAVINGS_SUBTOTAL',
+    'REPEATED_HEADER', 'BLANK', 'UNKNOWN_NON_ECONOMIC', 'UNKNOWN_AMOUNT_BEARING',
+  ]);
+});
+
+test('unknown product code remains product detail and supported freight adjustment remains economic', () => {
+  const parsed = parser.parse(pilotXlsFixture({ productCode: '999', adjustment: -2, total: 99 }));
+  assert.equal(parsed.rows[0].kind, 'PRODUCT');
+  assert.equal(parsed.rows[1].kind, 'ADJUSTMENT');
+  assert.equal(parsed.parsedTotalMinor, BigInt(9900));
+  assert.equal(parsed.differenceMinor, BigInt(0));
+});
+
+test('Pilot transaction dates preserve month boundaries, late billing dates, and fail closed for indeterminate leap years', () => {
+  const july = parser.parse(pilotXlsFixture({ billingDate: '08/03/26', dueDate: '08/10/26', transactionDate: '07/27' })).rows[0];
+  const august = parser.parse(pilotXlsFixture({ billingDate: '08/03/26', dueDate: '08/10/26', transactionDate: '08/02' })).rows[0];
+  const late = parser.parse(pilotXlsFixture({ transactionDate: '04/22' })).rows[0];
+  const ambiguousLeapDay = parser.parse(pilotXlsFixture({ transactionDate: '02/29' })).rows[0];
+  assert.equal(july.kind === 'PRODUCT' ? july.transactionDate?.toISOString() : null, '2026-07-27T00:00:00.000Z');
+  assert.equal(august.kind === 'PRODUCT' ? august.transactionDate?.toISOString() : null, '2026-08-02T00:00:00.000Z');
+  assert.equal(late.kind === 'PRODUCT' ? late.transactionDate?.toISOString() : null, '2026-04-22T00:00:00.000Z');
+  assert.equal(ambiguousLeapDay.kind === 'PRODUCT' ? ambiguousLeapDay.transactionDate : undefined, null);
+});
+
 test('Pilot parser rejects formulas, non-OLE content, unsupported sheets, and oversized input', () => {
   const formulaBytes = pilotXlsFixture();
   const numberRecord = formulaBytes.findIndex((value, index) => value === 0x03 && formulaBytes[index + 1] === 0x02 && formulaBytes[index + 2] === 0x0e && formulaBytes[index + 3] === 0x00);

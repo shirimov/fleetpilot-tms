@@ -81,6 +81,10 @@ export class PilotImportService {
     const eventIds = new Map<string, string>();
     for (const row of parsed.rows) {
       const record = await tx.financialImportRecord.create({ data: this.importRecord(statementId, row) });
+      if (row.kind === 'NON_ECONOMIC') {
+        if (row.rowClass === 'UNKNOWN_AMOUNT_BEARING') issues.push({ code: 'INVALID_STRUCTURE', message: `Row ${row.sourceRowIndex} contains an unsupported amount-bearing structure and cannot be posted.` });
+        continue;
+      }
       if (row.kind === 'ADJUSTMENT') {
         const mapping = mappingByCode.get(`ADJUSTMENT:${row.adjustmentType}`);
         const adjustment = await tx.pilotInvoiceAdjustment.create({ data: {
@@ -135,12 +139,13 @@ export class PilotImportService {
 
   private importRecord(statementId: string, row: PilotParsedRow) {
     const amount = row.kind === 'PRODUCT' ? row.amountMinor : row.signedAmountMinor;
+    const description = row.kind === 'PRODUCT' ? `Pilot product ${row.productCode}` : row.kind === 'ADJUSTMENT' ? row.description : `Pilot ${row.rowClass.toLowerCase().replaceAll('_', ' ')}`;
     return {
-      statementId, sourceRowIndex: row.sourceRowIndex, rawDescription: row.kind === 'PRODUCT' ? `Pilot product ${row.productCode}` : row.description,
+      statementId, sourceRowIndex: row.sourceRowIndex, rawDescription: description,
       rawDate: row.rawTransactionDate || null, rawAmount: amount?.toString() ?? null, rawReference: row.kind === 'PRODUCT' ? row.ticketReference : null,
       rawMetadata: row.rawMetadata, candidateDate: row.transactionDate, candidateAmountMinor: amount === null ? null : amount < BigInt(0) ? -amount : amount,
       candidateDirection: amount === null ? null : amount < BigInt(0) ? 'INFLOW' as const : 'OUTFLOW' as const,
-      candidateDescription: row.kind === 'PRODUCT' ? `Pilot ${row.productCode}` : row.description,
+      candidateDescription: description,
       fingerprintSha256: row.kind === 'PRODUCT' ? row.lineFingerprint : row.fingerprint, status: 'NEEDS_REVIEW' as const,
     };
   }
@@ -197,12 +202,31 @@ export class PilotImportService {
   }
 
   async postInvoice(invoiceId: string, context: FinancialAuthorization) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.postInvoiceTransaction(invoiceId, context);
+        return this.getInvoice(invoiceId, context);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'P2034' || attempt === 2) throw error;
+      }
+    }
+    throw new FinancialConflictError('Pilot invoice posting could not be serialized safely.');
+  }
+
+  private async postInvoiceTransaction(invoiceId: string, context: FinancialAuthorization) {
     await this.database.$transaction(async (tx) => {
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const invoice = await tx.pilotProviderInvoice.findFirst({ where: { id: invoiceId, operatingGroupId: context.operatingGroupId }, include: { source: true, issues: { where: { status: 'OPEN' } }, events: { include: { truck: true, productLines: true } }, adjustments: true } });
       if (!invoice) throw new FinancialNotFoundError();
       if (invoice.status === 'POSTED') return;
       if (invoice.differenceMinor !== BigInt(0) || invoice.issues.length || invoice.status !== 'READY_TO_POST') throw new FinancialConflictError('Resolve every Pilot import issue and reconcile the invoice total before posting.');
+      const categoryIds = [...new Set([
+        ...invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)),
+        ...invoice.adjustments.map((adjustment) => adjustment.categoryId),
+      ].filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      for (const categoryId of categoryIds) await this.lock(tx, `financial-category:${categoryId}`);
+      const validCategoryCount = await tx.financialCategory.count({ where: { id: { in: categoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } });
+      if (categoryIds.length === 0 || validCategoryCount !== categoryIds.length) throw new FinancialValidationError('Every Pilot category must be active and belong to this operating group at posting time.');
       let postedSignedTotal = BigInt(0);
       for (const event of invoice.events) {
         if (!event.truck || !context.companyIds.includes(event.truck.companyId)) throw new FinancialValidationError('Every fueling event must have a same-group truck match.');
@@ -247,7 +271,6 @@ export class PilotImportService {
       await tx.financialStatement.updateMany({ where: { pilotDocuments: { some: { invoiceId } } }, data: { importStatus: 'IMPORTED', matchedRowCount: invoice.events.reduce((sum, event) => sum + event.productLines.length, 0) + invoice.adjustments.length, unresolvedRowCount: 0 } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoice.id, action: 'PILOT_INVOICE_POSTED', metadata: { transactionCount: invoice.events.length + invoice.adjustments.length, expectationId: expectation.id, invoiceTotalMinor: invoice.invoiceTotalMinor.toString() } } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    return this.getInvoice(invoiceId, context);
   }
 
   private async lock(tx: Prisma.TransactionClient, key: string) {

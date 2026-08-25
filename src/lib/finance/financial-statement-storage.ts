@@ -8,7 +8,6 @@ const allowed = new Map<string, readonly string[]>([
   ['.csv', ['text/csv', 'application/csv', 'text/plain']],
   ['.xlsx', ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']],
   ['.xls', ['application/vnd.ms-excel', 'application/msexcel', 'application/x-msexcel', 'application/octet-stream']],
-  ['.xls', ['application/vnd.ms-excel', 'application/msexcel', 'application/x-msexcel', 'application/octet-stream']],
   ['.pdf', ['application/pdf']],
 ]);
 
@@ -19,7 +18,6 @@ export class FinancialStatementStorage extends FilesystemPrivateFileStorage {
 function signatureMatches(extension: string, bytes: Uint8Array) {
   if (extension === '.pdf') return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
   if (extension === '.xlsx') return bytes[0] === 0x50 && bytes[1] === 0x4b;
-  if (extension === '.xls') return [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((value, index) => bytes[index] === value);
   if (extension === '.xls') return [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((value, index) => bytes[index] === value);
   if (extension === '.csv') {
     const sample = bytes.slice(0, Math.min(bytes.length, 4096));

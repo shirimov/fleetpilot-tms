@@ -32,6 +32,7 @@ before(async () => {
   adjustmentCategoryId = (await prisma.financialCategory.findFirstOrThrow({ where: { operatingGroupId: groupId, name: 'Other' } })).id;
   await prisma.pilotProductMapping.createMany({ data: [
     { operatingGroupId: groupId, providerAccountHash, productCode: '020', productType: 'TRUCK_DIESEL', categoryId: fuelCategoryId, approvedByUserId: userId },
+    { operatingGroupId: groupId, providerAccountHash, productCode: '033', productType: 'REEFER_FUEL', categoryId: fuelCategoryId, approvedByUserId: userId },
     { operatingGroupId: groupId, providerAccountHash, productCode: '140', productType: 'DEF', categoryId: fuelCategoryId, approvedByUserId: userId },
     { operatingGroupId: groupId, providerAccountHash, productCode: 'ADJUSTMENT:FREIGHT_RATE', productType: 'UNKNOWN_PRODUCT', categoryId: adjustmentCategoryId, approvedByUserId: userId },
   ] });
@@ -115,6 +116,108 @@ test('multiple product rows sharing a ticket post as one event transaction with 
   assert.equal(transaction.evidence.length, 2);
   assert.equal(transaction.allocations.reduce((sum, row) => sum + row.amountMinor, BigInt(0)), transaction.amountMinor);
   await assert.rejects(() => importer.createImport(pilotXlsFixture({ invoiceNumber: '910003', amount: 102, total: 102, additionalProductCode: undefined }), metadata('pilot-910003-corrected'), sourceId, context()), FinancialConflictError);
+});
+
+test('summary rows never become economics or double-count the invoice', async () => {
+  const preview = await importer.createImport(pilotXlsFixture({
+    invoiceNumber: '910004', amount: 100, total: 100,
+    rowsBeforeTotal: [['020 Subtotal', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 100, '']],
+  }), metadata('pilot-910004'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  assert.equal(preview.status, 'READY_TO_POST');
+  assert.equal((preview.events as unknown[]).length, 1);
+  assert.equal((preview.adjustments as unknown[]).length, 0);
+  await importer.postInvoice(String(preview.id), context());
+  const transactions = await prisma.financialTransaction.findMany({ where: { operatingGroupId: groupId, reference: '910004' } });
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].amountMinor, BigInt(10000));
+});
+
+test('020, 033, and 140 lines aggregate once into one exact event expense', async () => {
+  const detail = (productCode: string, amount: number) => ['1111222233334444', '125', '0099', 'Dallas                  TX', 'TICKET-1', 'AUTH-1', 'Driver One', '08/18', 123456, productCode, 1, amount, amount, 0, 0, 0, 0, 0, amount, amount];
+  const preview = await importer.createImport(pilotXlsFixture({
+    invoiceNumber: '910008', amount: 800, total: 880,
+    rowsBeforeTotal: [detail('033', 50), detail('140', 30)],
+  }), metadata('pilot-910008'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  await importer.postInvoice(String(preview.id), context());
+  const transaction = await prisma.financialTransaction.findFirstOrThrow({ where: { operatingGroupId: groupId, reference: '910008' }, include: { allocations: true } });
+  assert.equal(transaction.amountMinor, BigInt(88000));
+  assert.equal(transaction.allocations.length, 3);
+  assert.equal(transaction.allocations.reduce((sum, allocation) => sum + allocation.amountMinor, BigInt(0)), BigInt(88000));
+});
+
+test('unknown amount-bearing structural rows fail closed and cannot be categorized into economics', async () => {
+  const preview = await importer.createImport(pilotXlsFixture({
+    invoiceNumber: '910005',
+    rowsBeforeTotal: [['Unsupported provider control', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 25, '']],
+  }), metadata('pilot-910005'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  assert.equal(preview.status, 'NEEDS_REVIEW');
+  assert.equal((preview.adjustments as unknown[]).length, 0);
+  assert.ok((preview.issues as Array<{ code: string }>).some((issue) => issue.code === 'INVALID_STRUCTURE'));
+  await assert.rejects(() => importer.postInvoice(String(preview.id), context()), FinancialConflictError);
+  assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910005' } }), 0);
+});
+
+test('posted Pilot transactions are protected from generic transaction mutation', async () => {
+  const transactions = await prisma.financialTransaction.findMany({ where: { operatingGroupId: groupId, reference: '910001' }, include: { pilotFuelingEvent: true, pilotInvoiceAdjustment: true } });
+  assert.equal(transactions.length, 2);
+  for (const transaction of transactions) {
+    await assert.rejects(() => control.voidTransaction(transaction.id, context()), /posted provider invoice/);
+    await assert.rejects(() => control.deleteTransaction(transaction.id, context()), /posted provider invoice/);
+    await assert.rejects(() => control.replaceAllocations(transaction.id, [{ amount: '1.00', categoryId: fuelCategoryId }], context()), /posted provider invoice/);
+  }
+  assert.ok(transactions.some((transaction) => transaction.pilotFuelingEvent));
+  assert.ok(transactions.some((transaction) => transaction.pilotInvoiceAdjustment));
+  assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910001', status: 'POSTED' } }), 2);
+});
+
+test('posting revalidates active same-group categories inside the authoritative transaction', async () => {
+  const inactive = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910006' }), metadata('pilot-910006'), sourceId, context());
+  importedInvoiceIds.push(String(inactive.id));
+  await control.updateCategory(fuelCategoryId, { isActive: false }, context());
+  await assert.rejects(() => importer.postInvoice(String(inactive.id), context()), /active and belong/);
+  await control.updateCategory(fuelCategoryId, { isActive: true }, context());
+
+  const stale = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910007' }), metadata('pilot-910007'), sourceId, context());
+  importedInvoiceIds.push(String(stale.id));
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Foreign category group ${suffix}` } });
+  const foreignCategory = await prisma.financialCategory.create({ data: { operatingGroupId: foreignGroup.id, name: `Foreign fuel ${suffix}`, type: 'DIRECT_EXPENSE' } });
+  try {
+    await prisma.pilotFuelProductLine.updateMany({ where: { invoiceId: String(stale.id) }, data: { categoryId: foreignCategory.id } });
+    await assert.rejects(() => importer.postInvoice(String(stale.id), context()), /active and belong/);
+  } finally {
+    await prisma.pilotFuelProductLine.updateMany({ where: { invoiceId: String(stale.id) }, data: { categoryId: fuelCategoryId } });
+    await prisma.financialCategory.delete({ where: { id: foreignCategory.id } });
+    await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+  }
+});
+
+test('concurrent Post calls produce one economic result and one ExpectedMoney record', async () => {
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910009' }), metadata('pilot-910009'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  await Promise.all([importer.postInvoice(String(preview.id), context()), importer.postInvoice(String(preview.id), context())]);
+  assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910009' } }), 1);
+  assert.equal(await prisma.financialExpectation.count({ where: { operatingGroupId: groupId, reference: '910009' } }), 1);
+});
+
+test('a late posting failure rolls back transactions, allocations, evidence, and ExpectedMoney atomically', async () => {
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910010' }), metadata('pilot-910010'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_pilot_expectation_${suffix.replaceAll('-', '_')}() RETURNS trigger AS $$ BEGIN IF NEW.reference = '910010' THEN RAISE EXCEPTION 'forced Pilot rollback'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_pilot_expectation_${suffix.replaceAll('-', '_')} BEFORE INSERT ON "FinancialExpectation" FOR EACH ROW EXECUTE FUNCTION reject_pilot_expectation_${suffix.replaceAll('-', '_')}()`);
+  try {
+    await assert.rejects(() => importer.postInvoice(String(preview.id), context()), /forced Pilot rollback/);
+  } finally {
+    await prisma.$executeRawUnsafe(`DROP TRIGGER reject_pilot_expectation_${suffix.replaceAll('-', '_')} ON "FinancialExpectation"`);
+    await prisma.$executeRawUnsafe(`DROP FUNCTION reject_pilot_expectation_${suffix.replaceAll('-', '_')}()`);
+  }
+  assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910010' } }), 0);
+  assert.equal(await prisma.financialExpectation.count({ where: { operatingGroupId: groupId, reference: '910010' } }), 0);
+  assert.equal(await prisma.financialAllocation.count({ where: { transaction: { reference: '910010' } } }), 0);
+  assert.equal(await prisma.financialTransactionEvidence.count({ where: { transaction: { reference: '910010' } } }), 0);
+  assert.equal((await prisma.pilotProviderInvoice.findUniqueOrThrow({ where: { id: String(preview.id) } })).status, 'READY_TO_POST');
 });
 
 test('manual truck resolution rejects cross-company canonical references', async () => {
