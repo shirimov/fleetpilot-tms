@@ -74,6 +74,7 @@ export const alphaNavigation: NavigationSection[] = [
     items: [
       { href: '/companies', label: 'Companies', icon: 'companies', module: 'administration' },
       { href: '/administration', label: 'Team', icon: 'team', module: 'administration' },
+      { href: '/administration/integrations/quickmanage', label: 'Integrations', icon: 'companies', module: 'administration' },
       { href: '/hr/employees', label: 'HR', icon: 'hr', module: 'hr' },
       { href: '/inbox', label: 'Inbox', icon: 'inbox', module: 'administration', unavailable: true },
     ],

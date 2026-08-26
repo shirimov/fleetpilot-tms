@@ -25,6 +25,7 @@ test('alpha navigation exposes completed modules and marks blocked inbox unavail
       'Finance',
       'Companies',
       'Team',
+      'Integrations',
       'HR',
     ],
   );

@@ -24,4 +24,5 @@ test('OWNER and ADMIN navigation preserve the Alpha modules', () => {
   assert.ok(ownerLabels.includes('Finance'));
   assert.ok(ownerLabels.includes('Accounting'));
   assert.ok(ownerLabels.includes('Team'));
+  assert.ok(ownerLabels.includes('Integrations'));
 });
