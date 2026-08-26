@@ -12,6 +12,18 @@ enum TruckStatus {
   MAINTENANCE
 }
 
+enum TruckImportStatus {
+  PREVIEWED
+  COMMITTED
+}
+
+enum TruckImportRowDisposition {
+  NEW
+  MATCHED
+  CONFLICT
+  REJECTED
+}
+
 enum CabType {
   DAYCAB
   SLEEPER
@@ -122,6 +134,8 @@ model Company {
   financialExpectations  FinancialExpectation[]
   financialParties       FinancialParty[]
   financialAuditEvents   FinancialAuditEvent[]
+  truckImportBatches     TruckImportBatch[]
+  truckLifecycleEvents   TruckLifecycleEvent[]
 }
 
 enum CompanyMembershipRole {
@@ -176,6 +190,8 @@ model User {
   postedPilotInvoices           PilotProviderInvoice[]         @relation("PilotInvoicePoster")
   resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
   approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
+  truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
+  truckLifecycleEvents          TruckLifecycleEvent[]          @relation("TruckLifecycleActor")
 
   @@index([activeCompanyId])
 }
@@ -400,8 +416,10 @@ model TelegramPendingAction {
 
 model Truck {
   id                    String                 @id @default(cuid())
-  unitNumber            String                 @unique
+  unitNumber            String
+  unitNumberNormalized  String?
   vin                   String?
+  vinNormalized         String?                @unique
   year                  Int?
   make                  String?
   model                 String?
@@ -421,6 +439,75 @@ model Truck {
   financialExpectations FinancialExpectation[]
   adminFeeAgreements    AdminFeeAgreement[]
   pilotFuelingEvents    PilotFuelingEvent[]
+  importRows            TruckImportRow[]
+
+  @@unique([companyId, unitNumberNormalized])
+  @@index([companyId, status, unitNumber])
+}
+
+model TruckImportBatch {
+  id             String            @id @default(cuid())
+  companyId      String
+  actorUserId    String
+  originalName   String
+  checksumSha256 String
+  status         TruckImportStatus @default(PREVIEWED)
+  totalRows      Int
+  newRows        Int
+  matchedRows    Int
+  conflictRows   Int
+  rejectedRows   Int
+  committedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  company        Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actor          User              @relation("TruckImportActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  rows           TruckImportRow[]
+
+  @@unique([companyId, checksumSha256])
+  @@index([companyId, createdAt])
+}
+
+model TruckImportRow {
+  id                   String                    @id @default(cuid())
+  batchId              String
+  rowNumber            Int
+  disposition          TruckImportRowDisposition
+  unitNumber           String?
+  unitNumberNormalized String?
+  vin                  String?
+  vinNormalized        String?
+  status               TruckStatus?
+  year                 Int?
+  make                 String?
+  model                String?
+  existingTruckId      String?
+  message              String?
+  createdTruckId       String?
+  batch                TruckImportBatch          @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  existingTruck        Truck?                    @relation(fields: [existingTruckId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, rowNumber])
+  @@index([batchId, disposition])
+  @@index([existingTruckId])
+}
+
+model TruckLifecycleEvent {
+  id             String   @id @default(cuid())
+  companyId      String
+  actorUserId    String
+  truckReference String
+  unitNumber     String
+  action         String
+  before         Json?
+  after          Json?
+  metadata       Json?
+  occurredAt     DateTime @default(now())
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actor          User     @relation("TruckLifecycleActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, occurredAt, id])
+  @@index([truckReference, occurredAt, id])
+  @@index([actorUserId, occurredAt, id])
 }
 
 model Customer {

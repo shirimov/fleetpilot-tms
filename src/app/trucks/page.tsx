@@ -1,6 +1,15 @@
 'use client'
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import Sidebar from '@/components/Sidebar'
+import { TruckImportPanel } from '@/components/fleet/TruckImportPanel'
+
+type CompanyOption = { id: string; name: string }
+type TruckItem = {
+  id: string; unitNumber: string; vin: string | null; year: number | null; make: string | null; model: string | null;
+  status: string; companyId: string; company?: CompanyOption; cabType: string; isOwnerOp: boolean; ownerName: string | null;
+}
+type VinResult = { Variable?: string; Value?: string }
 
 const defaultForm = { unitNumber: '', vin: '', year: '', make: '', model: '', status: 'ACTIVE', companyId: '', cabType: 'SLEEPER', isOwnerOp: false, ownerName: '' }
 
@@ -23,20 +32,33 @@ const statusColor: Record<string, string> = {
 }
 
 export default function TrucksPage() {
-  const [trucks, setTrucks] = useState<any[]>([])
-  const [companies, setCompanies] = useState<any[]>([])
+  const [trucks, setTrucks] = useState<TruckItem[]>([])
+  const [companies, setCompanies] = useState<CompanyOption[]>([])
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(defaultForm)
   const [vinLooking, setVinLooking] = useState(false)
   const [vinError, setVinError] = useState('')
   const [vinSuccess, setVinSuccess] = useState('')
+  const [view, setView] = useState<'active' | 'inactive' | 'all'>('active')
+  const [query, setQuery] = useState('')
+  const [pageError, setPageError] = useState('')
 
-  const loadData = () => fetch('/api/trucks').then(r => r.json()).then(setTrucks)
+  const loadData = () => fetch(`/api/trucks?view=${view}&q=${encodeURIComponent(query)}`).then(r => r.json()).then(setTrucks)
   useEffect(() => {
-    loadData()
+    fetch(`/api/trucks?view=${view}&q=${encodeURIComponent(query)}`).then(r => r.json()).then(setTrucks)
     fetch('/api/companies').then(r => r.json()).then(setCompanies)
-  }, [])
+  }, [view, query])
+
+  const lifecycle = async (truck: TruckItem) => {
+    const action = truck.status === 'INACTIVE' ? 'REACTIVATE' : 'DEACTIVATE'
+    if (!confirm(`${action === 'DEACTIVATE' ? 'Deactivate' : 'Reactivate'} Truck ${truck.unitNumber}? Historical records will be preserved.`)) return
+    setPageError('')
+    const response = await fetch(`/api/trucks/${truck.id}/lifecycle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) })
+    const body = await response.json()
+    if (!response.ok) setPageError(body.error || 'Lifecycle change failed.')
+    else loadData()
+  }
 
   const openAdd = () => {
     setEditId(null)
@@ -54,7 +76,7 @@ export default function TrucksPage() {
     try {
       const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/decodevin/${form.vin.trim()}?format=json`)
       const data = await res.json()
-      const get = (name: string) => data.Results?.find((r: any) => r.Variable === name)?.Value || ''
+      const get = (name: string) => (data.Results as VinResult[] | undefined)?.find((result) => result.Variable === name)?.Value || ''
       const make  = get('Make')
       const model = get('Model')
       const year  = get('Model Year')
@@ -75,7 +97,7 @@ export default function TrucksPage() {
     setVinLooking(false)
   }
 
-  const openEdit = (t: any) => {
+  const openEdit = (t: TruckItem) => {
     setVinError('')
     setVinSuccess('')
     setEditId(t.id)
@@ -94,7 +116,7 @@ export default function TrucksPage() {
     setShowForm(true)
   }
 
-  const submit = async (e: any) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const url = editId ? `/api/trucks/${editId}` : '/api/trucks'
     const method = editId ? 'PATCH' : 'POST'
@@ -106,9 +128,12 @@ export default function TrucksPage() {
   }
 
   const del = async (id: string) => {
-    if (!confirm('Delete this truck? This may fail if loads are assigned to it.')) return
-    await fetch(`/api/trucks/${id}`, { method: 'DELETE' })
-    loadData()
+    if (!confirm('Permanently delete this unused erroneous Truck? Any protected history will block deletion. Prefer Deactivate.')) return
+    setPageError('')
+    const response = await fetch(`/api/trucks/${id}`, { method: 'DELETE' })
+    const body = await response.json()
+    if (!response.ok) setPageError(body.error || 'Truck deletion failed.')
+    else loadData()
   }
 
   return (
@@ -228,6 +253,16 @@ export default function TrucksPage() {
           </div>
         )}
 
+        <TruckImportPanel onCommitted={loadData} />
+
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div className="flex rounded-lg border border-gray-700 p-1" aria-label="Truck status filter">
+            {(['active', 'inactive', 'all'] as const).map(option => <button key={option} onClick={() => setView(option)} className={`rounded-md px-3 py-1.5 text-sm capitalize ${view === option ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>{option}</button>)}
+          </div>
+          <input aria-label="Search trucks" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search unit, VIN, make, model" className="min-w-64 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm" />
+        </div>
+        {pageError && <p role="alert" className="mb-4 rounded-lg border border-red-800 bg-red-950/50 p-3 text-sm text-red-300">{pageError}</p>}
+
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           {trucks.length === 0 ? (
             <div className="text-center py-16 text-gray-500">
@@ -262,6 +297,7 @@ export default function TrucksPage() {
                     </td>
                     <td className="px-6 py-4 text-right space-x-4">
                       <button onClick={() => openEdit(t)} className="text-blue-400 hover:text-blue-300 text-xs font-medium">Edit</button>
+                      <button onClick={() => lifecycle(t)} className="text-amber-400 hover:text-amber-300 text-xs font-medium">{t.status === 'INACTIVE' ? 'Reactivate' : 'Deactivate'}</button>
                       <button onClick={() => del(t.id)} className="text-red-400 hover:text-red-300 text-xs font-medium">Delete</button>
                     </td>
                   </tr>
