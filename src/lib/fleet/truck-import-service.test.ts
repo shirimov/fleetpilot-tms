@@ -4,9 +4,11 @@ import { after, before, test } from 'node:test';
 import { prisma } from '@/lib/prisma';
 import type { CompanyAuthorization } from '@/lib/auth/authorization';
 import { TruckImportService, normalizeUnitNumber } from './truck-import-service';
+import { TruckLifecycleService } from './truck-lifecycle-service';
 
 const suffix = randomUUID().slice(0, 8);
 const service = new TruckImportService(prisma);
+const lifecycleService = new TruckLifecycleService(prisma);
 let companyId = ''; let foreignCompanyId = ''; let userId = '';
 const batchIds: string[] = []; const truckIds: string[] = [];
 
@@ -29,6 +31,8 @@ before(async () => {
 });
 
 after(async () => {
+  await prisma.load.deleteMany({ where: { companyId } });
+  await prisma.truckLifecycleEvent.deleteMany({ where: { companyId } });
   await prisma.truckImportRow.deleteMany({ where: { batchId: { in: batchIds } } });
   await prisma.truckImportBatch.deleteMany({ where: { id: { in: batchIds } } });
   await prisma.truck.deleteMany({ where: { id: { in: truckIds } } });
@@ -107,4 +111,26 @@ test('late commit failure rolls back all truck creation and batch state', async 
   }
   assert.equal(await prisma.truck.count({ where: { companyId, unitNumberNormalized: { startsWith: 'ROLLBACK-' } } }), 0);
   assert.equal((await prisma.truckImportBatch.findUnique({ where: { id: preview.id } }))?.status, 'PREVIEWED');
+});
+
+test('deactivation and reactivation preserve legacy VIN and historical relationships', async () => {
+  const legacyVin = '1HGCM82633A004353';
+  const truck = await prisma.truck.create({ data: { companyId, unitNumber: `6009-${suffix}`, vin: legacyVin, status: 'MAINTENANCE' } });
+  truckIds.push(truck.id);
+  const load = await prisma.load.create({ data: { companyId, loadNumber: `legacy-${suffix}`, origin: 'A', destination: 'B', rate: 100, truckId: truck.id } });
+  const deactivated = await lifecycleService.changeStatus(truck.id, 'INACTIVE', context());
+  assert.equal(deactivated.id, truck.id); assert.equal(deactivated.vin, legacyVin); assert.equal(deactivated.status, 'INACTIVE');
+  assert.equal((await prisma.load.findUnique({ where: { id: load.id } }))?.truckId, truck.id);
+  await assert.rejects(lifecycleService.deleteUnused(truck.id, context()), /protected history/);
+  const reactivated = await lifecycleService.changeStatus(truck.id, 'ACTIVE', context());
+  assert.equal(reactivated.id, truck.id); assert.equal(reactivated.vin, legacyVin); assert.equal(reactivated.status, 'ACTIVE');
+  assert.equal(await prisma.truckLifecycleEvent.count({ where: { truckReference: truck.id, action: { in: ['TRUCK_DEACTIVATED', 'TRUCK_REACTIVATED'] } } }), 2);
+  await prisma.load.delete({ where: { id: load.id } });
+});
+
+test('only a dependency-free erroneous Truck can be permanently deleted with durable audit', async () => {
+  const truck = await prisma.truck.create({ data: { companyId, unitNumber: `ERR-${suffix}` } });
+  await lifecycleService.deleteUnused(truck.id, context());
+  assert.equal(await prisma.truck.count({ where: { id: truck.id } }), 0);
+  assert.equal(await prisma.truckLifecycleEvent.count({ where: { truckReference: truck.id, action: 'TRUCK_DELETED' } }), 1);
 });

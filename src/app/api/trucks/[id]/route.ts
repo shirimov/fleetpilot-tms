@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
 import { fleetRouteErrorResponse } from '@/lib/fleet/fleet-route-response';
 import { isValidVin, normalizeUnitNumber, normalizeVin, TruckImportValidationError } from '@/lib/fleet/truck-import-service';
+import { truckLifecycleService } from '@/lib/fleet/truck-lifecycle-service';
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -38,11 +39,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const context = await fleetAuthorizationService.requireTruck(id, 'ADMIN');
-    await prisma.truck.delete({
-      where: { id, companyId: context.companyId },
-    });
-    return NextResponse.json({ ok: true });
+    const context = await fleetAuthorizationService.requireTruck(id, 'OWNER');
+    return NextResponse.json(await truckLifecycleService.deleteUnused(id, context));
   } catch (error) {
     return fleetRouteErrorResponse(error, 'Failed to delete truck');
   }

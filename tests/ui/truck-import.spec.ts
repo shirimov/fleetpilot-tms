@@ -26,9 +26,21 @@ test('OWNER previews and explicitly commits canonical trucks without overwriting
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Commit 2 new trucks' }).click();
     await expect(page.getByText('Import committed. Existing trucks were not modified.')).toBeVisible();
-    await expect(page.getByRole('cell', { name: '0037', exact: true })).toBeVisible();
+    const fleetRow = page.getByRole('row').filter({ has: page.getByRole('cell', { name: '0037', exact: true }) }).filter({ has: page.getByRole('button', { name: 'Edit' }) });
+    await expect(fleetRow).toBeVisible();
     expect(await prisma.truck.count({ where: { companyId: company.id } })).toBe(2);
+    page.once('dialog', dialog => dialog.accept());
+    await fleetRow.getByRole('button', { name: 'Deactivate' }).click();
+    await expect(fleetRow).toHaveCount(0);
+    await page.getByRole('button', { name: 'inactive', exact: true }).click();
+    await expect(fleetRow).toBeVisible();
+    page.once('dialog', dialog => dialog.accept());
+    await fleetRow.getByRole('button', { name: 'Reactivate' }).click();
+    await expect(fleetRow).toHaveCount(0);
+    await page.getByRole('button', { name: 'active', exact: true }).click();
+    await expect(fleetRow).toBeVisible();
   } finally {
+    await prisma.truckLifecycleEvent.deleteMany({ where: { companyId: company.id } });
     await prisma.truckImportRow.deleteMany({ where: { batch: { companyId: company.id } } });
     await prisma.truckImportBatch.deleteMany({ where: { companyId: company.id } });
     await prisma.truck.deleteMany({ where: { companyId: company.id } });

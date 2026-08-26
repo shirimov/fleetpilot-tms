@@ -135,6 +135,7 @@ model Company {
   financialParties       FinancialParty[]
   financialAuditEvents   FinancialAuditEvent[]
   truckImportBatches     TruckImportBatch[]
+  truckLifecycleEvents   TruckLifecycleEvent[]
 }
 
 enum CompanyMembershipRole {
@@ -190,6 +191,7 @@ model User {
   resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
   approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
   truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
+  truckLifecycleEvents          TruckLifecycleEvent[]          @relation("TruckLifecycleActor")
 
   @@index([activeCompanyId])
 }
@@ -487,6 +489,25 @@ model TruckImportRow {
   @@unique([batchId, rowNumber])
   @@index([batchId, disposition])
   @@index([existingTruckId])
+}
+
+model TruckLifecycleEvent {
+  id             String   @id @default(cuid())
+  companyId      String
+  actorUserId    String
+  truckReference String
+  unitNumber     String
+  action         String
+  before         Json?
+  after          Json?
+  metadata       Json?
+  occurredAt     DateTime @default(now())
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actor          User     @relation("TruckLifecycleActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, occurredAt, id])
+  @@index([truckReference, occurredAt, id])
+  @@index([actorUserId, occurredAt, id])
 }
 
 model Customer {
