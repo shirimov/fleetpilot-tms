@@ -16,7 +16,8 @@ export type QuickManageErrorCode =
   | 'TIMEOUT'
   | 'NETWORK_ERROR'
   | 'MALFORMED_RESPONSE'
-  | 'EXPIRED_TOKEN';
+  | 'EXPIRED_TOKEN'
+  | 'API_REJECTED';
 
 export class QuickManageError extends Error {
   constructor(
@@ -138,6 +139,47 @@ export class QuickManageClient {
 
     this.cachedToken = { accessToken: accessToken.trim(), expiresAtMs };
     return this.cachedToken;
+  }
+
+  async request(path: string, init: RequestInit = {}, retryAuthentication = true): Promise<unknown> {
+    const config = this.configResolver();
+    if (!config) {
+      throw new QuickManageError('NOT_CONFIGURED', 'QuickManage integration is not configured.');
+    }
+    const token = await this.getAccessToken();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${config.apiBaseUrl}${path}`, {
+        ...init,
+        headers: {
+          ...init.headers,
+          Authorization: `Bearer ${token.accessToken}`,
+        },
+        signal: this.timeoutSignal(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        throw new QuickManageError('TIMEOUT', 'QuickManage request timed out.');
+      }
+      throw new QuickManageError('NETWORK_ERROR', 'QuickManage could not be reached.');
+    }
+
+    if (response.status === 401 && retryAuthentication) {
+      this.clearTokenCache();
+      return this.request(path, init, false);
+    }
+    if (!response.ok) {
+      throw new QuickManageError(
+        'API_REJECTED',
+        `QuickManage request failed with status ${response.status}.`,
+        response.status,
+      );
+    }
+    try {
+      return await response.json();
+    } catch {
+      throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned an invalid response.');
+    }
   }
 }
 

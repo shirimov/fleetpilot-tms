@@ -120,3 +120,46 @@ test('redacts client secrets, bearer values, and JWT-shaped access tokens', () =
   assert.doesNotMatch(safe, /eyJsynthetic/);
   assert.match(safe, /redacted/);
 });
+
+test('uses bearer authentication for read requests and retries one 401 only', async () => {
+  let authCalls = 0;
+  let readCalls = 0;
+  const client = new QuickManageClient(async (url, init) => {
+    if (String(url).endsWith('/auth/token')) {
+      authCalls += 1;
+      return response({ data: { access_token: `${token}-${authCalls}`, expire: '2026-08-26T01:00:00.000Z' } });
+    }
+    readCalls += 1;
+    assert.equal((init?.headers as Record<string, string>).Authorization, `Bearer ${token}-${authCalls}`);
+    return readCalls === 1 ? response({ message: 'expired' }, 401) : response({ data: { items: [] } });
+  }, () => config, () => Date.parse('2026-08-26T00:00:00.000Z'));
+
+  assert.deepEqual(await client.request('/x/trucks/search', { method: 'POST' }), { data: { items: [] } });
+  assert.equal(authCalls, 2);
+  assert.equal(readCalls, 2);
+});
+
+test('does not retry provider rejection and bounds read-request timeout', async () => {
+  let timeoutMs = 0;
+  let readCalls = 0;
+  const rejected = new QuickManageClient(async (url) => {
+    if (String(url).endsWith('/auth/token')) return success();
+    readCalls += 1;
+    return response({ message: config.clientSecret }, 429);
+  }, () => config, () => Date.parse('2026-08-26T00:00:00.000Z'));
+  await assert.rejects(rejected.request('/x/trucks/search'), (error: unknown) =>
+    error instanceof QuickManageError && error.code === 'API_REJECTED' && error.status === 429
+    && !error.message.includes(config.clientSecret));
+  assert.equal(readCalls, 1);
+
+  const timedOut = new QuickManageClient(async (url) => {
+    if (String(url).endsWith('/auth/token')) return success();
+    throw new DOMException('provider detail', 'TimeoutError');
+  }, () => config, () => Date.parse('2026-08-26T00:00:00.000Z'), (milliseconds) => {
+    timeoutMs = milliseconds;
+    return new AbortController().signal;
+  });
+  await assert.rejects(timedOut.request('/x/trucks/search'), (error: unknown) =>
+    error instanceof QuickManageError && error.code === 'TIMEOUT');
+  assert.equal(timeoutMs, 10_000);
+});

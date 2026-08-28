@@ -24,6 +24,26 @@ enum TruckImportRowDisposition {
   REJECTED
 }
 
+enum ExternalSyncBatchStatus {
+  PREVIEWED
+  APPLIED
+}
+
+enum ExternalSyncResourceType {
+  TRUCK
+  TRAILER
+  DRIVER
+  CUSTOMER
+}
+
+enum ExternalSyncDisposition {
+  NEW
+  MATCHED
+  UNCHANGED
+  CONFLICT
+  INVALID
+}
+
 enum CabType {
   DAYCAB
   SLEEPER
@@ -136,6 +156,8 @@ model Company {
   financialAuditEvents   FinancialAuditEvent[]
   truckImportBatches     TruckImportBatch[]
   truckLifecycleEvents   TruckLifecycleEvent[]
+  externalSourceLinks    ExternalSourceLink[]
+  externalSyncBatches    ExternalSyncBatch[]
 }
 
 enum CompanyMembershipRole {
@@ -192,6 +214,7 @@ model User {
   approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
   truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
   truckLifecycleEvents          TruckLifecycleEvent[]          @relation("TruckLifecycleActor")
+  externalSyncBatches           ExternalSyncBatch[]            @relation("ExternalSyncActor")
 
   @@index([activeCompanyId])
 }
@@ -440,6 +463,7 @@ model Truck {
   adminFeeAgreements    AdminFeeAgreement[]
   pilotFuelingEvents    PilotFuelingEvent[]
   importRows            TruckImportRow[]
+  externalSourceLinks   ExternalSourceLink[]
 
   @@unique([companyId, unitNumberNormalized])
   @@index([companyId, status, unitNumber])
@@ -528,6 +552,7 @@ model Customer {
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   financialTransactions FinancialTransaction[]
+  externalSourceLinks   ExternalSourceLink[]
 
   @@unique([companyId, name])
   @@index([companyId, status, name])
@@ -563,6 +588,7 @@ model Trailer {
   loads                Load[]
   documents            TrailerDocument[]
   financialAllocations FinancialAllocation[]
+  externalSourceLinks  ExternalSourceLink[]
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 
@@ -589,8 +615,84 @@ model Driver {
   settlements          Settlement[]
   driverOrientations   DriverOrientation[]
   financialAllocations FinancialAllocation[]
+  externalSourceLinks  ExternalSourceLink[]
 
   @@index([companyId])
+}
+
+model ExternalSyncBatch {
+  id            String                  @id @default(cuid())
+  companyId     String
+  actorUserId   String
+  provider      String
+  status        ExternalSyncBatchStatus @default(PREVIEWED)
+  totalRows     Int
+  newRows       Int
+  matchedRows   Int
+  unchangedRows Int
+  conflictRows  Int
+  invalidRows   Int
+  appliedAt     DateTime?
+  createdAt     DateTime                @default(now())
+  company       Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actor         User                    @relation("ExternalSyncActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  rows          ExternalSyncRow[]
+
+  @@index([companyId, provider, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model ExternalSyncRow {
+  id                   String                   @id @default(cuid())
+  batchId              String
+  resourceType         ExternalSyncResourceType
+  externalId           String
+  disposition          ExternalSyncDisposition
+  fleetPilotEntityId   String?
+  sourceHashSha256     String
+  candidate            Json
+  message              String?
+  externalSourceLinkId String?
+  appliedAt            DateTime?
+  createdAt            DateTime                 @default(now())
+  batch                ExternalSyncBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  externalSourceLink   ExternalSourceLink?      @relation(fields: [externalSourceLinkId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, resourceType, externalId])
+  @@index([batchId, disposition, resourceType])
+  @@index([externalSourceLinkId])
+}
+
+model ExternalSourceLink {
+  id              String                   @id @default(cuid())
+  companyId       String
+  provider        String
+  resourceType    ExternalSyncResourceType
+  externalId      String
+  truckId         String?
+  trailerId       String?
+  driverId        String?
+  customerId      String?
+  sourceCreatedAt DateTime?
+  sourceUpdatedAt DateTime?
+  firstSyncedAt   DateTime                 @default(now())
+  lastSyncedAt    DateTime                 @default(now())
+  metadata        Json?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  company         Company                  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck           Truck?                   @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  trailer         Trailer?                 @relation(fields: [trailerId], references: [id], onDelete: Restrict)
+  driver          Driver?                  @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  customer        Customer?                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  syncRows        ExternalSyncRow[]
+
+  @@unique([companyId, provider, resourceType, externalId])
+  @@unique([companyId, provider, resourceType, truckId])
+  @@unique([companyId, provider, resourceType, trailerId])
+  @@unique([companyId, provider, resourceType, driverId])
+  @@unique([companyId, provider, resourceType, customerId])
+  @@index([companyId, resourceType, lastSyncedAt])
 }
 
 model Load {
