@@ -65,6 +65,7 @@ export const alphaNavigation: NavigationSection[] = [
     label: 'Finance',
     items: [
       { href: '/accounting', label: 'Accounting', icon: 'finance', module: 'finance' },
+      { href: '/accounting/payroll', label: 'Payroll Preview', icon: 'settlements', module: 'finance' },
       { href: '/settlements', label: 'Settlements', icon: 'settlements', module: 'finance' },
       { href: '/finance', label: 'Finance', icon: 'finance', module: 'finance' },
     ],

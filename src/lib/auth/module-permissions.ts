@@ -57,6 +57,7 @@ const API_MODULES: ReadonlyArray<[prefix: string, module: FleetPilotModule]> = [
   ['/api/settlements', 'finance'],
   ['/api/reserve', 'finance'],
   ['/api/finance', 'finance'],
+  ['/api/payroll', 'finance'],
   ['/api/dashboard', 'operations'],
   ['/api/dispatch', 'operations'],
   ['/api/loads', 'operations'],
