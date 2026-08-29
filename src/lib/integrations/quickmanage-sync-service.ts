@@ -39,6 +39,11 @@ function sourceHash(candidate: Candidate) {
   return createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 }
 
+function isWriteConflict(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) return error.code === 'P2034';
+  return Boolean(error && typeof error === 'object' && (error as { cause?: { kind?: string } }).cause?.kind === 'TransactionWriteConflict');
+}
+
 function normalizedEmail(value: string | null) {
   return value?.trim().toLowerCase() || null;
 }
@@ -124,6 +129,15 @@ export class QuickManageSyncService {
 
   async preview(context: CompanyAuthorization) {
     const snapshot = await fetchQuickManageFleetSnapshot(this.client);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try { return await this.persistPreview(context, snapshot); } catch (error) {
+        if (!isWriteConflict(error) || attempt === 4) throw error;
+      }
+    }
+    throw new QuickManageSyncValidationError('QuickManage sync preview could not acquire a safe lock.');
+  }
+
+  private async persistPreview(context: CompanyAuthorization, snapshot: Awaited<ReturnType<typeof fetchQuickManageFleetSnapshot>>) {
     return this.database.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quickmanage-sync:${context.companyId}`}))`;
       const rows = await this.classify(tx, context.companyId, snapshot);
@@ -166,11 +180,11 @@ export class QuickManageSyncService {
   }
 
   async apply(batchId: string, context: CompanyAuthorization) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         return await this.applyOnce(batchId, context);
       } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2034' || attempt === 2) throw error;
+        if (!isWriteConflict(error) || attempt === 4) throw error;
       }
     }
     throw new QuickManageSyncValidationError('QuickManage sync could not acquire a safe apply lock.');

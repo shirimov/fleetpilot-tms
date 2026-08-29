@@ -34,6 +34,7 @@ enum ExternalSyncResourceType {
   TRAILER
   DRIVER
   CUSTOMER
+  TRIP
 }
 
 enum ExternalSyncDisposition {
@@ -673,6 +674,7 @@ model ExternalSourceLink {
   trailerId       String?
   driverId        String?
   customerId      String?
+  loadId          String?
   sourceCreatedAt DateTime?
   sourceUpdatedAt DateTime?
   firstSyncedAt   DateTime                 @default(now())
@@ -685,6 +687,7 @@ model ExternalSourceLink {
   trailer         Trailer?                 @relation(fields: [trailerId], references: [id], onDelete: Restrict)
   driver          Driver?                  @relation(fields: [driverId], references: [id], onDelete: Restrict)
   customer        Customer?                @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  load            Load?                    @relation(fields: [loadId], references: [id], onDelete: Restrict)
   syncRows        ExternalSyncRow[]
 
   @@unique([companyId, provider, resourceType, externalId])
@@ -692,6 +695,7 @@ model ExternalSourceLink {
   @@unique([companyId, provider, resourceType, trailerId])
   @@unique([companyId, provider, resourceType, driverId])
   @@unique([companyId, provider, resourceType, customerId])
+  @@unique([companyId, provider, resourceType, loadId])
   @@index([companyId, resourceType, lastSyncedAt])
 }
 
@@ -727,6 +731,7 @@ model Load {
   settlement            Settlement?
   financialAllocations  FinancialAllocation[]
   financialExpectations FinancialExpectation[]
+  externalSourceLinks   ExternalSourceLink[]
 
   @@index([companyId, status, pickupDate])
   @@index([companyId, truckId, pickupDate, deliveryDate])

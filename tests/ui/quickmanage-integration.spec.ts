@@ -61,3 +61,26 @@ test('Administrator previews and explicitly applies safe fleet records', async (
   await expect(page.getByRole('button', { name: 'Applied' })).toBeDisabled();
   expect(applyCalls).toBe(1);
 });
+
+test('Administrator reviews Trip conflicts before explicitly applying safe Loads', async ({ page }) => {
+  await page.route('**/api/auth/company', (route) => route.fulfill({ json: {
+    user: { displayName: 'Alpha Owner', email: 'owner@example.test', image: null }, activeCompanyId: 'company-alpha', companies: [{ id: 'company-alpha', name: 'Alpha', role: 'OWNER' }],
+  } }));
+  await page.route('**/api/integrations/quickmanage', (route) => route.fulfill({ json: { configured: true } }));
+  const preview = { id: 'trip-sync-1', status: 'PREVIEWED', totalRows: 2, newRows: 1, matchedRows: 0, unchangedRows: 0, conflictRows: 0, invalidRows: 1, createdAt: '2026-08-29T10:00:00Z', appliedAt: null, rows: [
+    { id: 'row-1', externalId: 'quickmanage-trip-1', resourceType: 'TRIP', disposition: 'NEW', message: 'New Trip.' },
+    { id: 'row-2', externalId: 'quickmanage-trip-2', resourceType: 'TRIP', disposition: 'INVALID', message: 'Trip references an unsynchronized QuickManage driver.' },
+  ] };
+  let applyCalls = 0;
+  await page.route('**/api/integrations/quickmanage/sync/trips', (route) => route.fulfill({ json: preview }));
+  await page.route('**/api/integrations/quickmanage/sync/trips/trip-sync-1/apply', (route) => { applyCalls += 1; return route.fulfill({ json: { ...preview, status: 'APPLIED', appliedAt: '2026-08-29T10:01:00Z' } }); });
+  page.on('dialog', (dialog) => void dialog.accept());
+  await page.goto('/administration/integrations/quickmanage');
+  await page.getByRole('button', { name: 'Preview Trips / Loads' }).click();
+  await expect(page.getByRole('heading', { name: 'Trip / Load sync preview' })).toBeVisible();
+  await expect(page.getByText('quickmanage-trip-2')).toBeVisible();
+  await expect(page.getByText('Trip references an unsynchronized QuickManage driver.')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply Safe Trips' }).click();
+  await expect(page.getByRole('button', { name: 'Applied' }).last()).toBeDisabled();
+  expect(applyCalls).toBe(1);
+});
