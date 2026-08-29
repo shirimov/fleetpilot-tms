@@ -28,7 +28,19 @@ const minorOrNull = (value: unknown) => {
   const [whole, fraction = ''] = normalized.split('.');
   return (BigInt(whole) * BigInt(100)) + BigInt(fraction.padEnd(2, '0'));
 };
-const jsonMinor = (value: bigint | null) => value === null ? null : value.toString();
+const milesOrNull = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null;
+  const normalized = String(value).trim().replaceAll(',', '');
+  if (!/^\d+(?:\.\d{1,3})?$/.test(normalized)) throw new FinancialValidationError('Miles must be non-negative with at most three decimal places.');
+  const [whole, fraction = ''] = normalized.split('.');
+  return BigInt(whole) * BigInt(1000) + BigInt(fraction.padEnd(3, '0'));
+};
+const contractInput = (contract: {
+  type: 'PER_MILE' | 'PERCENTAGE' | 'FLAT' | 'HOURLY' | 'OTHER'; rateMinorPerMile: bigint | null;
+  percentageBasisPoints: number | null; percentageBase: string | null; appliesToTeam: boolean;
+  teamAllocationStrategy: string | null; teamAllocationPercent: number | null; mileagePolicy: string;
+  deadheadPolicy: string; deadheadRateMinorPerMile: bigint | null; roundingRule: string; verificationStatus: string;
+} | null) => contract && ({ ...contract });
 
 export class PayrollPreviewService {
   constructor(
@@ -92,11 +104,17 @@ export class PayrollPreviewService {
     const percentageBasisPoints = type === 'PERCENTAGE' ? Math.round(Number(input.percentage) * 100) : null;
     if (percentageBasisPoints !== null && (!Number.isInteger(percentageBasisPoints) || percentageBasisPoints < 0 || percentageBasisPoints > 10000)) throw new FinancialValidationError('Percentage must be between 0 and 100.');
     const percentageBase = type === 'PERCENTAGE' && ['GROSS_REVENUE', 'LINEHAUL', 'TRIP_RATE', 'NET_AFTER_SPECIFIC_CHARGES', 'UNKNOWN'].includes(String(input.percentageBase)) ? String(input.percentageBase) as 'GROSS_REVENUE' | 'LINEHAUL' | 'TRIP_RATE' | 'NET_AFTER_SPECIFIC_CHARGES' | 'UNKNOWN' : null;
+    const strategy = ['SPLIT_50_50', 'FULL_MILES_EACH', 'PRIMARY_SECONDARY', 'CUSTOM_PERCENTAGE', 'CUSTOM_MILES', 'UNKNOWN'].includes(String(input.teamAllocationStrategy)) ? String(input.teamAllocationStrategy) as never : 'UNKNOWN';
+    const teamAllocationPercent = input.teamAllocationPercent === undefined || input.teamAllocationPercent === '' ? null : Math.round(Number(input.teamAllocationPercent) * 100);
+    if (teamAllocationPercent !== null && (!Number.isInteger(teamAllocationPercent) || teamAllocationPercent < 0 || teamAllocationPercent > 10000)) throw new FinancialValidationError('Team allocation percentage must be between 0 and 100.');
+    const verificationStatus = ['UNVERIFIED', 'OBSERVED', 'ADMIN_VERIFIED'].includes(String(input.verificationStatus)) ? String(input.verificationStatus) as never : 'UNVERIFIED';
     return this.database.payrollPayContract.create({ data: {
       companyId: context.companyId, participantType, driverId, contractorPartyId, type,
       rateMinorPerMile, percentageBasisPoints, percentageBase,
-      appliesToTeam: input.appliesToTeam === true,
-      teamAllocationStrategy: input.appliesToTeam === true ? 'UNKNOWN' : null,
+      appliesToTeam: input.appliesToTeam === true || input.appliesToTeam === 'true' || input.appliesToTeam === 'on',
+      teamAllocationStrategy: input.appliesToTeam === true || input.appliesToTeam === 'true' || input.appliesToTeam === 'on' ? strategy : null,
+      teamAllocationPercent,
+      verificationStatus,
       effectiveFrom: dateOnly(input.effectiveFrom, 'Effective date'),
     } });
   }
@@ -133,8 +151,8 @@ export class PayrollPreviewService {
     if (contractorPartyId && !await this.database.financialParty.findFirst({ where: { id: contractorPartyId, companyId: context.companyId, type: 'OWNER_OPERATOR' } })) throw new FinancialValidationError('Contractor is outside the active company.');
     return this.database.payrollExternalReference.upsert({
       where: driverId ? { periodId_driverId_provider: { periodId: period.id, driverId, provider: text(input.provider, 'Provider', 50) } } : { periodId_contractorPartyId_provider: { periodId: period.id, contractorPartyId: contractorPartyId!, provider: text(input.provider, 'Provider', 50) } },
-      create: { companyId: context.companyId, periodId: period.id, participantType, driverId, contractorPartyId, provider: text(input.provider, 'Provider', 50), externalStatementRef: optionalText(input.externalStatementRef), externalPeriod: optionalText(input.externalPeriod), earningMinor: minorOrNull(input.earning), reimbursementMinor: minorOrNull(input.reimbursement), fuelMinor: minorOrNull(input.fuel), tollMinor: minorOrNull(input.toll), deductionsMinor: minorOrNull(input.deductions), payoutMinor: minorOrNull(input.payout), currency: normalizeCurrency(input.currency ?? 'USD'), notes: optionalText(input.notes, 2000), createdByUserId: context.user.id },
-      update: { externalStatementRef: optionalText(input.externalStatementRef), externalPeriod: optionalText(input.externalPeriod), earningMinor: minorOrNull(input.earning), reimbursementMinor: minorOrNull(input.reimbursement), fuelMinor: minorOrNull(input.fuel), tollMinor: minorOrNull(input.toll), deductionsMinor: minorOrNull(input.deductions), payoutMinor: minorOrNull(input.payout), notes: optionalText(input.notes, 2000) },
+      create: { companyId: context.companyId, periodId: period.id, participantType, driverId, contractorPartyId, provider: text(input.provider, 'Provider', 50), externalStatementRef: optionalText(input.externalStatementRef), externalPeriod: optionalText(input.externalPeriod), earningMinor: minorOrNull(input.earning), reimbursementMinor: minorOrNull(input.reimbursement), advancesMinor: minorOrNull(input.advances), fuelMinor: minorOrNull(input.fuel), tollMinor: minorOrNull(input.toll), deductionsMinor: minorOrNull(input.deductions), recurringMinor: minorOrNull(input.recurring), escrowMinor: minorOrNull(input.escrow), payoutMinor: minorOrNull(input.payout), milesThousandths: milesOrNull(input.miles), rateMinorPerMile: minorOrNull(input.ratePerMile), currency: normalizeCurrency(input.currency ?? 'USD'), notes: optionalText(input.notes, 2000), createdByUserId: context.user.id },
+      update: { externalStatementRef: optionalText(input.externalStatementRef), externalPeriod: optionalText(input.externalPeriod), earningMinor: minorOrNull(input.earning), reimbursementMinor: minorOrNull(input.reimbursement), advancesMinor: minorOrNull(input.advances), fuelMinor: minorOrNull(input.fuel), tollMinor: minorOrNull(input.toll), deductionsMinor: minorOrNull(input.deductions), recurringMinor: minorOrNull(input.recurring), escrowMinor: minorOrNull(input.escrow), payoutMinor: minorOrNull(input.payout), milesThousandths: milesOrNull(input.miles), rateMinorPerMile: minorOrNull(input.ratePerMile), notes: optionalText(input.notes, 2000) },
     });
   }
 
@@ -166,12 +184,12 @@ export class PayrollPreviewService {
       const reference = driver.payrollReferences[0] ?? null;
       const calculation = calculatePayrollPreview({
         participantType: 'COMPANY_DRIVER',
-        contract: contract && { type: contract.type, rateMinorPerMile: contract.rateMinorPerMile, percentageBasisPoints: contract.percentageBasisPoints, percentageBase: contract.percentageBase, appliesToTeam: contract.appliesToTeam, teamAllocationStrategy: contract.teamAllocationStrategy },
+        contract: contractInput(contract),
         trips: driver.loads.map((load) => ({ id: load.id, reference: load.referenceNum ?? load.loadNumber, miles: load.miles === null ? null : String(load.miles), mileageSource: 'LOAD_MILES' })),
         adjustments: driver.payrollAdjustments.map((item) => ({ id: item.id, category: item.category, direction: item.direction, amountMinor: item.amountMinor, description: item.description })),
-        externalReference: reference && { earningMinor: reference.earningMinor, reimbursementMinor: reference.reimbursementMinor, fuelMinor: reference.fuelMinor, tollMinor: reference.tollMinor, deductionsMinor: reference.deductionsMinor, payoutMinor: reference.payoutMinor },
+        externalReference: reference && { earningMinor: reference.earningMinor, reimbursementMinor: reference.reimbursementMinor, advancesMinor: reference.advancesMinor, fuelMinor: reference.fuelMinor, tollMinor: reference.tollMinor, deductionsMinor: reference.deductionsMinor, recurringMinor: reference.recurringMinor, escrowMinor: reference.escrowMinor, payoutMinor: reference.payoutMinor, milesThousandths: reference.milesThousandths, rateMinorPerMile: reference.rateMinorPerMile },
       });
-      return { id: driver.id, name: `${driver.firstName} ${driver.lastName}`, truck: driver.truck, contract: contract ? { ...contract, rateMinorPerMile: jsonMinor(contract.rateMinorPerMile) } : null, reference: reference ? { ...reference, earningMinor: jsonMinor(reference.earningMinor), reimbursementMinor: jsonMinor(reference.reimbursementMinor), fuelMinor: jsonMinor(reference.fuelMinor), tollMinor: jsonMinor(reference.tollMinor), deductionsMinor: jsonMinor(reference.deductionsMinor), payoutMinor: jsonMinor(reference.payoutMinor) } : null, calculation: JSON.parse(JSON.stringify(calculation, (_, value) => typeof value === 'bigint' ? value.toString() : value)) };
+      return { id: driver.id, name: `${driver.firstName} ${driver.lastName}`, truck: driver.truck, contract: contract ? JSON.parse(JSON.stringify(contract, (_, value) => typeof value === 'bigint' ? value.toString() : value)) : null, reference: reference ? JSON.parse(JSON.stringify(reference, (_, value) => typeof value === 'bigint' ? value.toString() : value)) : null, calculation: JSON.parse(JSON.stringify(calculation, (_, value) => typeof value === 'bigint' ? value.toString() : value)) };
     });
     const contractors = await this.database.financialParty.findMany({
       where: { companyId: context.companyId, type: 'OWNER_OPERATOR', isActive: true },
@@ -187,12 +205,12 @@ export class PayrollPreviewService {
       const reference = contractor.payrollReferences[0] ?? null;
       const calculation = calculatePayrollPreview({
         participantType: 'CONTRACTOR',
-        contract: contract && { type: contract.type, rateMinorPerMile: contract.rateMinorPerMile, percentageBasisPoints: contract.percentageBasisPoints, percentageBase: contract.percentageBase, appliesToTeam: contract.appliesToTeam, teamAllocationStrategy: contract.teamAllocationStrategy },
+        contract: contractInput(contract),
         trips: [],
         adjustments: contractor.payrollAdjustments.map((item) => ({ id: item.id, category: item.category, direction: item.direction, amountMinor: item.amountMinor, description: item.description })),
-        externalReference: reference && { earningMinor: reference.earningMinor, reimbursementMinor: reference.reimbursementMinor, fuelMinor: reference.fuelMinor, tollMinor: reference.tollMinor, deductionsMinor: reference.deductionsMinor, payoutMinor: reference.payoutMinor },
+        externalReference: reference && { earningMinor: reference.earningMinor, reimbursementMinor: reference.reimbursementMinor, advancesMinor: reference.advancesMinor, fuelMinor: reference.fuelMinor, tollMinor: reference.tollMinor, deductionsMinor: reference.deductionsMinor, recurringMinor: reference.recurringMinor, escrowMinor: reference.escrowMinor, payoutMinor: reference.payoutMinor, milesThousandths: reference.milesThousandths, rateMinorPerMile: reference.rateMinorPerMile },
       });
-      return { id: contractor.id, name: contractor.name, truck: null, contract: contract ? { ...contract, rateMinorPerMile: jsonMinor(contract.rateMinorPerMile) } : null, reference: reference ? { ...reference, earningMinor: jsonMinor(reference.earningMinor), reimbursementMinor: jsonMinor(reference.reimbursementMinor), fuelMinor: jsonMinor(reference.fuelMinor), tollMinor: jsonMinor(reference.tollMinor), deductionsMinor: jsonMinor(reference.deductionsMinor), payoutMinor: jsonMinor(reference.payoutMinor) } : null, calculation: JSON.parse(JSON.stringify(calculation, (_, value) => typeof value === 'bigint' ? value.toString() : value)) };
+      return { id: contractor.id, name: contractor.name, truck: null, contract: contract ? JSON.parse(JSON.stringify(contract, (_, value) => typeof value === 'bigint' ? value.toString() : value)) : null, reference: reference ? JSON.parse(JSON.stringify(reference, (_, value) => typeof value === 'bigint' ? value.toString() : value)) : null, calculation: JSON.parse(JSON.stringify(calculation, (_, value) => typeof value === 'bigint' ? value.toString() : value)) };
     });
     const previews = [...driverPreviews, ...contractorPreviews];
     const totals = previews.reduce((acc, preview) => {
