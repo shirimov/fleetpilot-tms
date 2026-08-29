@@ -15,7 +15,7 @@ test('Administrator can inspect and test QuickManage without exposing secrets', 
   });
 
   await page.goto('/administration/integrations/quickmanage');
-  await expect(page.getByRole('heading', { name: 'QuickManage' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'QuickManage', exact: true })).toBeVisible();
   await expect(page.getByText('Configured', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Test Connection' }).click();
   await expect(page.getByText('Connection successful. QuickManage returned a valid access token.')).toBeVisible();
@@ -83,4 +83,41 @@ test('Administrator reviews Trip conflicts before explicitly applying safe Loads
   await page.getByRole('button', { name: 'Apply Safe Trips' }).click();
   await expect(page.getByRole('button', { name: 'Applied' }).last()).toBeDisabled();
   expect(applyCalls).toBe(1);
+});
+
+test('Administrator explores live QuickManage records, relationships and report content without credentials', async ({ page }) => {
+  await page.route('**/api/auth/company', (route) => route.fulfill({ json: {
+    user: { displayName: 'Alpha Owner', email: 'owner@example.test', image: null }, activeCompanyId: 'company-alpha', companies: [{ id: 'company-alpha', name: 'Alpha', role: 'OWNER' }],
+  } }));
+  await page.route('**/api/integrations/quickmanage', (route) => route.fulfill({ json: { configured: true } }));
+  const explorerRequests: string[] = [];
+  await page.route('**/api/integrations/quickmanage/explorer?**', async (route) => {
+    const url = new URL(route.request().url()); explorerRequests.push(url.search);
+    const resource = url.searchParams.get('resource');
+    if (resource === 'trips') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:00Z', total: 1, page: 0, pageSize: 20, links: {}, items: [{ id: '11111111-1111-4111-8111-111111111111', trip_num: 42, status: 'delivered', stops: [{ assigned_truck: { id: '22222222-2222-4222-8222-222222222222', number: '125' }, assigned_drivers: [], assigned_trailer: null, assigned_customer: null }] }] } });
+    if (resource === 'trucks') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:01Z', total: 1, page: 0, pageSize: 20, links: { '22222222-2222-4222-8222-222222222222': { linked: true, entityId: 'fleet-truck' } }, items: [{ id: '22222222-2222-4222-8222-222222222222', unit: '125', status: 'active' }] } });
+    if (resource === 'reports') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:02Z', page: 0, pageSize: 50, hasMore: false, links: {}, items: [{ id: '33333333-3333-4333-8333-333333333333', type: 'trip', number: 7 }] } });
+    if (resource === 'report-content') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:03Z', links: {}, item: { header: ['Trip report'], content: { columns: [{ cid: 0, key: 'amount' }], rows: [{ 0: 12.5 }] } } } });
+    return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:00Z', total: 0, page: 0, pageSize: 20, links: {}, items: [] } });
+  });
+
+  await page.goto('/administration/integrations/quickmanage');
+  await expect(page.getByRole('heading', { name: 'QuickManage Data Explorer' })).toBeVisible();
+  await page.getByRole('button', { name: 'Trips / Loads', exact: true }).click();
+  await page.getByRole('button', { name: 'Fetch live data' }).click();
+  await expect(page.getByRole('heading', { name: '42', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'View details' }).click();
+  await page.getByRole('button', { name: 'Truck', exact: true }).click();
+  await expect(page.getByText('Linked to FleetPilot')).toBeVisible();
+  expect(explorerRequests.some((query) => query.includes('resource=trucks') && query.includes('field=id'))).toBe(true);
+  await page.getByRole('button', { name: 'View details' }).click();
+  await page.getByRole('button', { name: 'Find related Trips' }).click();
+  expect(explorerRequests.some((query) => query.includes('resource=trips') && query.includes('field=assigned_truck_ids'))).toBe(true);
+
+  await page.getByRole('button', { name: 'Reports' }).click();
+  await page.getByRole('button', { name: 'Fetch live data' }).click();
+  await page.getByRole('button', { name: 'View details' }).click();
+  await expect(page.getByRole('heading', { name: 'Report line items' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Report line items' }).locator('..').getByText('12.5')).toBeVisible();
+  expect(await page.locator('body').innerText()).not.toMatch(/access_token|client_secret|Bearer secret/);
 });
