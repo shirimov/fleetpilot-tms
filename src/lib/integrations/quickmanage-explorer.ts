@@ -2,6 +2,11 @@ import type { ExternalSyncResourceType, PrismaClient } from '@prisma/client';
 import type { CompanyAuthorization } from '@/lib/auth/authorization';
 import { prisma } from '@/lib/prisma';
 import { QuickManageError, type QuickManageClient, quickManageClient } from './quickmanage-client';
+import {
+  auditQuickManageReportContent,
+  QUICKMANAGE_FINANCIAL_REPORT_DEFINITIONS,
+  type QuickManageReportType,
+} from './quickmanage-financial-audit';
 
 export const QUICKMANAGE_EXPLORER_RESOURCES = [
   'trucks', 'trailers', 'drivers', 'customers', 'trips', 'users', 'reports', 'report-content',
@@ -19,12 +24,7 @@ export type QuickManageExplorerInput = {
   id?: string;
 };
 
-export const QUICKMANAGE_REPORT_TYPES = [
-  'trip', 'fuel', 'toll', 'statement', 'receivable', '1099', 'adjustment', 'maintenance',
-  'inspection', 'account-resource-employee', 'account-resource-site-user',
-  'account-resource-equipment', 'account-resource-address', 'account-resource-vendor',
-  'account-resource-customer', 'account-resource-attachment', 'driver-perf',
-] as const;
+export const QUICKMANAGE_REPORT_TYPES = QUICKMANAGE_FINANCIAL_REPORT_DEFINITIONS.map((entry) => entry.type);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const searchPaths: Partial<Record<QuickManageExplorerResource, string>> = {
@@ -130,7 +130,7 @@ export class QuickManageExplorerService {
 
   private async reports(context: CompanyAuthorization, input: QuickManageExplorerInput, page: number) {
     void context;
-    if (!input.reportType || !QUICKMANAGE_REPORT_TYPES.includes(input.reportType as typeof QUICKMANAGE_REPORT_TYPES[number])) {
+    if (!input.reportType || !QUICKMANAGE_REPORT_TYPES.includes(input.reportType as QuickManageReportType)) {
       throw new QuickManageError('MALFORMED_RESPONSE', 'Select a documented QuickManage report type.');
     }
     const subtype = input.reportSubtype?.trim() || 'ignore';
@@ -146,13 +146,39 @@ export class QuickManageExplorerService {
   private async reportContent(context: CompanyAuthorization, input: QuickManageExplorerInput) {
     void context;
     if (!input.id) throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage report ID is required.');
+    if (!input.reportType || !QUICKMANAGE_REPORT_TYPES.includes(input.reportType as QuickManageReportType)) {
+      throw new QuickManageError('MALFORMED_RESPONSE', 'A documented QuickManage report type is required for financial audit.');
+    }
     const payload = object(await this.client.request(`/x/reports/${encodeURIComponent(input.id)}/content`));
     const data = object(payload?.data);
     const content = object(data?.content);
     if (!data || !content || !Array.isArray(content.columns) || !Array.isArray(content.rows)) {
       throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned invalid report content.');
     }
-    return { resource: input.resource, fetchedAt: this.now().toISOString(), item: sanitizeQuickManageData(data), links: {} };
+    const audit = auditQuickManageReportContent(input.reportType as QuickManageReportType, data);
+    const links = await this.reportRelationshipLinks(context.companyId, audit.relationshipReferences);
+    return { resource: input.resource, fetchedAt: this.now().toISOString(), item: sanitizeQuickManageData(data), audit, links };
+  }
+
+  private async reportRelationshipLinks(
+    companyId: string,
+    references: Array<{ resource: string; externalId: string }>,
+  ) {
+    const supported = references.filter((reference): reference is { resource: ExternalSyncResourceType; externalId: string } =>
+      ['TRUCK', 'TRAILER', 'DRIVER', 'CUSTOMER', 'TRIP'].includes(reference.resource));
+    if (!supported.length) return {};
+    const links = await this.database.externalSourceLink.findMany({
+      where: {
+        companyId,
+        provider: 'QUICKMANAGE',
+        OR: supported.map((reference) => ({ resourceType: reference.resource, externalId: reference.externalId })),
+      },
+      select: { resourceType: true, externalId: true, truckId: true, trailerId: true, driverId: true, customerId: true, loadId: true },
+    });
+    return Object.fromEntries(links.map((link) => [`${link.resourceType}:${link.externalId}`, {
+      linked: true,
+      entityId: link.truckId ?? link.trailerId ?? link.driverId ?? link.customerId ?? link.loadId,
+    }]));
   }
 
   private async links(companyId: string, resource: QuickManageExplorerResource, items: JsonObject[]) {

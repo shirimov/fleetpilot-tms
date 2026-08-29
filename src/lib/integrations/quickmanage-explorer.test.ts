@@ -47,10 +47,27 @@ test('report list and content use only documented read endpoints and validate co
     return { data: { header: [], content: { columns: [{ cid: 0, key: 'amount' }], rows: [{ 0: 125.5 }] } } };
   } });
   const list = await service.explore(context, { resource: 'reports', reportType: 'trip' });
-  const content = await service.explore(context, { resource: 'report-content', id: '11111111-1111-4111-8111-111111111111' });
+  const content = await service.explore(context, { resource: 'report-content', reportType: 'trip', id: '11111111-1111-4111-8111-111111111111' });
   assert.deepEqual(paths, ['/x/reports?type=trip&subtype=ignore&page=0', '/x/reports/11111111-1111-4111-8111-111111111111/content']);
   assert.equal((list as { hasMore: boolean }).hasMore, false);
   assert.deepEqual(((content as { item: { content: { rows: unknown[] } } }).item).content.rows, [{ 0: 125.5 }]);
+  assert.equal((content as { audit: { interpretation: string } }).audit.interpretation, 'PARTIALLY_VERIFIED');
+});
+
+test('report content requires its documented type before any provider read', async () => {
+  let contacted = false;
+  const service = new QuickManageExplorerService(database(), { request: async () => { contacted = true; return {}; } });
+  await assert.rejects(service.explore(context, { resource: 'report-content', id: '11111111-1111-4111-8111-111111111111' }), /report type is required/);
+  assert.equal(contacted, false);
+});
+
+test('report relationship lookup is company scoped and never name matched', async () => {
+  let where: unknown;
+  const db = { externalSourceLink: { findMany: async (input: { where: unknown }) => { where = input.where; return [{ resourceType: 'TRIP', externalId: 'trip-external', loadId: 'load-local', truckId: null, trailerId: null, driverId: null, customerId: null }]; } } } as unknown as PrismaClient;
+  const service = new QuickManageExplorerService(db, { request: async () => ({ data: { content: { columns: [{ cid: 0, key: { name: 'Trip ID', data_type: 'any' }, metadata: {} }, { cid: 1, key: { name: 'Driver Name', data_type: 'any' }, metadata: {} }], rows: [{ 0: 'trip-external', 1: 'Ambiguous Name' }] } } }) });
+  const result = await service.explore(context, { resource: 'report-content', reportType: 'trip', id: '11111111-1111-4111-8111-111111111111' });
+  assert.deepEqual(where, { companyId: 'company-a', provider: 'QUICKMANAGE', OR: [{ resourceType: 'TRIP', externalId: 'trip-external' }] });
+  assert.deepEqual((result as { links: unknown }).links, { 'TRIP:trip-external': { linked: true, entityId: 'load-local' } });
 });
 
 test('provider page-size anomaly is disclosed instead of silently treated as exact', async () => {
