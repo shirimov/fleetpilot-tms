@@ -2,6 +2,53 @@
 
 Source: the password-protected QuickManage Apidog project supplied for FleetPilot. Paths below are copied from that official contract. No undocumented endpoint is used.
 
+## Phase 3: complete read-only inventory and live explorer
+
+The complete official project navigation was re-audited on 2026-08-29. Its
+documented read capabilities are limited to the following. Search operations
+use `POST` but are query-only; no staging/import/update operation is used.
+
+| Resource | Documented read operation | Detail behavior |
+| --- | --- | --- |
+| Trips | `POST /x/trips/search` | exact `id:eq` search; no dedicated GET |
+| Drivers | `POST /x/drivers/search` | `GET /x/drivers/{id}` documented; live IDs return 404 |
+| Customers | `POST /x/customers/search` | `GET /x/customers/{id}` works live |
+| Trucks | `POST /x/trucks/search` | `GET /x/trucks/{id}` documented; live IDs return 404 |
+| Trailers | `POST /x/trailers/search` | `GET /x/trailers/{id}` documented; live IDs return 404 |
+| Users | `POST /x/users/search` | exact `id:eq` search; no dedicated GET |
+| Files | `GET /x/files/{id}?type=other|bol|rate-confirmation` | download contract is insufficiently specified; metadata only in FleetPilot |
+| Reports | `GET /x/reports?type=&subtype=&page=` | `GET /x/reports/{id}/content` |
+| Webhooks | `GET /x/webhook/subscriptions` | `GET /x/webhook/subscriptions/{id}`; operational metadata only, not exposed in the business-data explorer |
+
+No dedicated official read endpoint exists in this project for settlements,
+payroll, expenses, deductions, advances, reimbursements, bills, invoices,
+payments, payables, vendors, maintenance work orders, insurance, compliance,
+factoring, teams, locations, or audit history. Some of those concepts may occur
+inside an already-generated report, but FleetPilot must not invent a resource
+contract from report column names.
+
+Users search accepts `{ query, filters, page, page_size }`. Documented filters
+are `id:eq`; `first_name`, `last_name`, `status`, and `role` with `match`; and
+`email` with `match` or `match_phrase`. Its list schema is `id`, names, status,
+email, phone number, and role. Live Alpha returned HTTP 200, count 67, and
+honored a one-record page. The endpoint documents no date filters, timestamps,
+inactive-history flag, or rate limit.
+
+All 18 documented report types were queried once at page zero with subtype
+`ignore`. Every request returned HTTP 200. One `trip` report was available and
+all other types returned zero records. The available report content returned
+HTTP 200 with 15 column definitions and 7 rows. The live response nests data as
+`data: { header, content: { columns, rows } }`; this differs from a simplistic
+`data.table` interpretation. Report metadata includes `created_at` and
+`updated_at`; reports are 50 per zero-based page with `has_more`, but the API
+does not provide a total count. The official subtype parameter is an arbitrary
+string and the metadata schema does not identify an enum of valid subtypes.
+
+The Phase 3 explorer performs on-demand server-side reads only, sends one
+allow-listed filter, validates and sanitizes responses, company-scopes existing
+FleetPilot link lookup, and returns `Cache-Control: private, no-store`. It has
+no database-backed response cache and creates no mirror or historical copy.
+
 ## Phase 2: Trips / Loads
 
 ### Verified official Trip contract

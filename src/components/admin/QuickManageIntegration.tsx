@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import QuickManageExplorer from './QuickManageExplorer';
 
 type Status = { configured: boolean };
 type ResourceType = 'TRUCK' | 'TRAILER' | 'DRIVER' | 'CUSTOMER' | 'TRIP';
@@ -237,6 +238,7 @@ export default function QuickManageIntegration() {
           <p className="text-xs text-gray-500">Webhook processing remains disabled because QuickManage does not document the delivery signature algorithm, payload, retry, duplicate, or ordering contract.</p>
         </div>
       )}
+      <QuickManageExplorer />
     </section>
   );
 }
