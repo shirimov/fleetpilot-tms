@@ -6,7 +6,7 @@ export type PayrollPreviewInput = {
   participantType: 'COMPANY_DRIVER' | 'CONTRACTOR';
   contract: null | { type: 'PER_MILE' | 'PERCENTAGE' | 'FLAT' | 'HOURLY' | 'OTHER'; rateMinorPerMile: bigint | null; percentageBasisPoints: number | null; percentageBase: string | null; appliesToTeam: boolean; teamAllocationStrategy: string | null; teamAllocationPercent?: number | null; mileagePolicy?: string; deadheadPolicy?: string; deadheadRateMinorPerMile?: bigint | null; roundingRule?: string; verificationStatus?: string };
   trips: PayrollTripInput[]; adjustments: PayrollAdjustmentInput[];
-  externalReference?: null | { earningMinor: bigint | null; reimbursementMinor: bigint | null; advancesMinor?: bigint | null; fuelMinor: bigint | null; tollMinor: bigint | null; deductionsMinor: bigint | null; recurringMinor?: bigint | null; escrowMinor?: bigint | null; payoutMinor: bigint | null; milesThousandths?: bigint | null; rateMinorPerMile?: bigint | null };
+  externalReference?: null | { grossRevenueMinor?: bigint | null; earningMinor: bigint | null; reimbursementMinor: bigint | null; advancesMinor?: bigint | null; fuelMinor: bigint | null; tollMinor: bigint | null; deductionsMinor: bigint | null; recurringMinor?: bigint | null; escrowMinor?: bigint | null; payoutMinor: bigint | null; milesThousandths?: bigint | null; rateMinorPerMile?: bigint | null };
 };
 export function mileageThousandths(value: string): bigint | null {
   if (!/^(0|[1-9]\d*)(?:\.\d{1,3})?$/.test(value)) return null;
@@ -77,6 +77,12 @@ export function calculatePayrollPreview(input: PayrollPreviewInput) {
   });
   if (!input.trips.length) warnings.push('No eligible delivered loads were found for this period.');
   warnings.push('Mileage source is Load.miles; its operational meaning remains unverified for final payroll.');
+  const percentageBaseMinor = contract?.type === 'PERCENTAGE' && contract.percentageBase
+    ? input.trips.reduce<bigint | null>((sum, trip) => {
+      const value = tripPercentageBase(trip, contract.percentageBase);
+      return sum === null || value === null ? null : sum + value;
+    }, BigInt(0))
+    : null;
   const baseEarningMinor = tripBreakdown.every((trip) => trip.earningMinor !== null) && contract && ['PER_MILE', 'PERCENTAGE'].includes(contract.type) ? tripBreakdown.reduce((sum, trip) => sum + (trip.earningMinor ?? BigInt(0)), BigInt(0)) : null;
   const components = componentMap(input.adjustments);
   for (const [name, component] of Object.entries(components)) if (component.availability === 'NOT_AVAILABLE') warnings.push(`${name} data is not available; it was not treated as a verified zero.`);
@@ -87,5 +93,5 @@ export function calculatePayrollPreview(input: PayrollPreviewInput) {
   const payoutDifferenceMinor = calculatedPayoutMinor !== null && externalPayoutMinor !== null ? calculatedPayoutMinor - externalPayoutMinor : null;
   const differenceTypes = classifyPayrollDifferences({ eligibleMilesThousandths, baseEarningMinor, components, payoutDifferenceMinor }, input.externalReference);
   const readiness: PayrollReadiness = blockers.length ? 'BLOCKED' : externalPayoutMinor !== null ? payoutDifferenceMinor === BigInt(0) && differenceTypes.length === 0 ? 'RECONCILED' : 'UNRECONCILED' : warnings.length ? 'CALCULATED_WITH_WARNINGS' : 'INCOMPLETE';
-  return { readiness, blockers, warnings, mileagePolicy: contract?.mileagePolicy ?? 'LOAD_MILES', mileageSource: 'Load.miles', eligibleMilesThousandths, excludedMilesThousandths, manualOverrideMilesThousandths: null, tripBreakdown, baseEarningMinor, components, creditMinor, debitMinor, calculatedPayoutMinor, externalPayoutMinor, payoutDifferenceMinor, differenceTypes };
+  return { readiness, blockers, warnings, mileagePolicy: contract?.mileagePolicy ?? 'LOAD_MILES', mileageSource: 'Load.miles', appliedRateMinorPerMile: contract?.rateMinorPerMile ?? null, percentageBasisPoints: contract?.percentageBasisPoints ?? null, percentageBase: contract?.percentageBase ?? null, percentageBaseMinor, eligibleMilesThousandths, excludedMilesThousandths, manualOverrideMilesThousandths: null, tripBreakdown, baseEarningMinor, components, creditMinor, debitMinor, calculatedPayoutMinor, externalPayoutMinor, payoutDifferenceMinor, differenceTypes };
 }
