@@ -110,6 +110,9 @@ test('Administrator explores live QuickManage records, relationships and report 
   await page.getByRole('button', { name: 'Truck', exact: true }).click();
   await expect(page.getByText('Linked to FleetPilot')).toBeVisible();
   expect(explorerRequests.some((query) => query.includes('resource=trucks') && query.includes('field=id'))).toBe(true);
+  await page.getByRole('button', { name: 'View details' }).click();
+  await page.getByRole('button', { name: 'Find related Trips' }).click();
+  expect(explorerRequests.some((query) => query.includes('resource=trips') && query.includes('field=assigned_truck_ids'))).toBe(true);
 
   await page.getByRole('button', { name: 'Reports' }).click();
   await page.getByRole('button', { name: 'Fetch live data' }).click();
