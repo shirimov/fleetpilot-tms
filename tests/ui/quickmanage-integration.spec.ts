@@ -97,7 +97,7 @@ test('Administrator explores live QuickManage records, relationships and report 
     if (resource === 'trips') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:00Z', total: 1, page: 0, pageSize: 20, links: {}, items: [{ id: '11111111-1111-4111-8111-111111111111', trip_num: 42, status: 'delivered', stops: [{ assigned_truck: { id: '22222222-2222-4222-8222-222222222222', number: '125' }, assigned_drivers: [], assigned_trailer: null, assigned_customer: null }] }] } });
     if (resource === 'trucks') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:01Z', total: 1, page: 0, pageSize: 20, links: { '22222222-2222-4222-8222-222222222222': { linked: true, entityId: 'fleet-truck' } }, items: [{ id: '22222222-2222-4222-8222-222222222222', unit: '125', status: 'active' }] } });
     if (resource === 'reports') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:02Z', page: 0, pageSize: 50, hasMore: false, links: {}, items: [{ id: '33333333-3333-4333-8333-333333333333', type: 'trip', number: 7 }] } });
-    if (resource === 'report-content') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:03Z', links: {}, item: { header: ['Trip report'], content: { columns: [{ cid: 0, key: 'amount' }], rows: [{ 0: 12.5 }] } } } });
+    if (resource === 'report-content') return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:03Z', links: {}, item: { header: ['Trip report'], content: { columns: [{ cid: 0, key: 'amount' }], rows: [{ 0: 12.5 }] } }, audit: { reportType: 'trip', interpretation: 'PARTIALLY_VERIFIED', rowCount: 1, suppliedSummaryPresent: false, columns: [{ cid: '0', name: 'amount', description: null, systemName: null, groupName: null, dataType: null, currency: null, decimalScale: null, unit: null, aggregation: null, signSemantics: null }], exactTotals: [], relationshipColumns: [], relationshipReferences: [], findings: [{ severity: 'WARNING', code: 'MONETARY_SEMANTICS_UNVERIFIED', message: 'QuickManage did not provide explicit currency/unit/precision metadata.' }] } } });
     return route.fulfill({ json: { resource, fetchedAt: '2026-08-29T12:00:00Z', total: 0, page: 0, pageSize: 20, links: {}, items: [] } });
   });
 
@@ -114,10 +114,13 @@ test('Administrator explores live QuickManage records, relationships and report 
   await page.getByRole('button', { name: 'Find related Trips' }).click();
   expect(explorerRequests.some((query) => query.includes('resource=trips') && query.includes('field=assigned_truck_ids'))).toBe(true);
 
-  await page.getByRole('button', { name: 'Reports' }).click();
+  await page.getByRole('button', { name: 'Financial Reports / Audit' }).click();
   await page.getByRole('button', { name: 'Fetch live data' }).click();
   await page.getByRole('button', { name: 'View details' }).click();
   await expect(page.getByRole('heading', { name: 'Report line items' })).toBeVisible();
+  await expect(page.getByText('QuickManage semantics partially verified')).toBeVisible();
+  await expect(page.getByText('No safe total calculated. Currency, precision, and sum semantics must be explicit.')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Report line items' }).locator('..').getByText('12.5')).toBeVisible();
+  expect(explorerRequests.some((query) => query.includes('resource=report-content') && query.includes('reportType=trip'))).toBe(true);
   expect(await page.locator('body').innerText()).not.toMatch(/access_token|client_secret|Bearer secret/);
 });

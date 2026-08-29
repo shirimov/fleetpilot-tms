@@ -34,7 +34,7 @@ email, phone number, and role. Live Alpha returned HTTP 200, count 67, and
 honored a one-record page. The endpoint documents no date filters, timestamps,
 inactive-history flag, or rate limit.
 
-All 18 documented report types were queried once at page zero with subtype
+All 17 values in the official documented report-type enum were queried once at page zero with subtype
 `ignore`. Every request returned HTTP 200. One `trip` report was available and
 all other types returned zero records. The available report content returned
 HTTP 200 with 15 column definitions and 7 rows. The live response nests data as
