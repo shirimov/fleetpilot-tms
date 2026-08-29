@@ -36,6 +36,57 @@ enum DriverPayType {
   FLAT
 }
 
+enum PayrollPeriodStatus {
+  OPEN
+  ARCHIVED
+}
+
+enum PayrollParticipantType {
+  COMPANY_DRIVER
+  CONTRACTOR
+}
+
+enum PayrollContractType {
+  PER_MILE
+  PERCENTAGE
+  FLAT
+  HOURLY
+  OTHER
+}
+
+enum PayrollPercentageBase {
+  GROSS_REVENUE
+  LINEHAUL
+  TRIP_RATE
+  NET_AFTER_SPECIFIC_CHARGES
+  UNKNOWN
+}
+
+enum PayrollTeamAllocationStrategy {
+  FULL_MILES_EACH
+  SPLIT_50_50
+  ROLE_BASED
+  CUSTOM_ALLOCATION
+  UNKNOWN
+}
+
+enum PayrollAdjustmentCategory {
+  REIMBURSEMENT
+  CREDIT
+  ADVANCE
+  DEDUCTION
+  RECURRING_DEDUCTION
+  FUEL
+  TOLL
+  ESCROW
+  OTHER
+}
+
+enum PayrollAdjustmentDirection {
+  CREDIT
+  DEBIT
+}
+
 enum LoadStatus {
   DRAFT
   PLANNED
@@ -103,19 +154,19 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id                     String                    @id @default(cuid())
+  id                     String                     @id @default(cuid())
   name                   String
   dotNumber              String?
   mcNumber               String?
-  createdAt              DateTime                  @default(now())
-  updatedAt              DateTime                  @updatedAt
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
   trucks                 Truck[]
   loads                  Load[]
   bankAccounts           BankAccount[]
   taskProjects           TaskProject[]
   memberships            CompanyMembership[]
-  activeUsers            User[]                    @relation("ActiveCompany")
-  companyDrivers         Driver[]                  @relation("DriverCompany")
+  activeUsers            User[]                     @relation("ActiveCompany")
+  companyDrivers         Driver[]                   @relation("DriverCompany")
   employees              Employee[]
   employeeSkills         EmployeeSkillDefinition[]
   customers              Customer[]
@@ -136,6 +187,10 @@ model Company {
   financialAuditEvents   FinancialAuditEvent[]
   truckImportBatches     TruckImportBatch[]
   truckLifecycleEvents   TruckLifecycleEvent[]
+  payrollPeriods         PayrollPeriod[]
+  payrollContracts       PayrollPayContract[]
+  payrollAdjustments     PayrollAdjustment[]
+  payrollReferences      PayrollExternalReference[]
 }
 
 enum CompanyMembershipRole {
@@ -188,6 +243,8 @@ model User {
   createdAdminFeeAgreements     AdminFeeAgreement[]            @relation("AdminFeeAgreementCreator")
   uploadedPilotInvoices         PilotProviderInvoice[]         @relation("PilotInvoiceUploader")
   postedPilotInvoices           PilotProviderInvoice[]         @relation("PilotInvoicePoster")
+  createdPayrollAdjustments     PayrollAdjustment[]            @relation("PayrollAdjustmentCreator")
+  createdPayrollReferences      PayrollExternalReference[]     @relation("PayrollReferenceCreator")
   resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
   approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
   truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
@@ -571,24 +628,27 @@ model Trailer {
 }
 
 model Driver {
-  id                   String                @id @default(cuid())
+  id                   String                     @id @default(cuid())
   companyId            String?
-  company              Company?              @relation("DriverCompany", fields: [companyId], references: [id])
+  company              Company?                   @relation("DriverCompany", fields: [companyId], references: [id])
   firstName            String
   lastName             String
   phone                String?
   email                String?
   licenseNum           String?
-  payType              DriverPayType         @default(PERCENTAGE)
+  payType              DriverPayType              @default(PERCENTAGE)
   payRate              Float
   truckId              String?
-  truck                Truck?                @relation(fields: [truckId], references: [id])
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  truck                Truck?                     @relation(fields: [truckId], references: [id])
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
   loads                Load[]
   settlements          Settlement[]
   driverOrientations   DriverOrientation[]
   financialAllocations FinancialAllocation[]
+  payrollContracts     PayrollPayContract[]
+  payrollAdjustments   PayrollAdjustment[]
+  payrollReferences    PayrollExternalReference[]
 
   @@index([companyId])
 }
@@ -625,6 +685,7 @@ model Load {
   settlement            Settlement?
   financialAllocations  FinancialAllocation[]
   financialExpectations FinancialExpectation[]
+  payrollAdjustments    PayrollAdjustment[]
 
   @@index([companyId, status, pickupDate])
   @@index([companyId, truckId, pickupDate, deliveryDate])
@@ -1425,25 +1486,140 @@ model FinancialProgram {
 }
 
 model FinancialParty {
-  id                 String                 @id @default(cuid())
+  id                 String                     @id @default(cuid())
   operatingGroupId   String
   companyId          String?
   type               FinancialPartyType
   name               String
   externalReference  String?
-  isActive           Boolean                @default(true)
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
-  operatingGroup     OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  company            Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  transactionVendor  FinancialTransaction[] @relation("FinancialTransactionVendor")
-  transactionOwner   FinancialTransaction[] @relation("FinancialTransactionOwner")
+  isActive           Boolean                    @default(true)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  operatingGroup     OperatingGroup             @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company            Company?                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transactionVendor  FinancialTransaction[]     @relation("FinancialTransactionVendor")
+  transactionOwner   FinancialTransaction[]     @relation("FinancialTransactionOwner")
   allocations        FinancialAllocation[]
   expectationParties FinancialExpectation[]
   adminFeeAgreements AdminFeeAgreement[]
+  payrollContracts   PayrollPayContract[]
+  payrollAdjustments PayrollAdjustment[]
+  payrollReferences  PayrollExternalReference[]
 
   @@unique([operatingGroupId, type, name])
   @@index([companyId, type])
+}
+
+model PayrollPeriod {
+  id                 String                     @id @default(cuid())
+  companyId          String
+  identifier         String
+  startDate          DateTime
+  endDate            DateTime
+  status             PayrollPeriodStatus        @default(OPEN)
+  calculatedAt       DateTime?
+  externalProvider   String?
+  externalPeriod     String?
+  externalBatchId    String?
+  notes              String?                    @db.Text
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  company            Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  adjustments        PayrollAdjustment[]
+  externalReferences PayrollExternalReference[]
+
+  @@unique([companyId, identifier])
+  @@index([companyId, startDate, endDate])
+  @@index([companyId, status])
+}
+
+model PayrollPayContract {
+  id                       String                         @id @default(cuid())
+  companyId                String
+  participantType          PayrollParticipantType
+  driverId                 String?
+  contractorPartyId        String?
+  type                     PayrollContractType
+  rateMinorPerMile         BigInt?
+  percentageBasisPoints    Int?
+  percentageBase           PayrollPercentageBase?
+  includedChargeCategories Json?
+  excludedChargeCategories Json?
+  appliesToTeam            Boolean                        @default(false)
+  teamAllocationStrategy   PayrollTeamAllocationStrategy?
+  effectiveFrom            DateTime
+  effectiveTo              DateTime?
+  isActive                 Boolean                        @default(true)
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
+  company                  Company                        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver                   Driver?                        @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  contractorParty          FinancialParty?                @relation(fields: [contractorPartyId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, participantType, isActive, effectiveFrom])
+  @@index([driverId, effectiveFrom])
+  @@index([contractorPartyId, effectiveFrom])
+}
+
+model PayrollAdjustment {
+  id                String                     @id @default(cuid())
+  companyId         String
+  periodId          String
+  participantType   PayrollParticipantType
+  driverId          String?
+  contractorPartyId String?
+  loadId            String?
+  category          PayrollAdjustmentCategory
+  direction         PayrollAdjustmentDirection
+  amountMinor       BigInt
+  currency          String                     @default("USD")
+  description       String
+  source            String                     @default("MANUAL_PREVIEW")
+  effectiveDate     DateTime
+  createdByUserId   String
+  createdAt         DateTime                   @default(now())
+  company           Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  period            PayrollPeriod              @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  driver            Driver?                    @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  contractorParty   FinancialParty?            @relation(fields: [contractorPartyId], references: [id], onDelete: Restrict)
+  load              Load?                      @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  createdByUser     User                       @relation("PayrollAdjustmentCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, periodId, participantType])
+  @@index([driverId, periodId])
+  @@index([contractorPartyId, periodId])
+}
+
+model PayrollExternalReference {
+  id                   String                 @id @default(cuid())
+  companyId            String
+  periodId             String
+  participantType      PayrollParticipantType
+  driverId             String?
+  contractorPartyId    String?
+  provider             String
+  externalStatementRef String?
+  externalPeriod       String?
+  earningMinor         BigInt?
+  reimbursementMinor   BigInt?
+  fuelMinor            BigInt?
+  tollMinor            BigInt?
+  deductionsMinor      BigInt?
+  payoutMinor          BigInt?
+  currency             String                 @default("USD")
+  notes                String?                @db.Text
+  createdByUserId      String
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  company              Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  period               PayrollPeriod          @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  driver               Driver?                @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  contractorParty      FinancialParty?        @relation(fields: [contractorPartyId], references: [id], onDelete: Restrict)
+  createdByUser        User                   @relation("PayrollReferenceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([periodId, driverId, provider])
+  @@unique([periodId, contractorPartyId, provider])
+  @@index([companyId, periodId, participantType])
 }
 
 model FinancialTransaction {

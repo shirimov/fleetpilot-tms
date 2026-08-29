@@ -21,6 +21,7 @@ test('alpha navigation exposes completed modules and marks blocked inbox unavail
       'Task Manager',
       'My Profile',
       'Accounting',
+      'Payroll Preview',
       'Settlements',
       'Finance',
       'Companies',
