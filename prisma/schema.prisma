@@ -115,6 +115,29 @@ enum PayrollDifferenceType {
   UNKNOWN
 }
 
+enum PayrollRuleApplicability {
+  APPLICABLE
+  NOT_APPLICABLE
+  REQUIRED_BUT_UNVERIFIED
+}
+
+enum PayrollCaseType {
+  SOLO_DRIVER
+  DRIVER_WITH_DEDUCTIONS
+  CONTRACTOR
+  TEAM_DRIVER
+  COMPLEX_CONTRACTOR
+  OTHER
+}
+
+enum PayrollInputSource {
+  CANONICAL_FLEETPILOT
+  MANUAL_AUDIT_INPUT
+  EXTERNAL_REFERENCE
+  DERIVED
+  UNAVAILABLE
+}
+
 enum PayrollAdjustmentCategory {
   REIMBURSEMENT
   CREDIT
@@ -239,6 +262,7 @@ model Company {
   payrollRules           PayrollRule[]
   payrollRecurringRules  PayrollRecurringDeductionRule[]
   payrollAuditCases      PayrollReconciliationCase[]
+  payrollRuleEvidence    PayrollRuleEvidence[]
 }
 
 enum CompanyMembershipRole {
@@ -296,6 +320,7 @@ model User {
   verifiedPayrollRules          PayrollRule[]                   @relation("PayrollRuleVerifier")
   createdPayrollRecurringRules  PayrollRecurringDeductionRule[] @relation("PayrollRecurringRuleCreator")
   createdPayrollAuditCases      PayrollReconciliationCase[]     @relation("PayrollCaseCreator")
+  createdPayrollRuleEvidence    PayrollRuleEvidence[]           @relation("PayrollRuleEvidenceCreator")
   resolvedPilotIssues           PilotImportIssue[]              @relation("PilotIssueResolver")
   approvedPilotProductMappings  PilotProductMapping[]           @relation("PilotProductMappingApprover")
   truckImportBatches            TruckImportBatch[]              @relation("TruckImportActor")
@@ -1662,6 +1687,7 @@ model PayrollExternalReference {
   provider             String
   externalStatementRef String?
   externalPeriod       String?
+  grossRevenueMinor    BigInt?
   earningMinor         BigInt?
   reimbursementMinor   BigInt?
   fuelMinor            BigInt?
@@ -1694,6 +1720,7 @@ model PayrollRule {
   companyId          String
   type               PayrollRuleType
   verificationStatus PayrollRuleVerificationStatus @default(UNVERIFIED)
+  applicability      PayrollRuleApplicability      @default(REQUIRED_BUT_UNVERIFIED)
   configuration      Json
   evidenceNotes      String?                       @db.Text
   testedAt           DateTime?
@@ -1703,6 +1730,7 @@ model PayrollRule {
   updatedAt          DateTime                      @updatedAt
   company            Company                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
   verifiedBy         User?                         @relation("PayrollRuleVerifier", fields: [verifiedByUserId], references: [id], onDelete: Restrict)
+  evidence           PayrollRuleEvidence[]
 
   @@unique([companyId, type])
   @@index([companyId, verificationStatus])
@@ -1745,6 +1773,11 @@ model PayrollReconciliationCase {
   driverId             String?
   contractorPartyId    String?
   status               PayrollReconciliationStatus @default(OPEN)
+  caseType             PayrollCaseType             @default(OTHER)
+  truckUnitReference   String?
+  inputSources         Json                        @default("{}")
+  exactMatch           Boolean                     @default(false)
+  evaluatedAt          DateTime                    @default(now())
   calculatedSnapshot   Json
   externalSnapshot     Json
   componentDifferences Json
@@ -1758,10 +1791,30 @@ model PayrollReconciliationCase {
   driver               Driver?                     @relation(fields: [driverId], references: [id], onDelete: Restrict)
   contractorParty      FinancialParty?             @relation(fields: [contractorPartyId], references: [id], onDelete: Restrict)
   createdBy            User                        @relation("PayrollCaseCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  ruleEvidence         PayrollRuleEvidence[]
 
   @@index([companyId, periodId, status])
   @@index([driverId, periodId])
   @@index([contractorPartyId, periodId])
+  @@index([companyId, caseType, exactMatch])
+}
+
+model PayrollRuleEvidence {
+  id              String                    @id @default(cuid())
+  companyId       String
+  ruleId          String
+  caseId          String
+  notes           String?                   @db.Text
+  createdByUserId String
+  createdAt       DateTime                  @default(now())
+  company         Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  rule            PayrollRule               @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  case            PayrollReconciliationCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  createdBy       User                      @relation("PayrollRuleEvidenceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([ruleId, caseId])
+  @@index([companyId, ruleId])
+  @@index([companyId, caseId])
 }
 
 model FinancialTransaction {

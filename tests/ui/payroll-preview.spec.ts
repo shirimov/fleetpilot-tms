@@ -10,8 +10,8 @@ test('OWNER sees an explainable read-only payroll preview and blocked contractor
     await route.fulfill({ json: [period] });
   });
   await page.route('**/api/payroll/participants', (route) => route.fulfill({ json: { drivers: [{ id: 'driver-1', firstName: 'Audit', lastName: 'Driver' }], contractors: [{ id: 'contractor-1', name: 'Audit Contractor' }] } }));
-  await page.route('**/api/payroll/readiness', (route) => route.fulfill({ json: { status: 'PARTIALLY_READY', matchedCases: 1, requiredMatchedCases: 3, generationEnabled: false, checks: [{ type: 'MILEAGE_SOURCE', configured: true, verified: false, tested: true, reconciled: false, blocker: 'Not admin verified' }] } }));
-  await page.route('**/api/payroll/reconciliation-cases', (route) => route.fulfill({ json: [{ id: 'case-1', status: 'UNEXPLAINED_DIFFERENCE', differenceTypes: ['MILEAGE_DIFFERENCE'], period: { identifier: '2026-W34' }, driver: { firstName: 'Audit', lastName: 'Driver' }, contractorParty: null }] }));
+  await page.route('**/api/payroll/readiness', (route) => route.fulfill({ json: { status: 'PARTIALLY_READY', matchedCases: 0, matchedCaseTypes: [], requiredMatchedCases: 3, awaitingRealCases: true, generationEnabled: false, checks: [{ type: 'MILEAGE_SOURCE', applicability: 'REQUIRED_BUT_UNVERIFIED', configured: true, verified: false, tested: true, reconciled: false, evidenceCases: 0, blocker: 'Applicability not established' }] } }));
+  await page.route('**/api/payroll/reconciliation-cases', (route) => route.fulfill({ json: [{ id: 'case-1', status: 'UNEXPLAINED_DIFFERENCE', exactMatch: false, caseType: 'SOLO_DRIVER', differenceTypes: ['MILEAGE_DIFFERENCE'], period: { identifier: '2026-W34' }, driver: { firstName: 'Audit', lastName: 'Driver' }, contractorParty: null }] }));
   await page.route('**/api/payroll/periods/period-1', (route) => route.fulfill({ json: {
     period,
     totals: { RECONCILED: 1, BLOCKED: 1, totalCalculatedPayoutMinor: '328095' },
@@ -29,9 +29,13 @@ test('OWNER sees an explainable read-only payroll preview and blocked contractor
   await expect(page.getByText('RECONCILED', { exact: true })).toBeVisible();
   await expect(page.getByText('BLOCKED', { exact: true })).toBeVisible();
   await expect(page.getByText(/percentage base is not configured/i)).toBeVisible();
-  await expect(page.getByText(/PARTIALLY_READY/)).toBeVisible();
+  await expect(page.getByText(/AWAITING_REAL_CASES/)).toBeVisible();
   await expect(page.getByText(/MILEAGE_DIFFERENCE/)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Create audit case' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Payroll audit case entry' })).toBeVisible();
+  await expect(page.getByText('Gross / revenue (when relevant)')).toBeVisible();
+  await expect(page.getByText('Other deductions')).toBeVisible();
+  await expect(page.getByRole('option', { name: 'External reference' }).first()).toBeAttached();
   await page.getByText('Calculation audit trail').first().click();
   await expect(page.getByText(/LOAD-1: 4663 miles/)).toBeVisible();
 });
