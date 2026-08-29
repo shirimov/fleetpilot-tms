@@ -7,9 +7,10 @@ import {
   QUICKMANAGE_FINANCIAL_REPORT_DEFINITIONS,
   type QuickManageReportType,
 } from './quickmanage-financial-audit';
+import { captureQuickManageReport } from './quickmanage-report-capture';
 
 export const QUICKMANAGE_EXPLORER_RESOURCES = [
-  'trucks', 'trailers', 'drivers', 'customers', 'trips', 'users', 'reports', 'report-content',
+  'trucks', 'trailers', 'drivers', 'customers', 'trips', 'users', 'reports', 'report-content', 'report-catalog',
 ] as const;
 export type QuickManageExplorerResource = typeof QUICKMANAGE_EXPLORER_RESOURCES[number];
 export type QuickManageExplorerFilter = { field: string; operator: string; value: string };
@@ -115,6 +116,7 @@ export class QuickManageExplorerService {
 
   async explore(context: CompanyAuthorization, input: QuickManageExplorerInput) {
     const { page, pageSize } = validateInput(input);
+    if (input.resource === 'report-catalog') return this.reportCatalog(context);
     if (input.resource === 'reports') return this.reports(context, input, page);
     if (input.resource === 'report-content') return this.reportContent(context, input);
     const path = searchPaths[input.resource];
@@ -156,8 +158,47 @@ export class QuickManageExplorerService {
       throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned invalid report content.');
     }
     const audit = auditQuickManageReportContent(input.reportType as QuickManageReportType, data);
+    const capture = captureQuickManageReport(input.reportType as QuickManageReportType, input.reportSubtype?.trim() || null, data, audit);
     const links = await this.reportRelationshipLinks(context.companyId, audit.relationshipReferences);
-    return { resource: input.resource, fetchedAt: this.now().toISOString(), item: sanitizeQuickManageData(data), audit, links };
+    return { resource: input.resource, fetchedAt: this.now().toISOString(), item: sanitizeQuickManageData(data), audit, capture, links };
+  }
+
+  private async reportCatalog(context: CompanyAuthorization) {
+    void context;
+    const fetchedAt = this.now().toISOString();
+    const seenIds = new Set<string>();
+    const items = [];
+    for (const definition of QUICKMANAGE_FINANCIAL_REPORT_DEFINITIONS) {
+      const payload = object(await this.client.request(`/x/reports?type=${encodeURIComponent(definition.type)}&subtype=ignore&page=0`));
+      const data = object(payload?.data);
+      if (!data || !Array.isArray(data.items) || (data.has_more != null && typeof data.has_more !== 'boolean')) {
+        throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned an invalid report catalog page.');
+      }
+      const reports = data.items.map((entry) => object(entry));
+      if (reports.some((entry) => !entry || typeof entry.id !== 'string')) throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned an invalid report catalog item.');
+      for (const report of reports as JsonObject[]) {
+        const id = report.id as string;
+        if (seenIds.has(id)) throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned a duplicate report identifier.');
+        seenIds.add(id);
+      }
+      const sorted = [...reports as JsonObject[]].sort((left, right) => String(right.created_at ?? right.updated_at ?? '').localeCompare(String(left.created_at ?? left.updated_at ?? '')));
+      items.push({
+        type: definition.type,
+        label: definition.label,
+        semantics: definition.semantics,
+        sampleStatus: sorted.length ? 'SAMPLE_AVAILABLE' : 'NO_SAMPLE',
+        reportCount: sorted.length,
+        countIsLowerBound: data.has_more === true,
+        latestReport: sorted.length ? sanitizeQuickManageData(sorted[0]) : null,
+        contentAvailability: sorted.length ? 'NOT_FETCHED' : 'NOT_AVAILABLE',
+        firstFetchedAt: fetchedAt,
+        lastFetchedAt: fetchedAt,
+        structureFingerprint: null,
+        importReadiness: sorted.length ? 'DISCOVERED' : 'NOT_AVAILABLE',
+        blockingReason: sorted.length ? 'Fetch and review a representative report structure.' : 'Generate a representative report manually in QuickManage.',
+      });
+    }
+    return { resource: 'report-catalog', fetchedAt, items, page: 0, pageSize: items.length, total: items.length, hasMore: false, warning: null, links: {} };
   }
 
   private async reportRelationshipLinks(

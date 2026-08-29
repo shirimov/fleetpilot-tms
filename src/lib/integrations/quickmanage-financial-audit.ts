@@ -42,6 +42,8 @@ export type QuickManageAuditColumn = {
   unit: string | null;
   aggregation: string | null;
   signSemantics: string | null;
+  nullSemantics: string | null;
+  zeroSemantics: string | null;
 };
 export type ExactColumnTotal = {
   column: string;
@@ -90,6 +92,8 @@ function parseColumn(value: unknown): QuickManageAuditColumn {
     unit: text(metadata.unit),
     aggregation: text(metadata.aggregation) ?? text(metadata.aggregate),
     signSemantics: text(metadata.sign_semantics),
+    nullSemantics: text(metadata.null_semantics),
+    zeroSemantics: text(metadata.zero_semantics),
   };
 }
 
