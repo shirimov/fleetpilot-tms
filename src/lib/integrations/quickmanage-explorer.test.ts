@@ -52,6 +52,7 @@ test('report list and content use only documented read endpoints and validate co
   assert.equal((list as { hasMore: boolean }).hasMore, false);
   assert.deepEqual(((content as { item: { content: { rows: unknown[] } } }).item).content.rows, [{ 0: 125.5 }]);
   assert.equal((content as { audit: { interpretation: string } }).audit.interpretation, 'PARTIALLY_VERIFIED');
+  assert.equal((content as { capture: { importReadiness: string } }).capture.importReadiness, 'BLOCKED');
 });
 
 test('report content requires its documented type before any provider read', async () => {
@@ -74,4 +75,25 @@ test('provider page-size anomaly is disclosed instead of silently treated as exa
   const service = new QuickManageExplorerService(database(), { request: async () => ({ data: { count: 2, page: 0, page_size: 2, items: [{ id: 'a' }, { id: 'b' }] } }) });
   const result = await service.explore(context, { resource: 'trips', pageSize: 1 });
   assert.match((result as { warning: string }).warning, /did not honor/);
+});
+
+test('report catalog checks every official type with bounded first-page reads', async () => {
+  const paths: string[] = [];
+  const service = new QuickManageExplorerService(database(), { request: async (path) => {
+    paths.push(path);
+    return path.includes('type=trip&')
+      ? { data: { has_more: false, items: [{ id: '11111111-1111-4111-8111-111111111111', type: 'trip', created_at: '2026-08-29T12:00:00Z' }] } }
+      : { data: { has_more: false, items: [] } };
+  } });
+  const result = await service.explore(context, { resource: 'report-catalog' }) as { items: Array<Record<string, unknown>> };
+  assert.equal(paths.length, 17);
+  assert.equal(paths.every((path) => path.endsWith('&subtype=ignore&page=0')), true);
+  assert.equal(result.items.length, 17);
+  assert.equal(result.items.find((item) => item.type === 'trip')?.sampleStatus, 'SAMPLE_AVAILABLE');
+  assert.equal(result.items.find((item) => item.type === 'fuel')?.importReadiness, 'NOT_AVAILABLE');
+});
+
+test('report catalog rejects duplicate report IDs across provider types', async () => {
+  const service = new QuickManageExplorerService(database(), { request: async () => ({ data: { has_more: false, items: [{ id: '11111111-1111-4111-8111-111111111111' }] } }) });
+  await assert.rejects(service.explore(context, { resource: 'report-catalog' }), /duplicate report identifier/);
 });
