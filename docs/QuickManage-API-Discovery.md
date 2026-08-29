@@ -2,6 +2,74 @@
 
 Source: the password-protected QuickManage Apidog project supplied for FleetPilot. Paths below are copied from that official contract. No undocumented endpoint is used.
 
+## Phase 2: Trips / Loads
+
+### Verified official Trip contract
+
+`POST /x/trips/search` is the only documented Trip read operation. The body is
+`{ query, filters, page, page_size }`; pages are zero-based. It returns
+`{ error-fields, message, data: { count, items, page, page_size } }`.
+
+Documented filters include `id`, `number`, `ref_number`, `status`, `po_number`,
+`other_number`, `schedule_date`, `delivery_date`, `assigned_truck_ids`,
+`assigned_driver_ids`, `assigned_trailer_ids`, `assigned_customer_ids`,
+`bill_to_id`, and `booked_by_id`. Date operators are `date_is_on`,
+`date_is_after`, `date_is_before`, and `date_between`.
+
+Documented statuses are `upcoming`, `dispatched`, `in_transit`, `canceled`,
+`rejected`, and `delivered`. The response supplies Trip UUID, Trip number,
+reference/PO/other numbers, customer names/ID, shipment type, hauling rate,
+accessorial total, status, stops, file metadata, `created_at`, schedule date,
+delivery date, and booked-by metadata. Stops include pickup/delivery direction,
+rate/accessorials, distance/deadhead, facility/address, offset-bearing appointment
+timestamp, and Truck/Trailer/Driver/Customer assignments.
+
+There is no documented Trip get-by-ID endpoint. Search with the exact `id`
+filter is the supported detail lookup. The response does not document or return
+`updated_at`, deleted markers, or a changed-since filter. Rate limits are not
+documented.
+
+### Redacted live discovery
+
+Alpha read-only discovery returned HTTP 200 and 39 Trips. The provider returned
+two items even when `page_size` was 1, so FleetPilot deduplicates by Trip UUID
+and fails closed if a page repeats without progress. Exact ID, status, and
+schedule-date filters returned HTTP 200. Current status counts were 31 delivered,
+7 canceled, 1 rejected, and zero for the other documented statuses. Observed
+records contained stops and `created_at`, but not `updated_at`. An observed Truck
+assignment resolved through the official Truck search. An observed Driver
+assignment did not resolve through the Driver search and must therefore remain
+an invalid preview until its Phase 1 identity link exists.
+
+### Files and reports
+
+- `GET /x/files/{id}?type=other|bol|rate-confirmation` downloads a Trip file.
+  The official response is described only as `object`; content type, filename,
+  size, checksum, expiry, and redirect behavior are not documented, so Phase 2
+  records file metadata but does not download or persist files.
+- `GET /x/reports?type=&subtype=&page=` lists previously generated reports,
+  carrier-scoped, 50 per zero-based page, with `has_more`. It does not generate
+  reports. Types include trip, fuel, toll, statement, receivable, 1099,
+  adjustment, maintenance, inspection, account-resource variants, and
+  driver-perf.
+- `GET /x/reports/{id}/content` returns report header data and table
+  columns/rows/summary. Report imports remain outside this Trip PR.
+
+### Webhooks
+
+`POST /x/webhook/subscriptions` registers an HTTPS URL for `load.created` and/or
+`load.updated`. Its optional secret must be exactly 32 characters; if omitted,
+QuickManage creates and returns one. Subscriptions expire after three days and
+can be renewed with `POST /x/webhook/subscriptions/{id}/renew`. Official list,
+get, delete, and test operations also exist.
+
+The official project does not document the delivery payload, signature header,
+signature algorithm/canonicalization, retry policy, duplicate behavior, ordering
+guarantees, event ID, or event timestamp. FleetPilot therefore does not register
+or process these webhooks in Phase 2. Safe near-live operation requires bounded
+reconciliation polling plus explicit preview/apply until the vendor supplies
+those security and delivery contracts; one-second polling is not appropriate.
+
 ## Phase 1 fleet contracts
 
 All search operations are read-only `POST` requests with a JSON body containing `query`, `filters`, zero-based `page`, and `page_size`. Successful responses use `{ error-fields, message, data: { count, items, page, page_size } }`. The carrier/tenant is derived from the bearer token; no client-supplied carrier ID is accepted.

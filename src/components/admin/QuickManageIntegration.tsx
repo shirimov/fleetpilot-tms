@@ -3,9 +3,9 @@
 import { useEffect, useState } from 'react';
 
 type Status = { configured: boolean };
-type ResourceType = 'TRUCK' | 'TRAILER' | 'DRIVER' | 'CUSTOMER';
+type ResourceType = 'TRUCK' | 'TRAILER' | 'DRIVER' | 'CUSTOMER' | 'TRIP';
 type Disposition = 'NEW' | 'MATCHED' | 'UNCHANGED' | 'CONFLICT' | 'INVALID';
-type SyncRow = { id: string; resourceType: ResourceType; disposition: Disposition; message: string | null };
+type SyncRow = { id: string; externalId: string; resourceType: ResourceType; disposition: Disposition; message: string | null };
 type SyncBatch = {
   id: string;
   status: 'PREVIEWED' | 'APPLIED';
@@ -16,6 +16,8 @@ type SyncBatch = {
   conflictRows: number;
   invalidRows: number;
   rows: SyncRow[];
+  createdAt?: string;
+  appliedAt?: string | null;
 };
 
 const resources: Array<{ type: ResourceType; label: string }> = [
@@ -33,6 +35,9 @@ export default function QuickManageIntegration() {
   const [syncing, setSyncing] = useState(false);
   const [applying, setApplying] = useState(false);
   const [batch, setBatch] = useState<SyncBatch | null>(null);
+  const [tripBatch, setTripBatch] = useState<SyncBatch | null>(null);
+  const [tripSyncing, setTripSyncing] = useState(false);
+  const [tripApplying, setTripApplying] = useState(false);
 
   useEffect(() => {
     fetch('/api/integrations/quickmanage', { cache: 'no-store' })
@@ -95,6 +100,34 @@ export default function QuickManageIntegration() {
     }
   }
 
+  async function previewTrips() {
+    setTripSyncing(true);
+    setMessage('');
+    try {
+      const response = await fetch('/api/integrations/quickmanage/sync/trips', { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'Trip preview failed.');
+      setTripBatch(body);
+      setConnected(true);
+      setMessage('Trip preview is ready. No FleetPilot Loads have been changed.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Trip preview failed.'); }
+    finally { setTripSyncing(false); }
+  }
+
+  async function applyTrips() {
+    if (!tripBatch || !window.confirm('Apply safe reviewed QuickManage Trips as FleetPilot Loads? Conflicts and invalid records remain unchanged.')) return;
+    setTripApplying(true);
+    setMessage('');
+    try {
+      const response = await fetch(`/api/integrations/quickmanage/sync/trips/${tripBatch.id}/apply`, { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? 'Trip apply failed.');
+      setTripBatch(body);
+      setMessage('Safe QuickManage Trips were applied. No Accounting records were created.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Trip apply failed.'); }
+    finally { setTripApplying(false); }
+  }
+
   return (
     <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -124,6 +157,14 @@ export default function QuickManageIntegration() {
         className="ml-3 mt-6 rounded-lg border border-blue-500 px-4 py-2 text-sm font-semibold text-blue-200 hover:bg-blue-950 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-500"
       >
         {syncing ? 'Fetching preview…' : 'Sync Fleet Data'}
+      </button>
+      <button
+        type="button"
+        onClick={() => void previewTrips()}
+        disabled={tripSyncing || !status?.configured}
+        className="ml-3 mt-6 rounded-lg border border-purple-500 px-4 py-2 text-sm font-semibold text-purple-200 hover:bg-purple-950 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-500"
+      >
+        {tripSyncing ? 'Fetching Trips…' : 'Preview Trips / Loads'}
       </button>
       {message && <p role="status" className="mt-4 text-sm text-gray-300">{message}</p>}
       {batch && (
@@ -166,6 +207,34 @@ export default function QuickManageIntegration() {
               {batch.conflictRows} conflicts and {batch.invalidRows} invalid records will not be applied. Create a new preview after resolving source or FleetPilot data.
             </p>
           )}
+        </div>
+      )}
+      {tripBatch && (
+        <div className="mt-6 space-y-4 border-t border-gray-800 pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Trip / Load sync preview</h2>
+              <p className="text-sm text-gray-400">
+                {tripBatch.totalRows} fetched · {tripBatch.status.toLowerCase()}
+                {tripBatch.createdAt ? ` · last fetch ${new Date(tripBatch.createdAt).toLocaleString()}` : ''}
+                {tripBatch.appliedAt ? ` · last apply ${new Date(tripBatch.appliedAt).toLocaleString()}` : ''}
+              </p>
+            </div>
+            <button type="button" onClick={() => void applyTrips()} disabled={tripApplying || tripBatch.status === 'APPLIED'} className="rounded-lg bg-purple-700 px-4 py-2 text-sm font-semibold hover:bg-purple-600 disabled:cursor-not-allowed disabled:bg-gray-700">
+              {tripApplying ? 'Applying…' : tripBatch.status === 'APPLIED' ? 'Applied' : 'Apply Safe Trips'}
+            </button>
+          </div>
+          <dl className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {([['Fetched', tripBatch.totalRows], ['New', tripBatch.newRows], ['Matched', tripBatch.matchedRows], ['Unchanged', tripBatch.unchangedRows], ['Conflict', tripBatch.conflictRows], ['Invalid', tripBatch.invalidRows]] as const).map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-gray-800 bg-gray-950 p-3"><dt className="text-xs text-gray-500">{label}</dt><dd className="mt-1 text-lg font-semibold">{value}</dd></div>
+            ))}
+          </dl>
+          <div className="max-h-80 overflow-auto rounded-lg border border-gray-800">
+            <table className="w-full text-left text-sm"><thead className="bg-gray-950 text-gray-400"><tr><th className="p-3">QuickManage Trip ID</th><th className="p-3">Review</th><th className="p-3">Reason</th></tr></thead><tbody>
+              {tripBatch.rows.map((row) => <tr key={row.id} className="border-t border-gray-800"><td className="p-3 font-mono text-xs">{row.externalId}</td><td className="p-3">{row.disposition}</td><td className="p-3 text-gray-400">{row.message ?? '—'}</td></tr>)}
+            </tbody></table>
+          </div>
+          <p className="text-xs text-gray-500">Webhook processing remains disabled because QuickManage does not document the delivery signature algorithm, payload, retry, duplicate, or ordering contract.</p>
         </div>
       )}
     </section>
