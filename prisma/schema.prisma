@@ -103,39 +103,41 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id                     String                    @id @default(cuid())
-  name                   String
-  dotNumber              String?
-  mcNumber               String?
-  createdAt              DateTime                  @default(now())
-  updatedAt              DateTime                  @updatedAt
-  trucks                 Truck[]
-  loads                  Load[]
-  bankAccounts           BankAccount[]
-  taskProjects           TaskProject[]
-  memberships            CompanyMembership[]
-  activeUsers            User[]                    @relation("ActiveCompany")
-  companyDrivers         Driver[]                  @relation("DriverCompany")
-  employees              Employee[]
-  employeeSkills         EmployeeSkillDefinition[]
-  customers              Customer[]
-  trailers               Trailer[]
-  loadActivities         LoadActivity[]
-  telegramUserLinks      TelegramUserLink[]
-  telegramLinkTokens     TelegramLinkToken[]
-  telegramInboundUpdates TelegramInboundUpdate[]
-  telegramDeliveries     TelegramDelivery[]
-  telegramPendingActions TelegramPendingAction[]
-  telegramUpdateRequests TelegramUpdateRequest[]
-  operatingGroupLink     OperatingGroupCompany?
-  financialSources       FinancialSource[]
-  financialTransactions  FinancialTransaction[]
-  financialAllocations   FinancialAllocation[]
-  financialExpectations  FinancialExpectation[]
-  financialParties       FinancialParty[]
-  financialAuditEvents   FinancialAuditEvent[]
-  truckImportBatches     TruckImportBatch[]
-  truckLifecycleEvents   TruckLifecycleEvent[]
+  id                         String                      @id @default(cuid())
+  name                       String
+  dotNumber                  String?
+  mcNumber                   String?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  trucks                     Truck[]
+  loads                      Load[]
+  bankAccounts               BankAccount[]
+  bankTransactions           BankTransaction[]
+  bankTransactionAllocations BankTransactionAllocation[]
+  taskProjects               TaskProject[]
+  memberships                CompanyMembership[]
+  activeUsers                User[]                      @relation("ActiveCompany")
+  companyDrivers             Driver[]                    @relation("DriverCompany")
+  employees                  Employee[]
+  employeeSkills             EmployeeSkillDefinition[]
+  customers                  Customer[]
+  trailers                   Trailer[]
+  loadActivities             LoadActivity[]
+  telegramUserLinks          TelegramUserLink[]
+  telegramLinkTokens         TelegramLinkToken[]
+  telegramInboundUpdates     TelegramInboundUpdate[]
+  telegramDeliveries         TelegramDelivery[]
+  telegramPendingActions     TelegramPendingAction[]
+  telegramUpdateRequests     TelegramUpdateRequest[]
+  operatingGroupLink         OperatingGroupCompany?
+  financialSources           FinancialSource[]
+  financialTransactions      FinancialTransaction[]
+  financialAllocations       FinancialAllocation[]
+  financialExpectations      FinancialExpectation[]
+  financialParties           FinancialParty[]
+  financialAuditEvents       FinancialAuditEvent[]
+  truckImportBatches         TruckImportBatch[]
+  truckLifecycleEvents       TruckLifecycleEvent[]
 }
 
 enum CompanyMembershipRole {
@@ -162,36 +164,37 @@ model User {
   taskActivities                TaskActivity[]
   taskChecklistItems            TaskChecklistItem[]
   taskAttachments               TaskAttachment[]
-  assignedTaskCards             TaskCard[]                     @relation("TaskCardAssignee")
-  createdTaskCards              TaskCard[]                     @relation("TaskCardCreator")
-  archivedTaskCards             TaskCard[]                     @relation("TaskCardArchiver")
-  taskMentions                  TaskMention[]                  @relation("MentionedTaskUser")
-  createdTaskMentions           TaskMention[]                  @relation("TaskMentionCreator")
+  assignedTaskCards             TaskCard[]                      @relation("TaskCardAssignee")
+  createdTaskCards              TaskCard[]                      @relation("TaskCardCreator")
+  archivedTaskCards             TaskCard[]                      @relation("TaskCardArchiver")
+  taskMentions                  TaskMention[]                   @relation("MentionedTaskUser")
+  createdTaskMentions           TaskMention[]                   @relation("TaskMentionCreator")
   loadActivities                LoadActivity[]
   uploadedLoadDocuments         LoadDocument[]
   uploadedTrailerDocuments      TrailerDocument[]
   telegramUserLinks             TelegramUserLink[]
   telegramLinkTokens            TelegramLinkToken[]
   telegramDeliveries            TelegramDelivery[]
-  telegramPendingActions        TelegramPendingAction[]        @relation("TelegramPendingActionUser")
-  requestedTelegramUpdates      TelegramUpdateRequest[]        @relation("TelegramUpdateRequester")
-  assignedTelegramUpdates       TelegramUpdateRequest[]        @relation("TelegramUpdateAssignee")
+  telegramPendingActions        TelegramPendingAction[]         @relation("TelegramPendingActionUser")
+  requestedTelegramUpdates      TelegramUpdateRequest[]         @relation("TelegramUpdateRequester")
+  assignedTelegramUpdates       TelegramUpdateRequest[]         @relation("TelegramUpdateAssignee")
   employeeProfile               Employee?
   operatingGroupMemberships     OperatingGroupMembership[]
-  importedFinancialStatements   FinancialStatement[]           @relation("FinancialStatementImporter")
-  createdFinancialTransactions  FinancialTransaction[]         @relation("FinancialTransactionCreator")
-  reviewedFinancialTransactions FinancialTransaction[]         @relation("FinancialTransactionReviewer")
-  waivedFinancialTransactions   FinancialTransaction[]         @relation("FinancialTransactionWaiver")
-  matchedFinancialEvidence      FinancialTransactionEvidence[] @relation("FinancialEvidenceMatcher")
-  createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
-  financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
-  createdAdminFeeAgreements     AdminFeeAgreement[]            @relation("AdminFeeAgreementCreator")
-  uploadedPilotInvoices         PilotProviderInvoice[]         @relation("PilotInvoiceUploader")
-  postedPilotInvoices           PilotProviderInvoice[]         @relation("PilotInvoicePoster")
-  resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
-  approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
-  truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
-  truckLifecycleEvents          TruckLifecycleEvent[]          @relation("TruckLifecycleActor")
+  importedFinancialStatements   FinancialStatement[]            @relation("FinancialStatementImporter")
+  createdFinancialTransactions  FinancialTransaction[]          @relation("FinancialTransactionCreator")
+  reviewedFinancialTransactions FinancialTransaction[]          @relation("FinancialTransactionReviewer")
+  waivedFinancialTransactions   FinancialTransaction[]          @relation("FinancialTransactionWaiver")
+  matchedFinancialEvidence      FinancialTransactionEvidence[]  @relation("FinancialEvidenceMatcher")
+  createdFinancialExpectations  FinancialExpectation[]          @relation("FinancialExpectationCreator")
+  financialAuditEvents          FinancialAuditEvent[]           @relation("FinancialAuditActor")
+  reviewedBankTransactions      BankTransactionClassification[] @relation("BankTransactionReviewer")
+  createdAdminFeeAgreements     AdminFeeAgreement[]             @relation("AdminFeeAgreementCreator")
+  uploadedPilotInvoices         PilotProviderInvoice[]          @relation("PilotInvoiceUploader")
+  postedPilotInvoices           PilotProviderInvoice[]          @relation("PilotInvoicePoster")
+  resolvedPilotIssues           PilotImportIssue[]              @relation("PilotIssueResolver")
+  approvedPilotProductMappings  PilotProductMapping[]           @relation("PilotProductMappingApprover")
+  truckImportBatches            TruckImportBatch[]              @relation("TruckImportActor")
+  truckLifecycleEvents          TruckLifecycleEvent[]           @relation("TruckLifecycleActor")
 
   @@index([activeCompanyId])
 }
@@ -415,31 +418,32 @@ model TelegramPendingAction {
 }
 
 model Truck {
-  id                    String                 @id @default(cuid())
-  unitNumber            String
-  unitNumberNormalized  String?
-  vin                   String?
-  vinNormalized         String?                @unique
-  year                  Int?
-  make                  String?
-  model                 String?
-  status                TruckStatus            @default(ACTIVE)
-  companyId             String
-  company               Company                @relation(fields: [companyId], references: [id])
-  cabType               CabType                @default(SLEEPER)
-  isOwnerOp             Boolean                @default(false)
-  ownerName             String?
-  createdAt             DateTime               @default(now())
-  updatedAt             DateTime               @updatedAt
-  drivers               Driver[]
-  loads                 Load[]
-  settlements           Settlement[]
-  truckInspections      TruckInspection[]
-  financialAllocations  FinancialAllocation[]
-  financialExpectations FinancialExpectation[]
-  adminFeeAgreements    AdminFeeAgreement[]
-  pilotFuelingEvents    PilotFuelingEvent[]
-  importRows            TruckImportRow[]
+  id                         String                      @id @default(cuid())
+  unitNumber                 String
+  unitNumberNormalized       String?
+  vin                        String?
+  vinNormalized              String?                     @unique
+  year                       Int?
+  make                       String?
+  model                      String?
+  status                     TruckStatus                 @default(ACTIVE)
+  companyId                  String
+  company                    Company                     @relation(fields: [companyId], references: [id])
+  cabType                    CabType                     @default(SLEEPER)
+  isOwnerOp                  Boolean                     @default(false)
+  ownerName                  String?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  drivers                    Driver[]
+  loads                      Load[]
+  settlements                Settlement[]
+  truckInspections           TruckInspection[]
+  financialAllocations       FinancialAllocation[]
+  bankTransactionAllocations BankTransactionAllocation[]
+  financialExpectations      FinancialExpectation[]
+  adminFeeAgreements         AdminFeeAgreement[]
+  pilotFuelingEvents         PilotFuelingEvent[]
+  importRows                 TruckImportRow[]
 
   @@unique([companyId, unitNumberNormalized])
   @@index([companyId, status, unitNumber])
@@ -550,45 +554,47 @@ model CustomerContact {
 }
 
 model Trailer {
-  id                   String                @id @default(cuid())
-  companyId            String
-  company              Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unitNumber           String
-  equipmentType        TrailerEquipmentType  @default(DRY_VAN)
-  status               TrailerStatus         @default(AVAILABLE)
-  vin                  String?
-  plate                String?
-  state                String?
-  notes                String?               @db.Text
-  loads                Load[]
-  documents            TrailerDocument[]
-  financialAllocations FinancialAllocation[]
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  id                         String                      @id @default(cuid())
+  companyId                  String
+  company                    Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  unitNumber                 String
+  equipmentType              TrailerEquipmentType        @default(DRY_VAN)
+  status                     TrailerStatus               @default(AVAILABLE)
+  vin                        String?
+  plate                      String?
+  state                      String?
+  notes                      String?                     @db.Text
+  loads                      Load[]
+  documents                  TrailerDocument[]
+  financialAllocations       FinancialAllocation[]
+  bankTransactionAllocations BankTransactionAllocation[]
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
 
   @@unique([companyId, unitNumber])
   @@index([companyId, status, equipmentType])
 }
 
 model Driver {
-  id                   String                @id @default(cuid())
-  companyId            String?
-  company              Company?              @relation("DriverCompany", fields: [companyId], references: [id])
-  firstName            String
-  lastName             String
-  phone                String?
-  email                String?
-  licenseNum           String?
-  payType              DriverPayType         @default(PERCENTAGE)
-  payRate              Float
-  truckId              String?
-  truck                Truck?                @relation(fields: [truckId], references: [id])
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
-  loads                Load[]
-  settlements          Settlement[]
-  driverOrientations   DriverOrientation[]
-  financialAllocations FinancialAllocation[]
+  id                         String                      @id @default(cuid())
+  companyId                  String?
+  company                    Company?                    @relation("DriverCompany", fields: [companyId], references: [id])
+  firstName                  String
+  lastName                   String
+  phone                      String?
+  email                      String?
+  licenseNum                 String?
+  payType                    DriverPayType               @default(PERCENTAGE)
+  payRate                    Float
+  truckId                    String?
+  truck                      Truck?                      @relation(fields: [truckId], references: [id])
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  loads                      Load[]
+  settlements                Settlement[]
+  driverOrientations         DriverOrientation[]
+  financialAllocations       FinancialAllocation[]
+  bankTransactionAllocations BankTransactionAllocation[]
 
   @@index([companyId])
 }
@@ -756,55 +762,220 @@ model TruckInspection {
   createdAt      DateTime @default(now())
 }
 
+enum BankConnectionProvider {
+  PLAID
+  FILE_IMPORT
+  OTHER
+}
+
+enum BankConnectionStatus {
+  ACTIVE
+  ERROR
+  REQUIRES_REAUTH
+  DISABLED
+  REVOKED
+}
+
+enum BankTransactionLifecycle {
+  PENDING
+  POSTED
+  REMOVED
+}
+
+enum BankTransactionReviewStatus {
+  UNREVIEWED
+  SUGGESTED
+  REVIEWED
+  NEEDS_REVIEW
+  IGNORED
+}
+
+enum BankClassificationScope {
+  COMPANY_LEVEL
+  ENTITY_ALLOCATED
+}
+
+enum BankReconciliationStatus {
+  NOT_APPLICABLE
+  UNMATCHED
+  PARTIALLY_MATCHED
+  MATCHED
+  DISCREPANCY
+}
+
+// Legacy table name retained to evolve the existing Plaid connection safely.
 model BankAccount {
-  id               String            @id @default(cuid())
-  companyId        String?
-  company          Company?          @relation(fields: [companyId], references: [id])
-  plaidItemId      String            @unique
-  plaidAccessToken String
-  institutionId    String?
-  institutionName  String?
-  accounts         BankSubAccount[]
-  transactions     BankTransaction[]
-  lastSync         DateTime?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  id                     String                      @id @default(cuid())
+  companyId              String?
+  company                Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  provider               BankConnectionProvider      @default(PLAID)
+  externalConnectionId   String?
+  plaidItemId            String?                     @unique
+  plaidAccessToken       String?                     @db.Text
+  accessTokenCiphertext  String?                     @db.Text
+  institutionId          String?
+  institutionName        String?
+  status                 BankConnectionStatus        @default(ACTIVE)
+  consentMetadata        Json?
+  syncCursor             String?
+  lastSync               DateTime?
+  lastSyncAttemptAt      DateTime?
+  lastSyncErrorCode      String?
+  lastSyncErrorMessage   String?
+  disabledAt             DateTime?
+  revokedAt              DateTime?
+  accounts               BankSubAccount[]
+  transactions           BankTransaction[]
+  transactionExternalIds BankTransactionExternalId[]
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+
+  @@unique([companyId, provider, externalConnectionId])
+  @@index([companyId, status])
 }
 
 model BankSubAccount {
-  id               String            @id @default(cuid())
-  bankAccountId    String
-  bankAccount      BankAccount       @relation(fields: [bankAccountId], references: [id])
-  plaidAccountId   String            @unique
-  name             String
-  officialName     String?
-  type             String
-  subtype          String?
-  mask             String?
-  currentBalance   Float?
-  availableBalance Float?
-  transactions     BankTransaction[]
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  id                    String            @id @default(cuid())
+  bankAccountId         String
+  bankAccount           BankAccount       @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  externalAccountId     String?
+  plaidAccountId        String?           @unique
+  institutionName       String?
+  name                  String
+  officialName          String?
+  type                  String
+  subtype               String?
+  mask                  String?
+  currency              String            @default("USD")
+  currentBalance        Float?
+  availableBalance      Float?
+  currentBalanceMinor   BigInt?
+  availableBalanceMinor BigInt?
+  isActive              Boolean           @default(true)
+  lastSyncedAt          DateTime?
+  transactions          BankTransaction[]
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@unique([bankAccountId, externalAccountId])
+  @@index([bankAccountId, isActive])
 }
 
 model BankTransaction {
-  id                 String          @id @default(cuid())
-  bankAccountId      String
-  bankAccount        BankAccount     @relation(fields: [bankAccountId], references: [id])
-  subAccountId       String?
-  subAccount         BankSubAccount? @relation(fields: [subAccountId], references: [id])
-  plaidTransactionId String          @unique
-  date               DateTime
-  amount             Float
-  name               String
-  merchantName       String?
-  category           String?
-  subCategory        String?
-  pending            Boolean         @default(false)
-  notes              String?
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
+  id                           String                         @id @default(cuid())
+  bankAccountId                String
+  bankAccount                  BankAccount                    @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  subAccountId                 String?
+  subAccount                   BankSubAccount?                @relation(fields: [subAccountId], references: [id], onDelete: Restrict)
+  companyId                    String?
+  company                      Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  plaidTransactionId           String?                        @unique
+  providerTransactionId        String?
+  providerPendingTransactionId String?
+  date                         DateTime
+  authorizedDate               DateTime?                      @db.Date
+  postedDate                   DateTime?                      @db.Date
+  amount                       Float
+  amountMinor                  BigInt?
+  providerAmountText           String?
+  currency                     String                         @default("USD")
+  direction                    FinancialDirection?
+  name                         String
+  originalDescription          String?
+  merchantName                 String?
+  category                     String?
+  subCategory                  String?
+  providerCategory             Json?
+  pending                      Boolean                        @default(false)
+  lifecycle                    BankTransactionLifecycle       @default(POSTED)
+  checkNumber                  String?
+  referenceNumber              String?
+  location                     Json?
+  sourceMetadata               Json?
+  sourceHashSha256             String?
+  firstSeenAt                  DateTime                       @default(now())
+  lastSeenAt                   DateTime                       @default(now())
+  removedAt                    DateTime?
+  notes                        String?
+  externalIds                  BankTransactionExternalId[]
+  classification               BankTransactionClassification?
+  allocations                  BankTransactionAllocation[]
+  auditEvents                  FinancialAuditEvent[]
+  createdAt                    DateTime                       @default(now())
+  updatedAt                    DateTime                       @updatedAt
+
+  @@unique([bankAccountId, providerTransactionId])
+  @@index([companyId, date, id])
+  @@index([subAccountId, date, id])
+  @@index([lifecycle, date, id])
+  @@index([sourceHashSha256])
+}
+
+model BankTransactionExternalId {
+  id                String          @id @default(cuid())
+  bankAccountId     String
+  bankTransactionId String
+  externalId        String
+  isCurrent         Boolean         @default(true)
+  firstSeenAt       DateTime        @default(now())
+  lastSeenAt        DateTime        @default(now())
+  bankAccount       BankAccount     @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  bankTransaction   BankTransaction @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
+
+  @@unique([bankAccountId, externalId])
+  @@index([bankTransactionId, isCurrent])
+}
+
+model BankTransactionClassification {
+  id                   String                      @id @default(cuid())
+  bankTransactionId    String                      @unique
+  categoryId           String?
+  scope                BankClassificationScope     @default(COMPANY_LEVEL)
+  reviewStatus         BankTransactionReviewStatus @default(UNREVIEWED)
+  reconciliationStatus BankReconciliationStatus    @default(UNMATCHED)
+  notes                String?                     @db.Text
+  suggestionReason     String?
+  reviewedByUserId     String?
+  reviewedAt           DateTime?
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  bankTransaction      BankTransaction             @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
+  category             FinancialCategory?          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  reviewedBy           User?                       @relation("BankTransactionReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([reviewStatus, updatedAt])
+  @@index([categoryId, reviewStatus])
+  @@index([reconciliationStatus, updatedAt], map: "BankTxClass_reconciliation_updated_idx")
+}
+
+model BankTransactionAllocation {
+  id                String            @id @default(cuid())
+  bankTransactionId String
+  amountMinor       BigInt
+  categoryId        String
+  companyId         String
+  truckId           String?
+  trailerId         String?
+  driverId          String?
+  partyId           String?
+  memo              String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  bankTransaction   BankTransaction   @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
+  category          FinancialCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  company           Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck             Truck?            @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  trailer           Trailer?          @relation(fields: [trailerId], references: [id], onDelete: Restrict)
+  driver            Driver?           @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  party             FinancialParty?   @relation(fields: [partyId], references: [id], onDelete: Restrict)
+
+  @@index([bankTransactionId])
+  @@index([categoryId])
+  @@index([companyId])
+  @@index([truckId])
+  @@index([trailerId])
+  @@index([driverId])
+  @@index([partyId])
 }
 
 model EmailAccount {
@@ -1384,23 +1555,25 @@ model FinancialImportRecord {
 }
 
 model FinancialCategory {
-  id                   String                   @id @default(cuid())
-  operatingGroupId     String
-  name                 String
-  type                 FinancialCategoryType
-  isActive             Boolean                  @default(true)
-  isSystemDefault      Boolean                  @default(false)
-  parentCategoryId     String?
-  createdAt            DateTime                 @default(now())
-  updatedAt            DateTime                 @updatedAt
-  operatingGroup       OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  parentCategory       FinancialCategory?       @relation("FinancialCategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: Restrict)
-  childCategories      FinancialCategory[]      @relation("FinancialCategoryHierarchy")
-  transactions         FinancialTransaction[]
-  allocations          FinancialAllocation[]
-  pilotProductMappings PilotProductMapping[]
-  pilotProductLines    PilotFuelProductLine[]
-  pilotAdjustments     PilotInvoiceAdjustment[]
+  id                             String                          @id @default(cuid())
+  operatingGroupId               String
+  name                           String
+  type                           FinancialCategoryType
+  isActive                       Boolean                         @default(true)
+  isSystemDefault                Boolean                         @default(false)
+  parentCategoryId               String?
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  operatingGroup                 OperatingGroup                  @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  parentCategory                 FinancialCategory?              @relation("FinancialCategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: Restrict)
+  childCategories                FinancialCategory[]             @relation("FinancialCategoryHierarchy")
+  transactions                   FinancialTransaction[]
+  allocations                    FinancialAllocation[]
+  pilotProductMappings           PilotProductMapping[]
+  pilotProductLines              PilotFuelProductLine[]
+  pilotAdjustments               PilotInvoiceAdjustment[]
+  bankTransactionClassifications BankTransactionClassification[]
+  bankTransactionAllocations     BankTransactionAllocation[]
 
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
@@ -1425,22 +1598,23 @@ model FinancialProgram {
 }
 
 model FinancialParty {
-  id                 String                 @id @default(cuid())
-  operatingGroupId   String
-  companyId          String?
-  type               FinancialPartyType
-  name               String
-  externalReference  String?
-  isActive           Boolean                @default(true)
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
-  operatingGroup     OperatingGroup         @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  company            Company?               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  transactionVendor  FinancialTransaction[] @relation("FinancialTransactionVendor")
-  transactionOwner   FinancialTransaction[] @relation("FinancialTransactionOwner")
-  allocations        FinancialAllocation[]
-  expectationParties FinancialExpectation[]
-  adminFeeAgreements AdminFeeAgreement[]
+  id                         String                      @id @default(cuid())
+  operatingGroupId           String
+  companyId                  String?
+  type                       FinancialPartyType
+  name                       String
+  externalReference          String?
+  isActive                   Boolean                     @default(true)
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  operatingGroup             OperatingGroup              @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company                    Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  transactionVendor          FinancialTransaction[]      @relation("FinancialTransactionVendor")
+  transactionOwner           FinancialTransaction[]      @relation("FinancialTransactionOwner")
+  allocations                FinancialAllocation[]
+  expectationParties         FinancialExpectation[]
+  adminFeeAgreements         AdminFeeAgreement[]
+  bankTransactionAllocations BankTransactionAllocation[]
 
   @@unique([operatingGroupId, type, name])
   @@index([companyId, type])
@@ -1659,6 +1833,7 @@ model FinancialAuditEvent {
   action                 String
   actorUserId            String
   pilotProviderInvoiceId String?
+  bankTransactionId      String?
   before                 Json?
   after                  Json?
   metadata               Json?
@@ -1668,11 +1843,13 @@ model FinancialAuditEvent {
   transaction            FinancialTransaction? @relation(fields: [transactionId], references: [id], onDelete: Restrict)
   actor                  User                  @relation("FinancialAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   pilotProviderInvoice   PilotProviderInvoice? @relation(fields: [pilotProviderInvoiceId], references: [id], onDelete: Restrict)
+  bankTransaction        BankTransaction?      @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
 
   @@index([operatingGroupId, occurredAt, id])
   @@index([transactionId, occurredAt, id])
   @@index([actorUserId, occurredAt, id])
   @@index([pilotProviderInvoiceId, occurredAt, id])
+  @@index([bankTransactionId, occurredAt, id])
 }
 
 model PilotProviderInvoice {

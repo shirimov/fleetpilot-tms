@@ -1,13 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { plaidClient } from '@/lib/plaid';
 import { prisma } from '@/lib/prisma';
-import { authorizationService } from '@/lib/auth/authorization';
 import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
+import { financialControlAuthorization } from '@/lib/finance/financial-control-authorization';
+import { bankProviderConfiguration, encryptBankAccessToken } from '@/lib/finance/bank-token-crypto';
+import { BankLedgerValidationError, BankProviderUnavailableError } from '@/lib/finance/bank-ledger-errors';
+import { bankSyncService } from '@/lib/finance/bank-sync-service';
+
+function balanceMinor(value: number | null | undefined) {
+  return value == null ? null : BigInt(Math.round(value * 100));
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const context = await authorizationService.requireActiveCompany('ADMIN');
+    const context = await financialControlAuthorization.requireContext('ADMIN');
+    if (!bankProviderConfiguration().plaidConfigured) {
+      throw new BankProviderUnavailableError('Bank provider is not configured.');
+    }
     const { public_token } = await req.json();
+    if (typeof public_token !== 'string' || !public_token.trim()) {
+      throw new BankLedgerValidationError('A valid provider token is required.');
+    }
 
     // Exchange public token for access token
     const exchangeResponse = await plaidClient.itemPublicTokenExchange({ public_token });
@@ -34,14 +47,17 @@ export async function POST(req: NextRequest) {
     // Save to DB
     const bankAccount = await prisma.bankAccount.create({
       data: {
-        companyId: context.companyId,
+        companyId: context.activeCompanyId,
+        provider: 'PLAID',
+        externalConnectionId: itemId,
         plaidItemId: itemId,
-        plaidAccessToken: accessToken,
+        plaidAccessToken: null,
+        accessTokenCiphertext: encryptBankAccessToken(accessToken),
         institutionId,
         institutionName,
-        lastSync: new Date(),
         accounts: {
           create: accounts.map(acc => ({
+            externalAccountId: acc.account_id,
             plaidAccountId: acc.account_id,
             name: acc.name,
             officialName: acc.official_name || null,
@@ -50,77 +66,44 @@ export async function POST(req: NextRequest) {
             mask: acc.mask || null,
             currentBalance: acc.balances.current || 0,
             availableBalance: acc.balances.available || 0,
+            currentBalanceMinor: balanceMinor(acc.balances.current),
+            availableBalanceMinor: balanceMinor(acc.balances.available),
+            currency: acc.balances.iso_currency_code || 'USD',
           })),
         },
       },
       include: { accounts: true },
     });
 
-    // Sync transactions (last 30 days)
-    await syncTransactions(accessToken, bankAccount.id);
+    await bankSyncService.syncNow(context, bankAccount.id);
 
     const safeBankAccount = await prisma.bankAccount.findUniqueOrThrow({
       where: { id: bankAccount.id },
       select: {
         id: true,
         companyId: true,
-        plaidItemId: true,
+        provider: true,
         institutionId: true,
         institutionName: true,
         lastSync: true,
         createdAt: true,
         updatedAt: true,
-        accounts: true,
+        accounts: {
+          select: {
+            id: true,
+            name: true,
+            officialName: true,
+            type: true,
+            subtype: true,
+            mask: true,
+            currentBalance: true,
+            availableBalance: true,
+          },
+        },
       },
     });
     return NextResponse.json({ success: true, bankAccount: safeBankAccount });
   } catch (error: unknown) {
     return tenantRouteErrorResponse(error, 'Failed to connect bank');
-  }
-}
-
-async function syncTransactions(accessToken: string, bankAccountId: string) {
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - 30);
-  const endDate = new Date();
-
-  const fmt = (d: Date) => d.toISOString().split('T')[0];
-
-  const response = await plaidClient.transactionsGet({
-    access_token: accessToken,
-    start_date: fmt(startDate),
-    end_date: fmt(endDate),
-  });
-
-  const transactions = response.data.transactions;
-
-  // Get sub account map
-  const subAccounts = await prisma.bankSubAccount.findMany({
-    where: { bankAccountId },
-  });
-  const subAccountMap = Object.fromEntries(subAccounts.map(a => [a.plaidAccountId, a.id]));
-
-  // Upsert transactions
-  for (const tx of transactions) {
-    await prisma.bankTransaction.upsert({
-      where: { plaidTransactionId: tx.transaction_id },
-      create: {
-        bankAccountId,
-        subAccountId: subAccountMap[tx.account_id] || null,
-        plaidTransactionId: tx.transaction_id,
-        date: new Date(tx.date),
-        amount: tx.amount,
-        name: tx.name,
-        merchantName: tx.merchant_name || null,
-        category: tx.personal_finance_category?.primary || (tx.category?.[0] ?? null),
-        subCategory: tx.personal_finance_category?.detailed || (tx.category?.[1] ?? null),
-        pending: tx.pending,
-      },
-      update: {
-        amount: tx.amount,
-        pending: tx.pending,
-        merchantName: tx.merchant_name || null,
-      },
-    });
   }
 }
