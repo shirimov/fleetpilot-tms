@@ -26,6 +26,7 @@ enum TruckImportRowDisposition {
 
 enum ExternalSyncBatchStatus {
   PREVIEWED
+  PARTIALLY_APPLIED
   APPLIED
 }
 
@@ -42,6 +43,12 @@ enum ExternalSyncDisposition {
   UNCHANGED
   CONFLICT
   INVALID
+  UNRESOLVED_COMPANY
+}
+
+enum ExternalSyncBatchScope {
+  COMPANY
+  ACCOUNT
 }
 
 enum ExternalAccountIdentityStatus {
@@ -129,42 +136,43 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id                      String                           @id @default(cuid())
-  name                    String
-  dotNumber               String?
-  mcNumber                String?
-  createdAt               DateTime                         @default(now())
-  updatedAt               DateTime                         @updatedAt
-  trucks                  Truck[]
-  loads                   Load[]
-  bankAccounts            BankAccount[]
-  taskProjects            TaskProject[]
-  memberships             CompanyMembership[]
-  activeUsers             User[]                           @relation("ActiveCompany")
-  companyDrivers          Driver[]                         @relation("DriverCompany")
-  employees               Employee[]
-  employeeSkills          EmployeeSkillDefinition[]
-  customers               Customer[]
-  trailers                Trailer[]
-  loadActivities          LoadActivity[]
-  telegramUserLinks       TelegramUserLink[]
-  telegramLinkTokens      TelegramLinkToken[]
-  telegramInboundUpdates  TelegramInboundUpdate[]
-  telegramDeliveries      TelegramDelivery[]
-  telegramPendingActions  TelegramPendingAction[]
-  telegramUpdateRequests  TelegramUpdateRequest[]
-  operatingGroupLink      OperatingGroupCompany?
-  financialSources        FinancialSource[]
-  financialTransactions   FinancialTransaction[]
-  financialAllocations    FinancialAllocation[]
-  financialExpectations   FinancialExpectation[]
-  financialParties        FinancialParty[]
-  financialAuditEvents    FinancialAuditEvent[]
-  truckImportBatches      TruckImportBatch[]
-  truckLifecycleEvents    TruckLifecycleEvent[]
-  externalSourceLinks     ExternalSourceLink[]
-  externalSyncBatches     ExternalSyncBatch[]
-  externalAccountMappings ExternalProviderAccountMapping[]
+  id                       String                           @id @default(cuid())
+  name                     String
+  dotNumber                String?
+  mcNumber                 String?
+  createdAt                DateTime                         @default(now())
+  updatedAt                DateTime                         @updatedAt
+  trucks                   Truck[]
+  loads                    Load[]
+  bankAccounts             BankAccount[]
+  taskProjects             TaskProject[]
+  memberships              CompanyMembership[]
+  activeUsers              User[]                           @relation("ActiveCompany")
+  companyDrivers           Driver[]                         @relation("DriverCompany")
+  employees                Employee[]
+  employeeSkills           EmployeeSkillDefinition[]
+  customers                Customer[]
+  trailers                 Trailer[]
+  loadActivities           LoadActivity[]
+  telegramUserLinks        TelegramUserLink[]
+  telegramLinkTokens       TelegramLinkToken[]
+  telegramInboundUpdates   TelegramInboundUpdate[]
+  telegramDeliveries       TelegramDelivery[]
+  telegramPendingActions   TelegramPendingAction[]
+  telegramUpdateRequests   TelegramUpdateRequest[]
+  operatingGroupLink       OperatingGroupCompany?
+  financialSources         FinancialSource[]
+  financialTransactions    FinancialTransaction[]
+  financialAllocations     FinancialAllocation[]
+  financialExpectations    FinancialExpectation[]
+  financialParties         FinancialParty[]
+  financialAuditEvents     FinancialAuditEvent[]
+  truckImportBatches       TruckImportBatch[]
+  truckLifecycleEvents     TruckLifecycleEvent[]
+  externalSourceLinks      ExternalSourceLink[]
+  externalSyncBatches      ExternalSyncBatch[]
+  resolvedExternalSyncRows ExternalSyncRow[]                @relation("ResolvedExternalSyncCompany")
+  externalAccountMappings  ExternalProviderAccountMapping[]
 }
 
 enum CompanyMembershipRole {
@@ -630,7 +638,9 @@ model Driver {
 
 model ExternalSyncBatch {
   id                    String                    @id @default(cuid())
-  companyId             String
+  companyId             String?
+  scope                 ExternalSyncBatchScope    @default(COMPANY)
+  sourceAdapter         String                    @default("QUICKMANAGE_OFFICIAL_API")
   actorUserId           String
   provider              String
   resourceType          ExternalSyncResourceType?
@@ -642,9 +652,10 @@ model ExternalSyncBatch {
   unchangedRows         Int
   conflictRows          Int
   invalidRows           Int
+  unresolvedCompanyRows Int                       @default(0)
   appliedAt             DateTime?
   createdAt             DateTime                  @default(now())
-  company               Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  company               Company?                  @relation(fields: [companyId], references: [id], onDelete: Restrict)
   actor                 User                      @relation("ExternalSyncActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   rows                  ExternalSyncRow[]
 
@@ -662,12 +673,13 @@ model ExternalProviderAccountMapping {
   isEnabled           Boolean                       @default(false)
   verifiedAt          DateTime?
   verifiedByUserId    String?
+  notes               String?
   createdAt           DateTime                      @default(now())
   updatedAt           DateTime                      @updatedAt
   company             Company                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
   verifiedBy          User?                         @relation("ExternalAccountVerifier", fields: [verifiedByUserId], references: [id], onDelete: Restrict)
 
-  @@unique([companyId, provider])
+  @@unique([companyId, provider, externalAccountId])
   @@unique([provider, externalAccountId])
   @@index([provider, identityStatus, isEnabled])
   @@index([verifiedByUserId])
@@ -681,6 +693,13 @@ model ExternalSyncRow {
   disposition          ExternalSyncDisposition
   fleetPilotEntityId   String?
   sourceHashSha256     String
+  sourceAdapter        String                   @default("QUICKMANAGE_OFFICIAL_API")
+  externalCarrierId    String?
+  externalCarrierName  String?
+  resolvedCompanyId    String?
+  mappingVerifiedAt    DateTime?
+  firstSeenAt          DateTime                 @default(now())
+  fetchedAt            DateTime                 @default(now())
   candidate            Json
   message              String?
   externalSourceLinkId String?
@@ -688,10 +707,13 @@ model ExternalSyncRow {
   createdAt            DateTime                 @default(now())
   batch                ExternalSyncBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
   externalSourceLink   ExternalSourceLink?      @relation(fields: [externalSourceLinkId], references: [id], onDelete: Restrict)
+  resolvedCompany      Company?                 @relation("ResolvedExternalSyncCompany", fields: [resolvedCompanyId], references: [id], onDelete: Restrict)
 
   @@unique([batchId, resourceType, externalId])
   @@index([batchId, disposition, resourceType])
   @@index([externalSourceLinkId])
+  @@index([batchId, externalCarrierId])
+  @@index([resolvedCompanyId, disposition])
 }
 
 model ExternalSourceLink {
