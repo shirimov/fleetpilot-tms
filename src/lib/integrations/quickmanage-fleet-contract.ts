@@ -38,11 +38,9 @@ export type QuickManageCustomer = {
   status: string | null;
 };
 
-export type QuickManageFleetSnapshot = {
+export type QuickManageTruckSnapshot = {
+  resourceType: 'TRUCK';
   trucks: QuickManageTruck[];
-  trailers: QuickManageTrailer[];
-  drivers: QuickManageDriver[];
-  customers: QuickManageCustomer[];
 };
 
 type JsonObject = Record<string, unknown>;
@@ -93,42 +91,6 @@ function parseTruckLike(value: unknown, label: string): QuickManageTruck {
   };
 }
 
-function parseDriver(value: unknown): QuickManageDriver {
-  const row = object(value);
-  const id = string(row?.id);
-  if (!row || !id) {
-    throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned an invalid driver record.');
-  }
-  return {
-    id,
-    firstName: string(row.first_name),
-    lastName: string(row.last_name),
-    email: string(row.email),
-    phone: string(row.phone),
-    number: integer(row.number),
-    role: string(row.role),
-    status: string(row.status),
-    hiredDate: string(row.hired_date),
-    terminatedDate: string(row.terminated_date),
-  };
-}
-
-function parseCustomer(value: unknown): QuickManageCustomer {
-  const row = object(value);
-  const id = string(row?.id);
-  const name = string(row?.name);
-  if (!row || !id || !name) {
-    throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage returned an invalid customer record.');
-  }
-  return {
-    id,
-    name,
-    mcNumber: string(row.mc_number),
-    type: string(row.type),
-    status: string(row.status),
-  };
-}
-
 async function searchAll<T>(
   client: Pick<QuickManageClient, 'request'>,
   path: string,
@@ -151,14 +113,9 @@ async function searchAll<T>(
   throw new QuickManageError('MALFORMED_RESPONSE', 'QuickManage fleet pagination exceeded the safe limit.');
 }
 
-export async function fetchQuickManageFleetSnapshot(
+export async function fetchQuickManageTruckSnapshot(
   client: Pick<QuickManageClient, 'request'>,
-): Promise<QuickManageFleetSnapshot> {
-  const [trucks, trailers, drivers, customers] = await Promise.all([
-    searchAll(client, '/x/trucks/search', (row) => parseTruckLike(row, 'truck')),
-    searchAll(client, '/x/trailers/search', (row) => parseTruckLike(row, 'trailer')),
-    searchAll(client, '/x/drivers/search', parseDriver),
-    searchAll(client, '/x/customers/search', parseCustomer),
-  ]);
-  return { trucks, trailers, drivers, customers };
+): Promise<QuickManageTruckSnapshot> {
+  const trucks = await searchAll(client, '/x/trucks/search', (row) => parseTruckLike(row, 'truck'));
+  return { resourceType: 'TRUCK', trucks };
 }

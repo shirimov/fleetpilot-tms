@@ -44,6 +44,12 @@ enum ExternalSyncDisposition {
   INVALID
 }
 
+enum ExternalAccountIdentityStatus {
+  VERIFIED
+  UNVERIFIED
+  MISMATCH
+}
+
 enum CabType {
   DAYCAB
   SLEEPER
@@ -123,41 +129,42 @@ enum LoadActivityAction {
 }
 
 model Company {
-  id                     String                    @id @default(cuid())
-  name                   String
-  dotNumber              String?
-  mcNumber               String?
-  createdAt              DateTime                  @default(now())
-  updatedAt              DateTime                  @updatedAt
-  trucks                 Truck[]
-  loads                  Load[]
-  bankAccounts           BankAccount[]
-  taskProjects           TaskProject[]
-  memberships            CompanyMembership[]
-  activeUsers            User[]                    @relation("ActiveCompany")
-  companyDrivers         Driver[]                  @relation("DriverCompany")
-  employees              Employee[]
-  employeeSkills         EmployeeSkillDefinition[]
-  customers              Customer[]
-  trailers               Trailer[]
-  loadActivities         LoadActivity[]
-  telegramUserLinks      TelegramUserLink[]
-  telegramLinkTokens     TelegramLinkToken[]
-  telegramInboundUpdates TelegramInboundUpdate[]
-  telegramDeliveries     TelegramDelivery[]
-  telegramPendingActions TelegramPendingAction[]
-  telegramUpdateRequests TelegramUpdateRequest[]
-  operatingGroupLink     OperatingGroupCompany?
-  financialSources       FinancialSource[]
-  financialTransactions  FinancialTransaction[]
-  financialAllocations   FinancialAllocation[]
-  financialExpectations  FinancialExpectation[]
-  financialParties       FinancialParty[]
-  financialAuditEvents   FinancialAuditEvent[]
-  truckImportBatches     TruckImportBatch[]
-  truckLifecycleEvents   TruckLifecycleEvent[]
-  externalSourceLinks    ExternalSourceLink[]
-  externalSyncBatches    ExternalSyncBatch[]
+  id                      String                           @id @default(cuid())
+  name                    String
+  dotNumber               String?
+  mcNumber                String?
+  createdAt               DateTime                         @default(now())
+  updatedAt               DateTime                         @updatedAt
+  trucks                  Truck[]
+  loads                   Load[]
+  bankAccounts            BankAccount[]
+  taskProjects            TaskProject[]
+  memberships             CompanyMembership[]
+  activeUsers             User[]                           @relation("ActiveCompany")
+  companyDrivers          Driver[]                         @relation("DriverCompany")
+  employees               Employee[]
+  employeeSkills          EmployeeSkillDefinition[]
+  customers               Customer[]
+  trailers                Trailer[]
+  loadActivities          LoadActivity[]
+  telegramUserLinks       TelegramUserLink[]
+  telegramLinkTokens      TelegramLinkToken[]
+  telegramInboundUpdates  TelegramInboundUpdate[]
+  telegramDeliveries      TelegramDelivery[]
+  telegramPendingActions  TelegramPendingAction[]
+  telegramUpdateRequests  TelegramUpdateRequest[]
+  operatingGroupLink      OperatingGroupCompany?
+  financialSources        FinancialSource[]
+  financialTransactions   FinancialTransaction[]
+  financialAllocations    FinancialAllocation[]
+  financialExpectations   FinancialExpectation[]
+  financialParties        FinancialParty[]
+  financialAuditEvents    FinancialAuditEvent[]
+  truckImportBatches      TruckImportBatch[]
+  truckLifecycleEvents    TruckLifecycleEvent[]
+  externalSourceLinks     ExternalSourceLink[]
+  externalSyncBatches     ExternalSyncBatch[]
+  externalAccountMappings ExternalProviderAccountMapping[]
 }
 
 enum CompanyMembershipRole {
@@ -184,37 +191,38 @@ model User {
   taskActivities                TaskActivity[]
   taskChecklistItems            TaskChecklistItem[]
   taskAttachments               TaskAttachment[]
-  assignedTaskCards             TaskCard[]                     @relation("TaskCardAssignee")
-  createdTaskCards              TaskCard[]                     @relation("TaskCardCreator")
-  archivedTaskCards             TaskCard[]                     @relation("TaskCardArchiver")
-  taskMentions                  TaskMention[]                  @relation("MentionedTaskUser")
-  createdTaskMentions           TaskMention[]                  @relation("TaskMentionCreator")
+  assignedTaskCards             TaskCard[]                       @relation("TaskCardAssignee")
+  createdTaskCards              TaskCard[]                       @relation("TaskCardCreator")
+  archivedTaskCards             TaskCard[]                       @relation("TaskCardArchiver")
+  taskMentions                  TaskMention[]                    @relation("MentionedTaskUser")
+  createdTaskMentions           TaskMention[]                    @relation("TaskMentionCreator")
   loadActivities                LoadActivity[]
   uploadedLoadDocuments         LoadDocument[]
   uploadedTrailerDocuments      TrailerDocument[]
   telegramUserLinks             TelegramUserLink[]
   telegramLinkTokens            TelegramLinkToken[]
   telegramDeliveries            TelegramDelivery[]
-  telegramPendingActions        TelegramPendingAction[]        @relation("TelegramPendingActionUser")
-  requestedTelegramUpdates      TelegramUpdateRequest[]        @relation("TelegramUpdateRequester")
-  assignedTelegramUpdates       TelegramUpdateRequest[]        @relation("TelegramUpdateAssignee")
+  telegramPendingActions        TelegramPendingAction[]          @relation("TelegramPendingActionUser")
+  requestedTelegramUpdates      TelegramUpdateRequest[]          @relation("TelegramUpdateRequester")
+  assignedTelegramUpdates       TelegramUpdateRequest[]          @relation("TelegramUpdateAssignee")
   employeeProfile               Employee?
   operatingGroupMemberships     OperatingGroupMembership[]
-  importedFinancialStatements   FinancialStatement[]           @relation("FinancialStatementImporter")
-  createdFinancialTransactions  FinancialTransaction[]         @relation("FinancialTransactionCreator")
-  reviewedFinancialTransactions FinancialTransaction[]         @relation("FinancialTransactionReviewer")
-  waivedFinancialTransactions   FinancialTransaction[]         @relation("FinancialTransactionWaiver")
-  matchedFinancialEvidence      FinancialTransactionEvidence[] @relation("FinancialEvidenceMatcher")
-  createdFinancialExpectations  FinancialExpectation[]         @relation("FinancialExpectationCreator")
-  financialAuditEvents          FinancialAuditEvent[]          @relation("FinancialAuditActor")
-  createdAdminFeeAgreements     AdminFeeAgreement[]            @relation("AdminFeeAgreementCreator")
-  uploadedPilotInvoices         PilotProviderInvoice[]         @relation("PilotInvoiceUploader")
-  postedPilotInvoices           PilotProviderInvoice[]         @relation("PilotInvoicePoster")
-  resolvedPilotIssues           PilotImportIssue[]             @relation("PilotIssueResolver")
-  approvedPilotProductMappings  PilotProductMapping[]          @relation("PilotProductMappingApprover")
-  truckImportBatches            TruckImportBatch[]             @relation("TruckImportActor")
-  truckLifecycleEvents          TruckLifecycleEvent[]          @relation("TruckLifecycleActor")
-  externalSyncBatches           ExternalSyncBatch[]            @relation("ExternalSyncActor")
+  importedFinancialStatements   FinancialStatement[]             @relation("FinancialStatementImporter")
+  createdFinancialTransactions  FinancialTransaction[]           @relation("FinancialTransactionCreator")
+  reviewedFinancialTransactions FinancialTransaction[]           @relation("FinancialTransactionReviewer")
+  waivedFinancialTransactions   FinancialTransaction[]           @relation("FinancialTransactionWaiver")
+  matchedFinancialEvidence      FinancialTransactionEvidence[]   @relation("FinancialEvidenceMatcher")
+  createdFinancialExpectations  FinancialExpectation[]           @relation("FinancialExpectationCreator")
+  financialAuditEvents          FinancialAuditEvent[]            @relation("FinancialAuditActor")
+  createdAdminFeeAgreements     AdminFeeAgreement[]              @relation("AdminFeeAgreementCreator")
+  uploadedPilotInvoices         PilotProviderInvoice[]           @relation("PilotInvoiceUploader")
+  postedPilotInvoices           PilotProviderInvoice[]           @relation("PilotInvoicePoster")
+  resolvedPilotIssues           PilotImportIssue[]               @relation("PilotIssueResolver")
+  approvedPilotProductMappings  PilotProductMapping[]            @relation("PilotProductMappingApprover")
+  truckImportBatches            TruckImportBatch[]               @relation("TruckImportActor")
+  truckLifecycleEvents          TruckLifecycleEvent[]            @relation("TruckLifecycleActor")
+  externalSyncBatches           ExternalSyncBatch[]              @relation("ExternalSyncActor")
+  verifiedExternalAccounts      ExternalProviderAccountMapping[] @relation("ExternalAccountVerifier")
 
   @@index([activeCompanyId])
 }
@@ -621,25 +629,48 @@ model Driver {
 }
 
 model ExternalSyncBatch {
-  id            String                  @id @default(cuid())
-  companyId     String
-  actorUserId   String
-  provider      String
-  status        ExternalSyncBatchStatus @default(PREVIEWED)
-  totalRows     Int
-  newRows       Int
-  matchedRows   Int
-  unchangedRows Int
-  conflictRows  Int
-  invalidRows   Int
-  appliedAt     DateTime?
-  createdAt     DateTime                @default(now())
-  company       Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  actor         User                    @relation("ExternalSyncActor", fields: [actorUserId], references: [id], onDelete: Restrict)
-  rows          ExternalSyncRow[]
+  id                    String                    @id @default(cuid())
+  companyId             String
+  actorUserId           String
+  provider              String
+  resourceType          ExternalSyncResourceType?
+  fleetPilotRecordCount Int?
+  status                ExternalSyncBatchStatus   @default(PREVIEWED)
+  totalRows             Int
+  newRows               Int
+  matchedRows           Int
+  unchangedRows         Int
+  conflictRows          Int
+  invalidRows           Int
+  appliedAt             DateTime?
+  createdAt             DateTime                  @default(now())
+  company               Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  actor                 User                      @relation("ExternalSyncActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  rows                  ExternalSyncRow[]
 
   @@index([companyId, provider, createdAt])
   @@index([actorUserId, createdAt])
+}
+
+model ExternalProviderAccountMapping {
+  id                  String                        @id @default(cuid())
+  companyId           String
+  provider            String
+  externalAccountId   String?
+  externalDisplayName String?
+  identityStatus      ExternalAccountIdentityStatus @default(UNVERIFIED)
+  isEnabled           Boolean                       @default(false)
+  verifiedAt          DateTime?
+  verifiedByUserId    String?
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
+  company             Company                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  verifiedBy          User?                         @relation("ExternalAccountVerifier", fields: [verifiedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, provider])
+  @@unique([provider, externalAccountId])
+  @@index([provider, identityStatus, isEnabled])
+  @@index([verifiedByUserId])
 }
 
 model ExternalSyncRow {

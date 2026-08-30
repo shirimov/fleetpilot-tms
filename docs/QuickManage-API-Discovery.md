@@ -4,6 +4,29 @@ Source: the password-protected QuickManage Apidog project supplied for FleetPilo
 
 ## Phase 1 fleet contracts
 
+### Trucks-only import prerequisite and identity gate
+
+The first import slice is explicitly `TRUCK`. A preview calls only the official
+`POST /x/trucks/search` contract; it does not fetch, stage, or apply trailers,
+drivers, customers, payroll, or accounting records. Unsupported resource values
+fail before a provider request is made.
+
+The official authentication response documents only `access_token` and `expire`.
+The official Users search and `UserInfo` schemas expose user identity but no
+trustworthy carrier/company/account identifier or name. Consequently, a valid
+token proves connectivity only—it does not prove which QuickManage tenant is
+connected. FleetPilot records this as `UNVERIFIED` and blocks apply. It does not
+infer identity from truck data, users, names, email domains, or other business
+payloads.
+
+The provider-neutral `ExternalProviderAccountMapping` model is the future trust
+boundary between an external account and one FleetPilot company. Apply requires
+an enabled `VERIFIED` mapping with an external account ID, display name,
+verification actor, and verification timestamp. Until QuickManage exposes an
+official authoritative account identity (or the vendor supplies an equally
+verifiable account identifier), the real import remains **AWAITING VERIFIED
+IDENTITY**. Preview remains review-only and writes only staging/audit rows.
+
 All search operations are read-only `POST` requests with a JSON body containing `query`, `filters`, zero-based `page`, and `page_size`. Successful responses use `{ error-fields, message, data: { count, items, page, page_size } }`. The carrier/tenant is derived from the bearer token; no client-supplied carrier ID is accepted.
 
 | Resource | Search | Detail | Search filters | Documented statuses |

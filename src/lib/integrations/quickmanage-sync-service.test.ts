@@ -45,6 +45,7 @@ after(async () => {
   await prisma.externalSyncRow.deleteMany({ where: { batch: { companyId } } });
   await prisma.externalSourceLink.deleteMany({ where: { companyId } });
   await prisma.externalSyncBatch.deleteMany({ where: { companyId } });
+  await prisma.externalProviderAccountMapping.deleteMany({ where: { companyId } });
   await prisma.truck.deleteMany({ where: { id: { in: createdTruckIds } } });
   await prisma.truck.deleteMany({ where: { companyId } });
   await prisma.trailer.deleteMany({ where: { companyId } });
@@ -55,35 +56,47 @@ after(async () => {
   await prisma.company.deleteMany({ where: { id: { in: [companyId, foreignCompanyId] } } });
 });
 
-test('preview is non-canonical, apply is transactional, and repeat sync is idempotent', async () => {
+test('truck preview is isolated, identity-gated, transactional, and idempotent', async () => {
   const beforeCounts = await Promise.all([
     prisma.truck.count({ where: { companyId } }),
     prisma.trailer.count({ where: { companyId } }),
     prisma.customer.count({ where: { companyId } }),
   ]);
-  const preview = await service.preview(context());
+  const preview = await service.preview('TRUCK', context());
   assert.deepEqual(await Promise.all([
     prisma.truck.count({ where: { companyId } }),
     prisma.trailer.count({ where: { companyId } }),
     prisma.customer.count({ where: { companyId } }),
   ]), beforeCounts);
-  assert.equal(preview.newRows, 3);
-  assert.equal(preview.invalidRows, 1);
-  assert.equal(preview.rows.find((row) => row.resourceType === 'DRIVER')?.disposition, 'INVALID');
+  assert.equal(preview.resourceType, 'TRUCK');
+  assert.equal(preview.newRows, 1);
+  assert.equal(preview.rows.every((row) => row.resourceType === 'TRUCK'), true);
+  await assert.rejects(service.apply(preview.id, 'TRUCK', context()), /identity is not verified/);
+  await prisma.externalProviderAccountMapping.create({ data: {
+    companyId, provider: 'QUICKMANAGE', externalAccountId: `verified-${suffix}`,
+    externalDisplayName: `Verified carrier ${suffix}`, identityStatus: 'VERIFIED', isEnabled: true,
+    verifiedAt: new Date(), verifiedByUserId: userId,
+  } });
 
-  const [applied, repeatedApply] = await Promise.all([service.apply(preview.id, context()), service.apply(preview.id, context())]);
+  const [applied, repeatedApply] = await Promise.all([service.apply(preview.id, 'TRUCK', context()), service.apply(preview.id, 'TRUCK', context())]);
   assert.equal(applied.status, 'APPLIED');
   assert.equal(repeatedApply.status, 'APPLIED');
-  assert.equal(await prisma.externalSourceLink.count({ where: { companyId } }), 3);
+  assert.equal(await prisma.externalSourceLink.count({ where: { companyId } }), 1);
   assert.equal(await prisma.truck.count({ where: { companyId, unitNumber: `00${suffix}` } }), 1);
-  assert.equal(await prisma.trailer.count({ where: { companyId, unitNumber: 'T-001' } }), 1);
-  assert.equal(await prisma.customer.count({ where: { companyId, name: `Customer ${suffix}` } }), 1);
+  assert.equal(await prisma.trailer.count({ where: { companyId, unitNumber: 'T-001' } }), 0);
+  assert.equal(await prisma.customer.count({ where: { companyId, name: `Customer ${suffix}` } }), 0);
 
-  const repeatPreview = await service.preview(context());
-  assert.equal(repeatPreview.unchangedRows, 3);
-  assert.equal(repeatPreview.invalidRows, 1);
-  await service.apply(repeatPreview.id, context());
-  assert.equal(await prisma.externalSourceLink.count({ where: { companyId } }), 3);
+  const repeatPreview = await service.preview('TRUCK', context());
+  assert.equal(repeatPreview.unchangedRows, 1);
+  await service.apply(repeatPreview.id, 'TRUCK', context());
+  assert.equal(await prisma.externalSourceLink.count({ where: { companyId } }), 1);
+});
+
+test('unsupported resources fail closed before any provider request', async () => {
+  let calls = 0;
+  const isolated = new QuickManageSyncService(prisma, { request: async () => { calls += 1; throw new Error('unexpected'); } });
+  await assert.rejects(isolated.preview('TRAILER', context()), /Only the QuickManage TRUCK resource/);
+  assert.equal(calls, 0);
 });
 
 test('conflicts, cross-company VINs, and existing records are never overwritten', async () => {
@@ -97,16 +110,16 @@ test('conflicts, cross-company VINs, and existing records are never overwritten'
     year: 2021,
   } });
   createdTruckIds.push(current.id);
-  const conflict = await service.preview(context());
+  const conflict = await service.preview('TRUCK', context());
   assert.equal(conflict.rows.find((row) => row.resourceType === 'TRUCK')?.disposition, 'CONFLICT');
-  await service.apply(conflict.id, context());
+  await service.apply(conflict.id, 'TRUCK', context());
   assert.equal((await prisma.truck.findUniqueOrThrow({ where: { id: current.id } })).make, 'Different Make');
 
   const legacyCrossCompanyVin = `ZZZZZZZZZZ${suffix.slice(0, 7).toUpperCase()}`;
   payloads['/x/trucks/search'] = [{ id: `qm-cross-company-${suffix}`, unit: `CROSS-${suffix}`, vin: legacyCrossCompanyVin, make: null, year: null, status: 'active' }];
   const foreign = await prisma.truck.create({ data: { companyId: foreignCompanyId, unitNumber: `FOREIGN-${suffix}`, vin: legacyCrossCompanyVin, vinNormalized: legacyCrossCompanyVin } });
   createdTruckIds.push(foreign.id);
-  const crossCompany = await service.preview(context());
+  const crossCompany = await service.preview('TRUCK', context());
   assert.equal(crossCompany.rows.find((row) => row.resourceType === 'TRUCK')?.disposition, 'CONFLICT');
   assert.equal(await prisma.truck.count({ where: { companyId, unitNumber: `CROSS-${suffix}` } }), 0);
   payloads['/x/trucks/search'] = originalPayload;

@@ -11,7 +11,7 @@ test('Administrator can inspect and test QuickManage without exposing secrets', 
     browserRequests.push(route.request().method());
     await route.fulfill({ json: route.request().method() === 'POST'
       ? { configured: true, connected: true }
-      : { configured: true } });
+      : { configured: true, connectedAccountName: null, mappedCompanyName: 'Alpha', identityStatus: 'UNVERIFIED', applyEnabled: false, identityMessage: 'Official identity unavailable.' } });
   });
 
   await page.goto('/administration/integrations/quickmanage');
@@ -24,24 +24,22 @@ test('Administrator can inspect and test QuickManage without exposing secrets', 
   expect(await page.locator('body').innerText()).not.toContain('access_token');
 });
 
-test('Administrator previews and explicitly applies safe fleet records', async ({ page }) => {
+test('Administrator previews trucks only and apply follows the verified identity gate', async ({ page }) => {
   await page.route('**/api/auth/company', (route) => route.fulfill({ json: {
     user: { displayName: 'Alpha Owner', email: 'owner@example.test', image: null },
     activeCompanyId: 'company-alpha',
     companies: [{ id: 'company-alpha', name: 'Alpha', role: 'OWNER' }],
   } }));
-  await page.route('**/api/integrations/quickmanage', (route) => route.fulfill({ json: { configured: true } }));
+  await page.route('**/api/integrations/quickmanage', (route) => route.fulfill({ json: {
+    configured: true, connectedAccountName: 'Verified carrier', mappedCompanyName: 'Alpha',
+    identityStatus: 'VERIFIED', applyEnabled: true, identityMessage: 'Verified.',
+  } }));
   const preview = {
-    id: 'sync-1', status: 'PREVIEWED', totalRows: 7,
-    newRows: 2, matchedRows: 1, unchangedRows: 1, conflictRows: 2, invalidRows: 1,
+    id: 'sync-1', status: 'PREVIEWED', resourceType: 'TRUCK', fleetPilotRecordCount: 4, totalRows: 2,
+    newRows: 1, matchedRows: 0, unchangedRows: 0, conflictRows: 1, invalidRows: 0,
     rows: [
       { id: '1', resourceType: 'TRUCK', disposition: 'NEW', message: 'New truck.' },
       { id: '2', resourceType: 'TRUCK', disposition: 'CONFLICT', message: 'Conflict.' },
-      { id: '3', resourceType: 'TRAILER', disposition: 'MATCHED', message: 'Matched.' },
-      { id: '4', resourceType: 'DRIVER', disposition: 'INVALID', message: 'Pay rate required.' },
-      { id: '5', resourceType: 'CUSTOMER', disposition: 'NEW', message: 'New customer.' },
-      { id: '6', resourceType: 'CUSTOMER', disposition: 'UNCHANGED', message: 'Unchanged.' },
-      { id: '7', resourceType: 'CUSTOMER', disposition: 'CONFLICT', message: 'Conflict.' },
     ],
   };
   let applyCalls = 0;
@@ -53,11 +51,30 @@ test('Administrator previews and explicitly applies safe fleet records', async (
   page.on('dialog', (dialog) => void dialog.accept());
 
   await page.goto('/administration/integrations/quickmanage');
-  await page.getByRole('button', { name: 'Sync Fleet Data' }).click();
-  await expect(page.getByRole('heading', { name: 'Fleet sync preview' })).toBeVisible();
-  await expect(page.getByText('7 records reviewed · previewed')).toBeVisible();
-  await expect(page.getByText('2 conflicts and 1 invalid records will not be applied.')).toBeVisible();
-  await page.getByRole('button', { name: 'Apply Safe Records' }).click();
+  await page.getByRole('button', { name: 'Fetch / Preview Trucks' }).click();
+  await expect(page.getByRole('heading', { name: 'Truck sync preview' })).toBeVisible();
+  await expect(page.getByText('2 QuickManage trucks · 4 FleetPilot trucks · previewed')).toBeVisible();
+  await expect(page.getByText('1 conflicts and 0 invalid records will not be applied.')).toBeVisible();
+  await page.getByRole('button', { name: 'Apply Safe Trucks' }).click();
   await expect(page.getByRole('button', { name: 'Applied' })).toBeDisabled();
   expect(applyCalls).toBe(1);
+});
+
+test('unverified QuickManage identity keeps truck apply disabled', async ({ page }) => {
+  await page.route('**/api/auth/company', (route) => route.fulfill({ json: {
+    user: { displayName: 'Alpha Owner', email: 'owner@example.test', image: null }, activeCompanyId: 'company-alpha',
+    companies: [{ id: 'company-alpha', name: 'Alpha', role: 'OWNER' }],
+  } }));
+  await page.route('**/api/integrations/quickmanage', (route) => route.fulfill({ json: {
+    configured: true, connectedAccountName: null, mappedCompanyName: 'Alpha', identityStatus: 'UNVERIFIED',
+    applyEnabled: false, identityMessage: 'Official identity unavailable.',
+  } }));
+  await page.route('**/api/integrations/quickmanage/sync', (route) => route.fulfill({ json: {
+    id: 'sync-2', status: 'PREVIEWED', resourceType: 'TRUCK', fleetPilotRecordCount: 0, totalRows: 0,
+    newRows: 0, matchedRows: 0, unchangedRows: 0, conflictRows: 0, invalidRows: 0, rows: [],
+  } }));
+  await page.goto('/administration/integrations/quickmanage');
+  await page.getByRole('button', { name: 'Fetch / Preview Trucks' }).click();
+  await expect(page.getByRole('button', { name: 'Apply Safe Trucks' })).toBeDisabled();
+  await expect(page.getByText('Blocked until identity is verified')).toBeVisible();
 });

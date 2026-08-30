@@ -10,11 +10,8 @@ import { isValidVin, normalizeUnitNumber, normalizeVin } from '@/lib/fleet/truck
 import { prisma } from '@/lib/prisma';
 import { quickManageClient, type QuickManageClient } from './quickmanage-client';
 import {
-  fetchQuickManageFleetSnapshot,
+  fetchQuickManageTruckSnapshot,
   QUICKMANAGE_PROVIDER,
-  type QuickManageCustomer,
-  type QuickManageDriver,
-  type QuickManageTrailer,
   type QuickManageTruck,
 } from './quickmanage-fleet-contract';
 
@@ -39,12 +36,12 @@ function sourceHash(candidate: Candidate) {
   return createHash('sha256').update(JSON.stringify(candidate)).digest('hex');
 }
 
-function normalizedEmail(value: string | null) {
-  return value?.trim().toLowerCase() || null;
-}
-
 function normalizedText(value: string | null) {
   return value?.trim().toUpperCase() || null;
+}
+
+function normalizedEmail(value: string | null) {
+  return value?.trim().toLowerCase() || null;
 }
 
 function same(existing: string | number | null | undefined, incoming: string | number | null) {
@@ -67,46 +64,6 @@ function truckCandidate(source: QuickManageTruck): Candidate {
   };
 }
 
-function trailerCandidate(source: QuickManageTrailer): Candidate {
-  const sourceStatus = source.status?.toLowerCase() ?? null;
-  return {
-    unitNumber: source.unit,
-    unitNumberNormalized: normalizeUnitNumber(source.unit),
-    vin: source.vin,
-    vinNormalized: source.vin ? normalizeVin(source.vin) : null,
-    make: source.make,
-    year: source.year,
-    status: sourceStatus === 'sold' || sourceStatus === 'total_loss' ? 'INACTIVE' : 'AVAILABLE',
-    sourceStatus,
-    plateNumber: source.plateNumber,
-    inServiceDate: source.inServiceDate,
-  };
-}
-
-function driverCandidate(source: QuickManageDriver): Candidate {
-  return {
-    firstName: source.firstName,
-    lastName: source.lastName,
-    email: normalizedEmail(source.email),
-    phone: source.phone,
-    number: source.number,
-    role: source.role,
-    sourceStatus: source.status,
-    hiredDate: source.hiredDate,
-    terminatedDate: source.terminatedDate,
-  };
-}
-
-function customerCandidate(source: QuickManageCustomer): Candidate {
-  return {
-    name: source.name,
-    mcNumber: source.mcNumber,
-    status: source.status?.toLowerCase() === 'active' ? 'ACTIVE' : null,
-    sourceStatus: source.status,
-    sourceType: source.type,
-  };
-}
-
 function linkedEntityId(link: {
   truckId: string | null;
   trailerId: string | null;
@@ -119,20 +76,26 @@ function linkedEntityId(link: {
 export class QuickManageSyncService {
   constructor(
     private readonly database: PrismaClient = prisma,
-    private readonly client: Pick<QuickManageClient, 'request'> = quickManageClient,
+    private readonly client: Pick<QuickManageClient, 'request'> & Partial<Pick<QuickManageClient, 'isConfigured'>> = quickManageClient,
   ) {}
 
-  async preview(context: CompanyAuthorization) {
-    const snapshot = await fetchQuickManageFleetSnapshot(this.client);
+  async preview(resourceType: unknown, context: CompanyAuthorization) {
+    if (resourceType !== 'TRUCK') {
+      throw new QuickManageSyncValidationError('Only the QuickManage TRUCK resource is supported in this phase.');
+    }
+    const snapshot = await fetchQuickManageTruckSnapshot(this.client);
     return this.database.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quickmanage-sync:${context.companyId}`}))`;
       const rows = await this.classify(tx, context.companyId, snapshot);
+      const fleetPilotRecordCount = await tx.truck.count({ where: { companyId: context.companyId } });
       const count = (disposition: ExternalSyncDisposition) => rows.filter((row) => row.disposition === disposition).length;
       return tx.externalSyncBatch.create({
         data: {
           companyId: context.companyId,
           actorUserId: context.user.id,
           provider: QUICKMANAGE_PROVIDER,
+          resourceType: 'TRUCK',
+          fleetPilotRecordCount,
           totalRows: rows.length,
           newRows: count('NEW'),
           matchedRows: count('MATCHED'),
@@ -165,10 +128,16 @@ export class QuickManageSyncService {
     return batch;
   }
 
-  async apply(batchId: string, context: CompanyAuthorization) {
+  async apply(batchId: string, resourceType: unknown, context: CompanyAuthorization) {
+    if (resourceType !== 'TRUCK') {
+      throw new QuickManageSyncValidationError('Only the QuickManage TRUCK resource is supported in this phase.');
+    }
+    if (this.client.isConfigured && !this.client.isConfigured()) {
+      throw new QuickManageSyncValidationError('QuickManage is not enabled for this environment. Apply is blocked.');
+    }
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.applyOnce(batchId, context);
+        return await this.applyOnce(batchId, resourceType, context);
       } catch (error) {
         if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2034' || attempt === 2) throw error;
       }
@@ -176,7 +145,7 @@ export class QuickManageSyncService {
     throw new QuickManageSyncValidationError('QuickManage sync could not acquire a safe apply lock.');
   }
 
-  private async applyOnce(batchId: string, context: CompanyAuthorization) {
+  private async applyOnce(batchId: string, resourceType: 'TRUCK', context: CompanyAuthorization) {
     return this.database.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quickmanage-sync:${context.companyId}`}))`;
       const batch = await tx.externalSyncBatch.findFirst({
@@ -185,6 +154,16 @@ export class QuickManageSyncService {
       });
       if (!batch) throw new QuickManageSyncValidationError('QuickManage sync preview not found.');
       if (batch.status === 'APPLIED') return batch;
+      if (batch.resourceType !== resourceType || batch.rows.some((row) => row.resourceType !== resourceType)) {
+        throw new QuickManageSyncValidationError('The preview resource does not match this trucks-only apply request. Create a new preview.');
+      }
+      const mapping = await tx.externalProviderAccountMapping.findUnique({
+        where: { companyId_provider: { companyId: context.companyId, provider: QUICKMANAGE_PROVIDER } },
+      });
+      if (!mapping || !mapping.isEnabled || mapping.identityStatus !== 'VERIFIED'
+        || !mapping.externalAccountId || !mapping.externalDisplayName || !mapping.verifiedAt || !mapping.verifiedByUserId) {
+        throw new QuickManageSyncValidationError('QuickManage account identity is not verified for this FleetPilot company. Apply is blocked.');
+      }
 
       for (const row of batch.rows.filter((item) => ['NEW', 'MATCHED', 'UNCHANGED'].includes(item.disposition))) {
         const candidate = row.candidate as Candidate;
@@ -211,14 +190,11 @@ export class QuickManageSyncService {
   private async classify(
     tx: Prisma.TransactionClient,
     companyId: string,
-    snapshot: Awaited<ReturnType<typeof fetchQuickManageFleetSnapshot>>,
+    snapshot: Awaited<ReturnType<typeof fetchQuickManageTruckSnapshot>>,
   ): Promise<PreviewRow[]> {
-    const [links, trucks, trailers, drivers, customers] = await Promise.all([
+    const [links, trucks] = await Promise.all([
       tx.externalSourceLink.findMany({ where: { companyId, provider: QUICKMANAGE_PROVIDER } }),
       tx.truck.findMany({ select: { id: true, companyId: true, unitNumber: true, unitNumberNormalized: true, vin: true, vinNormalized: true, make: true, year: true, status: true } }),
-      tx.trailer.findMany({ select: { id: true, companyId: true, unitNumber: true, vin: true, status: true } }),
-      tx.driver.findMany({ where: { companyId }, select: { id: true, firstName: true, lastName: true, email: true, phone: true } }),
-      tx.customer.findMany({ where: { companyId }, select: { id: true, name: true, mcNumber: true, status: true } }),
     ]);
     const rows: PreviewRow[] = [];
 
@@ -232,53 +208,6 @@ export class QuickManageSyncService {
       rows.push(this.classifyTruckLike('TRUCK', source.id, candidate, matches, link ? linkedEntityId(link) : null, crossCompanyVin));
     }
 
-    for (const source of snapshot.trailers) {
-      const candidate = trailerCandidate(source);
-      const link = links.find((item) => item.resourceType === 'TRAILER' && item.externalId === source.id);
-      const byVin = candidate.vinNormalized ? trailers.filter((item) => item.vin && normalizeVin(item.vin) === candidate.vinNormalized) : [];
-      const byUnit = trailers.filter((item) => item.companyId === companyId && normalizeUnitNumber(item.unitNumber) === candidate.unitNumberNormalized);
-      const matches = link ? trailers.filter((item) => item.id === link.trailerId) : [...new Map([...byVin, ...byUnit].map((item) => [item.id, item])).values()];
-      rows.push(this.classifyTruckLike('TRAILER', source.id, candidate, matches, link ? linkedEntityId(link) : null, byVin.some((item) => item.companyId !== companyId)));
-    }
-
-    for (const source of snapshot.drivers) {
-      const candidate = driverCandidate(source);
-      const link = links.find((item) => item.resourceType === 'DRIVER' && item.externalId === source.id);
-      const matches = link
-        ? drivers.filter((item) => item.id === link.driverId)
-        : candidate.email ? drivers.filter((item) => normalizedEmail(item.email) === candidate.email) : [];
-      if (!candidate.firstName || !candidate.lastName) {
-        rows.push({ resourceType: 'DRIVER', externalId: source.id, disposition: 'INVALID', fleetPilotEntityId: null, candidate, message: 'Driver first and last name are required.' });
-      } else if (matches.length > 1) {
-        rows.push({ resourceType: 'DRIVER', externalId: source.id, disposition: 'CONFLICT', fleetPilotEntityId: null, candidate, message: 'Driver identity is ambiguous.' });
-      } else if (matches.length === 0) {
-        rows.push({ resourceType: 'DRIVER', externalId: source.id, disposition: 'INVALID', fleetPilotEntityId: null, candidate, message: 'QuickManage does not expose the pay rate required to create a FleetPilot Driver safely.' });
-      } else {
-        const match = matches[0];
-        const exact = same(match.firstName, candidate.firstName) && same(match.lastName, candidate.lastName)
-          && same(normalizedEmail(match.email), candidate.email) && same(match.phone, candidate.phone);
-        rows.push({ resourceType: 'DRIVER', externalId: source.id, disposition: link ? (exact ? 'UNCHANGED' : 'CONFLICT') : (exact ? 'MATCHED' : 'CONFLICT'), fleetPilotEntityId: match.id, candidate, message: exact ? 'Safe existing driver match.' : 'Existing driver differs; explicit review is required.' });
-      }
-    }
-
-    for (const source of snapshot.customers) {
-      const candidate = customerCandidate(source);
-      const link = links.find((item) => item.resourceType === 'CUSTOMER' && item.externalId === source.id);
-      const matches = link
-        ? customers.filter((item) => item.id === link.customerId)
-        : candidate.mcNumber ? customers.filter((item) => normalizedText(item.mcNumber) === normalizedText(String(candidate.mcNumber))) : [];
-      if (!candidate.status) {
-        rows.push({ resourceType: 'CUSTOMER', externalId: source.id, disposition: 'INVALID', fleetPilotEntityId: null, candidate, message: 'Customer status is not supported by the documented contract.' });
-      } else if (matches.length > 1) {
-        rows.push({ resourceType: 'CUSTOMER', externalId: source.id, disposition: 'CONFLICT', fleetPilotEntityId: null, candidate, message: 'Customer MC number is ambiguous.' });
-      } else if (matches.length === 0) {
-        rows.push({ resourceType: 'CUSTOMER', externalId: source.id, disposition: 'NEW', fleetPilotEntityId: null, candidate, message: 'New customer.' });
-      } else {
-        const match = matches[0];
-        const exact = same(match.name, candidate.name) && same(match.mcNumber, candidate.mcNumber) && same(match.status, candidate.status);
-        rows.push({ resourceType: 'CUSTOMER', externalId: source.id, disposition: link ? (exact ? 'UNCHANGED' : 'CONFLICT') : (exact ? 'MATCHED' : 'CONFLICT'), fleetPilotEntityId: match.id, candidate, message: exact ? 'Safe existing customer match.' : 'Existing customer differs; explicit review is required.' });
-      }
-    }
     return rows;
   }
 

@@ -9,6 +9,7 @@ type TestConnectionResult = { connected: true; expiresAt: string };
 
 type Dependencies = {
   requireAdministrator: () => Promise<unknown>;
+  getIdentityStatus?: () => Promise<Record<string, unknown>>;
   client: {
     isConfigured: () => boolean;
     testConnection: () => Promise<TestConnectionResult>;
@@ -24,7 +25,10 @@ export function createQuickManageIntegrationHandlers(dependencies: Dependencies)
     GET: async () => {
       try {
         await authorize();
-        return NextResponse.json({ configured: dependencies.client.isConfigured() });
+        return NextResponse.json({
+          configured: dependencies.client.isConfigured(),
+          ...(dependencies.getIdentityStatus ? await dependencies.getIdentityStatus() : {}),
+        });
       } catch (error) {
         return integrationErrorResponse(error);
       }
