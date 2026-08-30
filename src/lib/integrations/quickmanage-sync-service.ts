@@ -44,6 +44,12 @@ function normalizedEmail(value: string | null) {
   return value?.trim().toLowerCase() || null;
 }
 
+function isSerializableWriteConflict(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') return true;
+  const cause = error && typeof error === 'object' && 'cause' in error ? (error as { cause?: { originalCode?: string } }).cause : undefined;
+  return cause?.originalCode === '40001';
+}
+
 function same(existing: string | number | null | undefined, incoming: string | number | null) {
   return incoming === null || normalizedText(String(existing ?? '')) === normalizedText(String(incoming));
 }
@@ -84,6 +90,14 @@ export class QuickManageSyncService {
       throw new QuickManageSyncValidationError('Only the QuickManage TRUCK resource is supported in this phase.');
     }
     const snapshot = await fetchQuickManageTruckSnapshot(this.client);
+    for (let attempt=0;attempt<3;attempt+=1) {
+      try { return await this.previewOnce(context,snapshot); }
+      catch(error){ if(!isSerializableWriteConflict(error)||attempt===2) throw error; }
+    }
+    throw new QuickManageSyncValidationError('QuickManage preview could not acquire a safe lock.');
+  }
+
+  private async previewOnce(context:CompanyAuthorization,snapshot:Awaited<ReturnType<typeof fetchQuickManageTruckSnapshot>>) {
     return this.database.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`quickmanage-sync:${context.companyId}`}))`;
       const rows = await this.classify(tx, context.companyId, snapshot);
@@ -139,7 +153,7 @@ export class QuickManageSyncService {
       try {
         return await this.applyOnce(batchId, resourceType, context);
       } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2034' || attempt === 2) throw error;
+        if (!isSerializableWriteConflict(error) || attempt === 2) throw error;
       }
     }
     throw new QuickManageSyncValidationError('QuickManage sync could not acquire a safe apply lock.');
@@ -157,8 +171,8 @@ export class QuickManageSyncService {
       if (batch.resourceType !== resourceType || batch.rows.some((row) => row.resourceType !== resourceType)) {
         throw new QuickManageSyncValidationError('The preview resource does not match this trucks-only apply request. Create a new preview.');
       }
-      const mapping = await tx.externalProviderAccountMapping.findUnique({
-        where: { companyId_provider: { companyId: context.companyId, provider: QUICKMANAGE_PROVIDER } },
+      const mapping = await tx.externalProviderAccountMapping.findFirst({
+        where: { companyId: context.companyId, provider: QUICKMANAGE_PROVIDER, isEnabled: true },
       });
       if (!mapping || !mapping.isEnabled || mapping.identityStatus !== 'VERIFIED'
         || !mapping.externalAccountId || !mapping.externalDisplayName || !mapping.verifiedAt || !mapping.verifiedByUserId) {

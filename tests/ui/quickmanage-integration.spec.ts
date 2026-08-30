@@ -78,3 +78,20 @@ test('unverified QuickManage identity keeps truck apply disabled', async ({ page
   await expect(page.getByRole('button', { name: 'Apply Safe Trucks' })).toBeDisabled();
   await expect(page.getByText('Blocked until identity is verified')).toBeVisible();
 });
+
+test('administrator explicitly maps a discovered carrier by UUID without auto apply', async ({ page }) => {
+  await page.route('**/api/auth/company', route=>route.fulfill({json:{user:{displayName:'Owner'},activeCompanyId:'company-a',companies:[{id:'company-a',name:'Alpha',role:'OWNER'}]}}));
+  await page.route('**/api/integrations/quickmanage', route=>route.fulfill({json:{configured:true,connectedAccountName:null,mappedCompanyName:'Alpha',identityStatus:'UNVERIFIED',applyEnabled:false,identityMessage:'Official identity unavailable.'}}));
+  let mappingPosts=0;
+  await page.route('**/api/integrations/quickmanage/mappings', route=>{
+    if(route.request().method()==='POST'){mappingPosts+=1;return route.fulfill({json:{id:'mapping-1'}});}
+    return route.fulfill({json:{carriers:[{carrierId:'carrier-stable-uuid',carrierName:'Carrier A',truckCount:12,companyId:null,status:'UNMAPPED'}],companies:[{id:'company-a',name:'Alpha'}]}});
+  });
+  page.on('dialog',dialog=>void dialog.accept());
+  await page.goto('/administration/integrations/quickmanage');
+  await expect(page.getByRole('heading',{name:'Company Mappings'})).toBeVisible();
+  await expect(page.getByText('carrier-stable-uuid')).toBeVisible();
+  await page.getByLabel('FleetPilot company for Carrier A').selectOption('company-a');
+  await expect(page.getByText('Carrier mapping verified. Staged rows were reclassified; Apply was not started.')).toBeVisible();
+  expect(mappingPosts).toBe(1);
+});

@@ -12,10 +12,12 @@ type Status = {
 };
 type ResourceType = 'TRUCK' | 'TRAILER' | 'DRIVER' | 'CUSTOMER';
 type Disposition = 'NEW' | 'MATCHED' | 'UNCHANGED' | 'CONFLICT' | 'INVALID';
+type CarrierMapping = { carrierId:string; carrierName:string|null; truckCount:number; companyId:string|null; status:'VERIFIED'|'UNMAPPED' };
+type CompanyOption = {id:string;name:string};
 type SyncRow = { id: string; resourceType: ResourceType; disposition: Disposition; message: string | null };
 type SyncBatch = {
   id: string;
-  status: 'PREVIEWED' | 'APPLIED';
+  status: 'PREVIEWED' | 'PARTIALLY_APPLIED' | 'APPLIED';
   totalRows: number;
   newRows: number;
   matchedRows: number;
@@ -35,6 +37,8 @@ export default function QuickManageIntegration() {
   const [syncing, setSyncing] = useState(false);
   const [applying, setApplying] = useState(false);
   const [batch, setBatch] = useState<SyncBatch | null>(null);
+  const [carriers, setCarriers] = useState<CarrierMapping[]>([]);
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
 
   useEffect(() => {
     fetch('/api/integrations/quickmanage', { cache: 'no-store' })
@@ -44,6 +48,9 @@ export default function QuickManageIntegration() {
         setStatus(body);
       })
       .catch(() => setMessage('Unable to load QuickManage configuration status.'));
+    fetch('/api/integrations/quickmanage/mappings',{cache:'no-store'})
+      .then(async response => response.ok ? response.json() : {carriers:[],companies:[]})
+      .then(body=>{setCarriers(body.carriers);setCompanies(body.companies)}).catch(()=>setCarriers([]));
   }, []);
 
   async function testConnection() {
@@ -105,6 +112,14 @@ export default function QuickManageIntegration() {
     }
   }
 
+  async function mapCarrier(carrier:CarrierMapping,companyId:string){
+    if(!companyId||!window.confirm(`Map ${carrier.carrierName} to the selected FleetPilot company?`)) return;
+    const response=await fetch('/api/integrations/quickmanage/mappings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({carrierId:carrier.carrierId,carrierName:carrier.carrierName,companyId})});
+    const body=await response.json(); if(!response.ok){setMessage(body.error??'Mapping failed.');return;}
+    setCarriers(current=>current.map(item=>item.carrierId===carrier.carrierId?{...item,companyId,status:'VERIFIED'}:item));
+    setMessage('Carrier mapping verified. Staged rows were reclassified; Apply was not started.');
+  }
+
   return (
     <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -149,6 +164,15 @@ export default function QuickManageIntegration() {
         </dl>
       )}
       {message && <p role="status" className="mt-4 text-sm text-gray-300">{message}</p>}
+      <section className="mt-6 rounded-lg border border-gray-800 bg-gray-950 p-4">
+        <h2 className="font-semibold">Company Mappings</h2>
+        <p className="mt-1 text-sm text-gray-400">Mappings require an exact QuickManage carrier UUID. Names are supporting context and are never matched automatically.</p>
+        {carriers.length === 0 ? <p className="mt-3 text-sm text-gray-500">No staged Equipment carriers discovered.</p> : (
+          <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="text-gray-500"><th>Carrier</th><th>Carrier UUID</th><th>Trucks</th><th>FleetPilot company</th><th>Status</th></tr></thead><tbody>
+            {carriers.map(carrier=><tr key={carrier.carrierId} className="border-t border-gray-800"><td className="py-2">{carrier.carrierName}</td><td className="font-mono text-xs">{carrier.carrierId}</td><td>{carrier.truckCount}</td><td><select aria-label={`FleetPilot company for ${carrier.carrierName}`} value={carrier.companyId??''} onChange={event=>void mapCarrier(carrier,event.target.value)} className="rounded border border-gray-700 bg-gray-900 p-1"><option value="">Select explicitly…</option>{companies.map(company=><option key={company.id} value={company.id}>{company.name}</option>)}</select></td><td>{carrier.status}</td></tr>)}
+          </tbody></table></div>
+        )}
+      </section>
       {batch && (
         <div className="mt-6 space-y-4 border-t border-gray-800 pt-6">
           <div className="flex flex-wrap items-center justify-between gap-3">

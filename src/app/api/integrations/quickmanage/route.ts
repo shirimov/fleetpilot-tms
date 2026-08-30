@@ -10,8 +10,8 @@ const handlers = createQuickManageIntegrationHandlers({
     const context = await authorizationService.requireModule('administration');
     const [company, mapping] = await Promise.all([
       prisma.company.findUniqueOrThrow({ where: { id: context.companyId }, select: { name: true } }),
-      prisma.externalProviderAccountMapping.findUnique({
-        where: { companyId_provider: { companyId: context.companyId, provider: 'QUICKMANAGE' } },
+      prisma.externalProviderAccountMapping.findFirst({
+        where: { companyId: context.companyId, provider: 'QUICKMANAGE', isEnabled: true },
         select: { externalDisplayName: true, identityStatus: true, isEnabled: true },
       }),
     ]);
