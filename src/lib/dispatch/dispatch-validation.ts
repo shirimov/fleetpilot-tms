@@ -5,6 +5,7 @@ import type {
   TrailerEquipmentType,
   TrailerStatus,
 } from '@prisma/client';
+import { isValidVin, normalizeVin } from '@/lib/fleet/truck-import-service';
 import { DispatchValidationError } from './dispatch-errors';
 import type {
   CustomerContactInput,
@@ -134,6 +135,18 @@ export function validateTrailerInput(value: unknown): TrailerInput {
     state: string(input.state, 'Plate state', { max: 32 }),
     notes: string(input.notes, 'Notes', { max: 16_000 }),
   };
+}
+
+export function validateTrailerVinInput(value: unknown): string {
+  const input = object(value);
+  const vin = string(input.vin, 'VIN', { required: true, max: 32 })!;
+  const normalized = normalizeVin(vin);
+  if (!isValidVin(normalized)) {
+    throw new DispatchValidationError(
+      'VIN must be a valid 17-character VIN with a valid check digit.',
+    );
+  }
+  return normalized;
 }
 
 function validateStop(value: unknown, fallbackOrder: number): LoadStopInput {

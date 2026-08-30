@@ -80,6 +80,20 @@ async function mockDispatch(page: Page) {
       status: 'AVAILABLE',
       vin: null,
       plate: 'ABC123',
+      state: 'TX',
+      notes: 'VIN MISSING\nAdd the verified VIN after reviewing source evidence.',
+      assignment: null,
+      documents: [],
+    },
+    {
+      id: 'trailer-with-vin',
+      unitNumber: 'TR-102',
+      equipmentType: 'REEFER',
+      status: 'AVAILABLE',
+      vin: '1M8GDM9AXKP042788',
+      plate: null,
+      state: null,
+      notes: null,
       assignment: null,
       documents: [],
     },
@@ -119,6 +133,18 @@ async function mockDispatch(page: Page) {
     await route.fulfill({ json: customers });
   });
   await page.route('**/api/trailers**', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const trailerId = route.request().url().split('/').at(-2);
+      const trailer = trailers.find(({ id }) => id === trailerId);
+      if (!trailer) {
+        await route.fulfill({ status: 404, json: { error: 'Not found' } });
+        return;
+      }
+      const body = route.request().postDataJSON();
+      trailer.vin = body.vin;
+      await route.fulfill({ json: trailer });
+      return;
+    }
     if (route.request().method() === 'POST') {
       const body = route.request().postDataJSON();
       trailers.push({
@@ -230,4 +256,24 @@ test('moves a load through the dispatch board and shows exception indicators', a
   });
   await page.mouse.up();
   await expect(planned.getByText('FP-2048')).toBeVisible();
+});
+
+test('shows missing VIN in trailer list and detail until a valid VIN is saved', async ({
+  page,
+}) => {
+  await page.getByRole('tab', { name: 'Trailers' }).click();
+  const missing = page.getByRole('article', { name: 'Trailer TR-101' });
+  const complete = page.getByRole('article', { name: 'Trailer TR-102' });
+
+  await expect(missing.getByText('VIN MISSING', { exact: true })).toBeVisible();
+  await expect(complete.getByText('VIN MISSING', { exact: true })).toHaveCount(0);
+  await missing.getByText('Trailer details').click();
+  await expect(missing.getByText('MISSING — ACTION REQUIRED')).toBeVisible();
+  await expect(missing.getByText(/Add the verified VIN/)).toBeVisible();
+
+  await missing.getByRole('button', { name: 'Add VIN' }).click();
+  await missing.getByLabel('VIN for TR-101').fill('1HGCM82633A004352');
+  await missing.getByRole('button', { name: 'Save VIN' }).click();
+  await expect(missing.getByText('VIN MISSING', { exact: true })).toHaveCount(0);
+  await expect(missing.getByText('1HGCM82633A004352')).toBeVisible();
 });

@@ -11,6 +11,7 @@ import {
 } from '@dnd-kit/core';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { TrailerVinStatus } from './TrailerVinStatus';
 
 type Status =
   | 'DRAFT'
@@ -40,6 +41,8 @@ type Trailer = {
   status: string;
   vin: string | null;
   plate: string | null;
+  state: string | null;
+  notes: string | null;
   assignment: { loadNumber: string } | null;
   documents: Array<{ id: string; type: string; displayFilename: string }>;
 };
@@ -234,6 +237,8 @@ export default function DispatchWorkspace() {
   const [error, setError] = useState('');
   const [documentType, setDocumentType] = useState('POD');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
+  const [editingTrailerVinId, setEditingTrailerVinId] = useState<string | null>(null);
+  const [trailerVinDraft, setTrailerVinDraft] = useState('');
   const sensors = useSensors(useSensor(PointerSensor));
 
   async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -408,6 +413,17 @@ export default function DispatchWorkspace() {
       body: JSON.stringify(Object.fromEntries(values)),
     });
     form.reset();
+    await refresh();
+  }
+
+  async function saveTrailerVin(trailerId: string) {
+    await fetchJson(`/api/trailers/${trailerId}/vin`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vin: trailerVinDraft }),
+    });
+    setEditingTrailerVinId(null);
+    setTrailerVinDraft('');
     await refresh();
   }
 
@@ -660,14 +676,52 @@ export default function DispatchWorkspace() {
             </form>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {trailers.map((trailer) => (
-                <article key={trailer.id} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+                <article key={trailer.id} aria-label={`Trailer ${trailer.unitNumber}`} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
                   <div className="flex items-start justify-between">
                     <h3 className="font-mono font-semibold text-blue-300">{trailer.unitNumber}</h3>
-                    <span className="text-xs text-gray-400">{trailer.status}</span>
+                    <div className="flex flex-col items-end gap-2">
+                      <span className="text-xs text-gray-400">{trailer.status}</span>
+                      <TrailerVinStatus vin={trailer.vin} />
+                    </div>
                   </div>
                   <p className="mt-2 text-sm">{trailer.equipmentType.replaceAll('_', ' ')}</p>
                   <p className="mt-2 text-xs text-gray-400">{trailer.assignment ? `Assigned to ${trailer.assignment.loadNumber}` : 'Available'}</p>
                   <p className="mt-2 text-xs text-gray-500">{trailer.documents.length} documents</p>
+                  <details className="mt-3 rounded-lg border border-gray-800 bg-gray-950/60 p-3">
+                    <summary className="cursor-pointer text-xs font-semibold text-blue-300">Trailer details</summary>
+                    <div className="mt-3">
+                      <TrailerVinStatus vin={trailer.vin} detail notes={!trailer.vin ? trailer.notes : null} />
+                      {editingTrailerVinId === trailer.id ? (
+                        <form
+                          className="mt-3 space-y-2"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            saveTrailerVin(trailer.id).catch((caught: Error) => setError(caught.message));
+                          }}
+                        >
+                          <label className="block text-xs text-gray-400">
+                            VIN for {trailer.unitNumber}
+                            <input required maxLength={17} value={trailerVinDraft} onChange={(event) => setTrailerVinDraft(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 font-mono text-sm" />
+                          </label>
+                          <div className="flex gap-3">
+                            <button className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold">Save VIN</button>
+                            <button type="button" onClick={() => setEditingTrailerVinId(null)} className="text-xs text-gray-300">Cancel</button>
+                          </div>
+                        </form>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTrailerVinId(trailer.id);
+                            setTrailerVinDraft(trailer.vin ?? '');
+                          }}
+                          className="mt-3 text-xs font-semibold text-blue-300"
+                        >
+                          {trailer.vin ? 'Edit VIN' : 'Add VIN'}
+                        </button>
+                      )}
+                    </div>
+                  </details>
                   <label className="mt-3 block cursor-pointer text-xs text-blue-300">
                     Add registration
                     <input
