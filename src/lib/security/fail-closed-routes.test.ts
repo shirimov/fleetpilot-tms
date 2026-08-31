@@ -38,6 +38,17 @@ test('QuickManage stays fail closed without data access and Telegram verifies be
   assert.doesNotMatch(telegram, /\bprisma\b/);
 });
 
+test('Plaid webhook verifies provider signature and body hash before database routing', async () => {
+  const plaid = await readFile(
+    'src/app/api/integrations/plaid/webhook/route.ts',
+    'utf8',
+  );
+  assert.match(plaid, /verifyPlaidWebhook/);
+  assert.match(plaid, /plaid-verification/);
+  assert.match(plaid, /webhookVerificationKeyGet/);
+  assert.match(plaid, /bankProviderConfiguration/);
+});
+
 test('fail-closed responses cannot be cached', async () => {
   const response = tenantOwnershipUnavailableResponse();
   assert.equal(response.status, 503);

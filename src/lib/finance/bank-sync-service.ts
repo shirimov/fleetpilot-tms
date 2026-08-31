@@ -10,13 +10,26 @@ import { PlaidBankProviderAdapter } from './plaid-bank-adapter';
 const MAX_SYNC_PAGES = 20;
 
 function sanitizeProviderFailure(error: unknown) {
-  const code =
+  const providerCode =
     error && typeof error === 'object' && 'response' in error
+      ? (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code
+      : undefined;
+  const reauthenticationRequired = providerCode === 'ITEM_LOGIN_REQUIRED';
+  const code =
+    reauthenticationRequired
+      ? 'LOGIN_REQUIRED'
+      : error && typeof error === 'object' && 'response' in error
       ? 'PROVIDER_REQUEST_FAILED'
       : error instanceof BankProviderUnavailableError
         ? 'PROVIDER_NOT_CONFIGURED'
         : 'PROVIDER_SYNC_FAILED';
-  return { code, message: 'Bank transaction synchronization failed.' };
+  return {
+    code,
+    message: reauthenticationRequired
+      ? 'Bank login requires reauthentication.'
+      : 'Bank transaction synchronization failed.',
+    status: reauthenticationRequired ? 'REQUIRES_REAUTH' as const : 'ERROR' as const,
+  };
 }
 
 export class BankSyncService {
@@ -93,12 +106,80 @@ export class BankSyncService {
       await this.database.bankAccount.update({
         where: { id: connection.id },
         data: {
-          status: 'ERROR',
+          status: failure.status,
           lastSyncErrorCode: failure.code,
           lastSyncErrorMessage: failure.message,
         },
       });
       throw new BankProviderUnavailableError(failure.message);
+    }
+  }
+
+  async syncWebhookEvent(eventId: string) {
+    const event = await this.database.bankProviderWebhookEvent.findUnique({
+      where: { id: eventId },
+      select: {
+        id: true,
+        status: true,
+        bankAccount: {
+          select: {
+            id: true,
+            companyId: true,
+            createdByUserId: true,
+            company: {
+              select: {
+                operatingGroupLink: {
+                  select: {
+                    operatingGroupId: true,
+                    operatingGroup: {
+                      select: {
+                        companies: { select: { companyId: true } },
+                        memberships: { select: { userId: true, role: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!event || event.status !== 'QUEUED') return;
+    const connection = event.bankAccount;
+    const group = connection.company?.operatingGroupLink;
+    const actor = group?.operatingGroup.memberships.find(
+      (membership) => membership.userId === connection.createdByUserId,
+    );
+    if (!connection.companyId || !group || !actor || actor.role === 'MEMBER') {
+      await this.database.bankProviderWebhookEvent.update({
+        where: { id: event.id },
+        data: { status: 'FAILED' },
+      });
+      return;
+    }
+    const claimed = await this.database.bankProviderWebhookEvent.updateMany({
+      where: { id: event.id, status: 'QUEUED' },
+      data: { status: 'PROCESSING' },
+    });
+    if (!claimed.count) return;
+    try {
+      await this.syncNow({
+        userId: actor.userId,
+        activeCompanyId: connection.companyId,
+        operatingGroupId: group.operatingGroupId,
+        role: actor.role,
+        companyIds: group.operatingGroup.companies.map(({ companyId }) => companyId),
+      }, connection.id);
+      await this.database.bankProviderWebhookEvent.update({
+        where: { id: event.id },
+        data: { status: 'COMPLETED' },
+      });
+    } catch {
+      await this.database.bankProviderWebhookEvent.update({
+        where: { id: event.id },
+        data: { status: 'FAILED' },
+      });
     }
   }
 }

@@ -1,26 +1,47 @@
 import { NextResponse } from 'next/server';
 import { plaidClient } from '@/lib/plaid';
-import { CountryCode, Products } from 'plaid';
-import { authorizationService } from '@/lib/auth/authorization';
-import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
-import { bankProviderConfiguration } from '@/lib/finance/bank-token-crypto';
-import { BankProviderUnavailableError } from '@/lib/finance/bank-ledger-errors';
+import { financialControlAuthorization } from '@/lib/finance/financial-control-authorization';
+import { bankProviderConfiguration, bankProviderHttpsUrl, decryptBankAccessToken } from '@/lib/finance/bank-token-crypto';
+import { BankLedgerNotFoundError, BankProviderUnavailableError } from '@/lib/finance/bank-ledger-errors';
+import { bankLedgerRouteError } from '@/lib/finance/bank-ledger-route';
+import { prisma } from '@/lib/prisma';
+import { plaidLinkTokenRequest } from '@/lib/finance/plaid-link';
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    if (!bankProviderConfiguration().plaidConfigured) {
+    const providerConfiguration = bankProviderConfiguration();
+    if (!providerConfiguration.plaidConfigured) {
       throw new BankProviderUnavailableError('Bank provider is not configured.');
     }
-    const context = await authorizationService.requireActiveCompany('ADMIN');
-    const response = await plaidClient.linkTokenCreate({
-      user: { client_user_id: `${context.user.id}:${context.companyId}` },
-      client_name: 'FleetPilot TMS',
-      products: [Products.Transactions],
-      country_codes: [CountryCode.Us],
-      language: 'en',
+    const context = await financialControlAuthorization.requireContext('ADMIN');
+    const body = await request.json().catch(() => ({})) as { connectionId?: unknown };
+    const connectionId = typeof body.connectionId === 'string' ? body.connectionId : null;
+    const connection = connectionId
+      ? await prisma.bankAccount.findFirst({
+          where: {
+            id: connectionId,
+            companyId: context.activeCompanyId,
+            provider: 'PLAID',
+            status: { notIn: ['DISABLED', 'REVOKED'] },
+          },
+          select: { accessTokenCiphertext: true },
+        })
+      : null;
+    if (connectionId && !connection?.accessTokenCiphertext) throw new BankLedgerNotFoundError();
+    const webhook = bankProviderHttpsUrl('PLAID_WEBHOOK_URL');
+    const redirectUri = bankProviderHttpsUrl('PLAID_REDIRECT_URI');
+    const response = await plaidClient.linkTokenCreate(plaidLinkTokenRequest({
+      userId: context.userId,
+      companyId: context.activeCompanyId,
+      ...(connection ? { accessToken: decryptBankAccessToken(connection.accessTokenCiphertext!) } : {}),
+      ...(webhook ? { webhook } : {}),
+      ...(redirectUri ? { redirectUri } : {}),
+    }));
+    return NextResponse.json({
+      link_token: response.data.link_token,
+      mode: connection ? 'update' : 'connect',
     });
-    return NextResponse.json({ link_token: response.data.link_token });
   } catch (error: unknown) {
-    return tenantRouteErrorResponse(error, 'Failed to create link token');
+    return bankLedgerRouteError(error);
   }
 }

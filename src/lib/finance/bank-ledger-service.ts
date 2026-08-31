@@ -327,7 +327,14 @@ export class BankLedgerService {
         const createdTransaction = await transaction.bankTransaction.create({
           data: {
             ...sourceData(source, connection, subAccountId),
-            classification: { create: {} },
+            classification: {
+              create: source.providerCategory
+                ? {
+                    reviewStatus: 'SUGGESTED',
+                    suggestionReason: 'Provider supplied a category for review.',
+                  }
+                : {},
+            },
             externalIds: {
               create: { bankAccountId, externalId: source.externalId },
             },
