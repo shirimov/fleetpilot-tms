@@ -195,6 +195,26 @@ test('unknown merchant and missing optional fields do not block a valid transact
   assert.equal(stored.providerCategory, null);
 });
 
+test('transaction date filtering includes both custom range boundaries', async () => {
+  const startId = `custom-start-${suffix}`;
+  const endId = `custom-end-${suffix}`;
+  const outsideId = `custom-outside-${suffix}`;
+  await ledger.ingestTransactions(context(), bankAccountId, [
+    source({ externalId: startId, postedDate: new Date('2026-01-01T00:00:00.000Z') }),
+    source({ externalId: endId, postedDate: new Date('2026-08-31T00:00:00.000Z') }),
+    source({ externalId: outsideId, postedDate: new Date('2026-09-01T00:00:00.000Z') }),
+  ]);
+  const rows = await ledger.listTransactions(context(), {
+    companyId,
+    from: new Date('2026-01-01T00:00:00.000Z'),
+    to: new Date('2026-08-31T00:00:00.000Z'),
+  });
+  const matchingIds = rows.map(({ providerTransactionId }) => providerTransactionId);
+  assert.ok(matchingIds.includes(startId));
+  assert.ok(matchingIds.includes(endId));
+  assert.equal(matchingIds.includes(outsideId), false);
+});
+
 test('a current provider removal marks history removed without deleting the source row', async () => {
   const externalId = `removed-${suffix}`;
   await ledger.ingestTransactions(context(), bankAccountId, [source({ externalId })]);
