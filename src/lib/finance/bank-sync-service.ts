@@ -46,7 +46,7 @@ export class BankSyncService {
       where: {
         id: bankAccountId,
         companyId: { in: context.companyIds },
-        status: 'ACTIVE',
+        status: { in: ['ACTIVE', 'ERROR'] },
       },
       select: {
         id: true,

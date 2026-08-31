@@ -121,9 +121,32 @@ test('ingestion stores exact source data and is idempotent', async () => {
   assert.equal(stored.amountMinor, BigInt(12540));
   assert.equal(stored.direction, 'OUTFLOW');
   assert.equal(stored.originalDescription, 'ACH PURCHASE TEST');
-  assert.equal((await prisma.bankTransactionClassification.findUniqueOrThrow({ where: { bankTransactionId: stored.id } })).reviewStatus, 'SUGGESTED');
+  assert.equal((await prisma.bankTransactionClassification.findUniqueOrThrow({ where: { bankTransactionId: stored.id } })).reviewStatus, 'UNREVIEWED');
+  assert.deepEqual(stored.providerCategory, { primary: 'GENERAL_MERCHANDISE' });
   assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: source().externalId } }), 1);
   assert.equal(await prisma.financialAuditEvent.count({ where: { bankTransactionId: stored.id, action: 'BANK_TRANSACTION_INGESTED' } }), 1);
+});
+
+test('zero-amount provider transactions remain auditable and idempotent', async () => {
+  const externalId = `zero-amount-${suffix}`;
+  const zeroAmountSource = source({
+    externalId,
+    amountMinor: BigInt(0),
+    providerAmountText: '0.00',
+  });
+  const first = await ledger.ingestTransactions(context(), bankAccountId, [zeroAmountSource]);
+  const repeated = await ledger.ingestTransactions(context(), bankAccountId, [zeroAmountSource]);
+  assert.deepEqual(first, { created: 1, updated: 0, total: 1 });
+  assert.deepEqual(repeated, { created: 0, updated: 1, total: 1 });
+  const stored = await prisma.bankTransaction.findFirstOrThrow({
+    where: { bankAccountId, providerTransactionId: externalId },
+  });
+  assert.equal(stored.amountMinor, BigInt(0));
+  assert.equal(stored.providerAmountText, '0.00');
+  assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: externalId } }), 1);
+  assert.equal(await prisma.financialAuditEvent.count({
+    where: { bankTransactionId: stored.id, action: 'BANK_TRANSACTION_INGESTED' },
+  }), 1);
 });
 
 test('external bank account identity is unique within its connection', async () => {
@@ -248,6 +271,54 @@ test('provider sync is bounded, makes zero retries, and stores only sanitized fa
   const failed = await prisma.bankAccount.findUniqueOrThrow({ where: { id: bankAccountId } });
   assert.equal(failed.lastSyncErrorMessage, 'Bank transaction synchronization failed.');
   assert.equal(JSON.stringify(failed).includes(secretToken), false);
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
+});
+
+test('an error connection can retry safely and returns to active after a successful sync', async () => {
+  const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 11).toString('base64');
+  await prisma.bankAccount.update({
+    where: { id: bankAccountId },
+    data: {
+      provider: 'OTHER',
+      accessTokenCiphertext: encryptBankAccessToken(`retry-${suffix}`),
+      status: 'ERROR',
+      lastSyncErrorCode: 'PROVIDER_SYNC_FAILED',
+      lastSyncErrorMessage: 'Bank transaction synchronization failed.',
+      syncCursor: null,
+    },
+  });
+  let calls = 0;
+  const adapter: BankProviderAdapter = {
+    provider: 'OTHER',
+    async syncTransactions() {
+      calls += 1;
+      return {
+        added: [source({
+          externalId: `retry-zero-${suffix}`,
+          amountMinor: BigInt(0),
+          providerAmountText: '0.00',
+        })],
+        modified: [],
+        removedExternalIds: [],
+        nextCursor: 'retry-cursor',
+        hasMore: false,
+      };
+    },
+  };
+  const sync = new BankSyncService(prisma, ledger, new Map([['OTHER', adapter]]));
+  const result = await sync.syncNow(context(), bankAccountId);
+  assert.deepEqual(result, { added: 1, updated: 0, removed: 0, cursor: 'retry-cursor' });
+  assert.equal(calls, 1);
+  const recovered = await prisma.bankAccount.findUniqueOrThrow({ where: { id: bankAccountId } });
+  assert.equal(recovered.status, 'ACTIVE');
+  assert.equal(recovered.syncCursor, 'retry-cursor');
+  assert.ok(recovered.lastSync);
+  assert.equal(recovered.lastSyncErrorCode, null);
+  assert.equal(recovered.lastSyncErrorMessage, null);
+  assert.equal(await prisma.bankTransaction.count({
+    where: { bankAccountId, providerTransactionId: `retry-zero-${suffix}` },
+  }), 1);
   process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
 });
 

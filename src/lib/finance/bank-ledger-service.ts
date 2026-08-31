@@ -266,7 +266,11 @@ export class BankLedgerService {
   ) {
     return this.database.$transaction(async (transaction) => {
       const connection = await transaction.bankAccount.findFirst({
-        where: { id: bankAccountId, companyId: { in: context.companyIds }, status: 'ACTIVE' },
+        where: {
+          id: bankAccountId,
+          companyId: { in: context.companyIds },
+          status: { in: ['ACTIVE', 'ERROR'] },
+        },
         select: {
           id: true,
           companyId: true,
@@ -327,14 +331,7 @@ export class BankLedgerService {
         const createdTransaction = await transaction.bankTransaction.create({
           data: {
             ...sourceData(source, connection, subAccountId),
-            classification: {
-              create: source.providerCategory
-                ? {
-                    reviewStatus: 'SUGGESTED',
-                    suggestionReason: 'Provider supplied a category for review.',
-                  }
-                : {},
-            },
+            classification: { create: {} },
             externalIds: {
               create: { bankAccountId, externalId: source.externalId },
             },
@@ -508,9 +505,6 @@ export class BankLedgerService {
   private validateSource(source: BankProviderTransaction) {
     if (!source.externalId.trim() || !source.externalAccountId.trim()) {
       throw new BankLedgerValidationError('Provider transaction and account IDs are required.');
-    }
-    if (source.amountMinor === BigInt(0)) {
-      throw new BankLedgerValidationError('Bank transaction amount cannot be zero.');
     }
     if (!['INFLOW', 'OUTFLOW', 'TRANSFER'].includes(source.direction)) {
       throw new BankLedgerValidationError('Bank transaction direction is invalid.');
