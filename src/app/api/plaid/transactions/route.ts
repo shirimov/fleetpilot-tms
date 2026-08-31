@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
         name: true,
         merchantName: true,
         amount: true,
+        direction: true,
         category: true,
         subCategory: true,
         pending: true,
@@ -40,8 +41,8 @@ export async function GET(req: NextRequest) {
     });
 
     // Summary stats
-    const income = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-    const expenses = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const income = transactions.filter(t => t.direction === 'INFLOW').reduce((s, t) => s + t.amount, 0);
+    const expenses = transactions.filter(t => t.direction === 'OUTFLOW').reduce((s, t) => s + t.amount, 0);
 
     return NextResponse.json({ transactions, summary: { income, expenses, net: income - expenses } });
   } catch (error) {

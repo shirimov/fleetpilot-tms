@@ -133,6 +133,7 @@ test('zero-amount provider transactions remain auditable and idempotent', async 
     externalId,
     amountMinor: BigInt(0),
     providerAmountText: '0.00',
+    direction: null,
   });
   const first = await ledger.ingestTransactions(context(), bankAccountId, [zeroAmountSource]);
   const repeated = await ledger.ingestTransactions(context(), bankAccountId, [zeroAmountSource]);
@@ -143,10 +144,23 @@ test('zero-amount provider transactions remain auditable and idempotent', async 
   });
   assert.equal(stored.amountMinor, BigInt(0));
   assert.equal(stored.providerAmountText, '0.00');
+  assert.equal(stored.direction, null);
   assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: externalId } }), 1);
   assert.equal(await prisma.financialAuditEvent.count({
     where: { bankTransactionId: stored.id, action: 'BANK_TRANSACTION_INGESTED' },
   }), 1);
+});
+
+test('zero-amount provider transactions reject an arbitrary money direction', async () => {
+  await assert.rejects(
+    ledger.ingestTransactions(context(), bankAccountId, [source({
+      externalId: `invalid-zero-direction-${suffix}`,
+      amountMinor: BigInt(0),
+      providerAmountText: '0.00',
+      direction: 'OUTFLOW',
+    })]),
+    (error) => error instanceof BankLedgerValidationError && error.message === 'Zero-amount bank transactions must have neutral direction.',
+  );
 });
 
 test('external bank account identity is unique within its connection', async () => {
@@ -298,6 +312,7 @@ test('an error connection can retry safely and returns to active after a success
           externalId: `retry-zero-${suffix}`,
           amountMinor: BigInt(0),
           providerAmountText: '0.00',
+          direction: null,
         })],
         modified: [],
         removedExternalIds: [],

@@ -27,6 +27,7 @@ interface Transaction {
   name: string
   merchantName: string | null
   amount: number
+  direction: 'INFLOW' | 'OUTFLOW' | 'TRANSFER' | null
   category: string | null
   pending: boolean
   bankAccount: { institutionName: string }
@@ -140,8 +141,8 @@ export default function FinancePage() {
   const totalBalance = accounts.flatMap(a => a.accounts).reduce((s, a) => s + (a.currentBalance || 0), 0)
 
   const filteredTx = transactions.filter(tx => {
-    if (activeTab === 'income') return tx.amount < 0
-    if (activeTab === 'expenses') return tx.amount > 0
+    if (activeTab === 'income') return tx.direction === 'INFLOW'
+    if (activeTab === 'expenses') return tx.direction === 'OUTFLOW'
     return true
   })
 
@@ -299,8 +300,8 @@ export default function FinancePage() {
                           {tx.pending && ' · Pending'}
                         </p>
                       </div>
-                      <p className={`text-sm font-semibold ml-4 shrink-0 ${tx.amount < 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {tx.amount < 0 ? '+' : '-'}{fmt(tx.amount)}
+                      <p className={`text-sm font-semibold ml-4 shrink-0 ${tx.direction === 'INFLOW' ? 'text-green-400' : tx.direction === 'OUTFLOW' ? 'text-red-400' : 'text-gray-300'}`}>
+                        {tx.direction === 'INFLOW' ? '+' : tx.direction === 'OUTFLOW' ? '-' : ''}{fmt(tx.amount)} · {tx.direction === 'INFLOW' ? 'MONEY IN' : tx.direction === 'OUTFLOW' ? 'MONEY OUT' : 'NEUTRAL'}
                       </p>
                     </div>
                   ))}
