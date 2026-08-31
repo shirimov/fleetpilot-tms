@@ -4,6 +4,7 @@ import { authorizationService } from '@/lib/auth/authorization';
 import { tenantRouteErrorResponse } from '@/lib/security/tenant-route-response';
 import { financialControlAuthorization } from '@/lib/finance/financial-control-authorization';
 import { bankSyncService } from '@/lib/finance/bank-sync-service';
+import { summarizeTransactions } from '@/lib/finance/plaid-transaction-summary';
 
 export async function GET(req: NextRequest) {
   try {
@@ -40,11 +41,7 @@ export async function GET(req: NextRequest) {
       take: 500,
     });
 
-    // Summary stats
-    const income = transactions.filter(t => t.direction === 'INFLOW').reduce((s, t) => s + t.amount, 0);
-    const expenses = transactions.filter(t => t.direction === 'OUTFLOW').reduce((s, t) => s + t.amount, 0);
-
-    return NextResponse.json({ transactions, summary: { income, expenses, net: income - expenses } });
+    return NextResponse.json({ transactions, summary: summarizeTransactions(transactions) });
   } catch (error) {
     return tenantRouteErrorResponse(error, 'Failed to fetch transactions');
   }
