@@ -110,6 +110,28 @@ test('banking workspace shows real source data separately from reviewed FleetPil
     await expect(page.getByRole('heading', { name: 'Roadside Fuel' })).toBeVisible();
     await expect(page.getByText('-$125.40 · MONEY OUT')).toBeVisible();
     await expect(page.getByText('+$5,000.00 · MONEY IN')).toBeVisible();
+    await expect(page.getByText('Categorized', { exact: true })).toBeVisible();
+    await page.getByLabel('Select Roadside Fuel').check();
+    await page.getByLabel('Select Customer deposit').check();
+    await page.getByLabel('Bulk review category').selectOption(category.id);
+    await page.getByRole('button', { name: 'Review selected' }).click();
+    await expect.poll(() => prisma.bankTransactionClassification.count({ where: { bankTransactionId: { in: [transaction.id, deposit.id] }, reviewStatus: 'REVIEWED' } })).toBe(2);
+    await page.getByLabel('Uncategorized only').check();
+    await expect(page.getByRole('heading', { name: 'Roadside Fuel' })).toHaveCount(0);
+    await page.getByLabel('Uncategorized only').uncheck();
+    await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Patterns' }).click();
+    await expect(page.getByRole('heading', { name: 'Normalized transaction patterns' })).toBeVisible();
+    await expect(page.getByText('ROADSIDE FUEL')).toBeVisible();
+    await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Rules' }).click();
+    await page.getByLabel('Rule name').fill('Reviewed fuel merchant');
+    await page.getByLabel('Normalized merchant condition').fill('Roadside Fuel');
+    await page.getByLabel('Rule direction').selectOption('OUTFLOW');
+    await page.getByLabel('Rule category').selectOption(category.id);
+    await page.getByRole('button', { name: 'Create suggestion rule' }).click();
+    await expect(page.getByText('Reviewed fuel merchant')).toBeVisible();
+    await expect.poll(() => prisma.bankCategorizationRule.count({ where: { companyId: company.id } })).toBe(1);
+    await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Transactions' }).click();
+    await page.getByLabel('Review status').selectOption('');
     const period = page.getByLabel('Transaction period');
     await expect(period.getByRole('option', { name: 'Custom' })).toHaveCount(1);
     await period.selectOption('custom');
@@ -140,6 +162,7 @@ test('banking workspace shows real source data separately from reviewed FleetPil
     expect(stored.amountMinor).toBe(BigInt(12540));
   } finally {
     await prisma.financialAuditEvent.deleteMany({ where: { operatingGroupId: group.id } });
+    await prisma.bankCategorizationRule.deleteMany({ where: { operatingGroupId: group.id } });
     const transactionIds = [transaction.id, deposit.id];
     await prisma.bankTransactionAllocation.deleteMany({ where: { bankTransactionId: { in: transactionIds } } });
     await prisma.bankTransactionClassification.deleteMany({ where: { bankTransactionId: { in: transactionIds } } });

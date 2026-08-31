@@ -47,6 +47,7 @@ export async function GET(request: Request) {
         minimumAmountMinor: amount(params.get('minimumAmount')),
         maximumAmountMinor: amount(params.get('maximumAmount')),
         query: params.get('q')?.trim().slice(0, 200) || undefined,
+        uncategorized: params.get('uncategorized') === 'true',
       }),
       { headers: PRIVATE_NO_STORE_HEADERS },
     );

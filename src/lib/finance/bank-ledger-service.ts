@@ -14,6 +14,7 @@ import {
   BankLedgerValidationError,
 } from './bank-ledger-errors';
 import type { BankAllocationInput, BankProviderTransaction } from './bank-ledger-types';
+import { conservativeSemantic, matchRule, normalizeDescriptionToken, normalizeMerchant } from './bank-categorization';
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -42,6 +43,7 @@ type TransactionFilters = {
   minimumAmountMinor?: bigint;
   maximumAmountMinor?: bigint;
   query?: string;
+  uncategorized?: boolean;
 };
 
 function jsonValue(value: unknown): Prisma.InputJsonValue | undefined {
@@ -152,7 +154,7 @@ export class BankLedgerService {
   async listTransactions(context: FinancialAuthorization, filters: TransactionFilters = {}) {
     const companyId = filters.companyId ?? context.activeCompanyId;
     this.requireAllowedCompany(context, companyId);
-    const rows = await this.database.bankTransaction.findMany({
+    const [rows, rules, categories, reviewedHistory] = await Promise.all([this.database.bankTransaction.findMany({
       where: {
         companyId,
         ...(filters.bankAccountId ? { bankAccountId: filters.bankAccountId } : {}),
@@ -180,6 +182,7 @@ export class BankLedgerService {
           : {}),
         ...(filters.reviewStatus ? { classification: { reviewStatus: filters.reviewStatus } } : {}),
         ...(filters.categoryId ? { classification: { categoryId: filters.categoryId } } : {}),
+        ...(filters.uncategorized ? { OR: [{ classification: null }, { classification: { categoryId: null } }] } : {}),
         ...(filters.truckId ? { allocations: { some: { truckId: filters.truckId } } } : {}),
         ...(filters.trailerId ? { allocations: { some: { trailerId: filters.trailerId } } } : {}),
         ...(filters.driverId ? { allocations: { some: { driverId: filters.driverId } } } : {}),
@@ -202,10 +205,23 @@ export class BankLedgerService {
       },
       orderBy: [{ date: 'desc' }, { id: 'desc' }],
       take: 500,
-    });
+    }), this.database.bankCategorizationRule.findMany({ where: { companyId, isEnabled: true }, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }] }), this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true, name: true } }), this.database.bankTransaction.findMany({ where: { companyId, classification: { reviewStatus: 'REVIEWED', categoryId: { not: null } } }, select: { merchantName: true, originalDescription: true, classification: { select: { categoryId: true, category: { select: { name: true } } } } } })]);
+    const history = new Map<string, { categoryId: string; categoryName: string } | null>();
+    for (const item of reviewedHistory) { const key = normalizeMerchant(item.merchantName || item.originalDescription); const value = item.classification?.categoryId && item.classification.category ? { categoryId: item.classification.categoryId, categoryName: item.classification.category.name } : null; if (!history.has(key)) history.set(key, value); else if (JSON.stringify(history.get(key)) !== JSON.stringify(value)) history.set(key, null); }
     return rows.map((row) => ({
       ...row,
       amountMinor: row.amountMinor?.toString() ?? null,
+      merchantNormalized: normalizeMerchant(row.merchantName || row.originalDescription),
+      suggestion: row.classification?.categoryId ? null : (() => {
+        const rule = matchRule(row, rules);
+        if (rule) return { categoryId: rule.categoryId, categoryName: categories.find((category) => category.id === rule.categoryId)?.name ?? 'Category', scope: rule.scope, truckId: rule.truckId, trailerId: rule.trailerId, driverId: rule.driverId, partyId: rule.partyId, source: 'RULE', confidence: 'HIGH', reason: `Matched approved rule: ${rule.name}.`, ruleId: rule.id };
+        const previous = history.get(normalizeMerchant(row.merchantName || row.originalDescription));
+        if (previous) return { ...previous, scope: 'COMPANY_LEVEL', source: 'REVIEWED_HISTORY', confidence: 'HIGH', reason: 'Matches a consistently reviewed merchant.' };
+        const providerTerms = Array.isArray(row.providerCategory) ? row.providerCategory.map(String) : row.providerCategory && typeof row.providerCategory === 'object' ? Object.values(row.providerCategory as Record<string, unknown>).map(String) : [];
+        const provider = categories.find((category) => providerTerms.some((term) => normalizeDescriptionToken(term) === normalizeDescriptionToken(category.name)));
+        if (provider) return { categoryId: provider.id, categoryName: provider.name, scope: 'COMPANY_LEVEL', source: 'PROVIDER_CATEGORY', confidence: 'MEDIUM', reason: 'Plaid category exactly matches a FleetPilot category.' };
+        const semantic = conservativeSemantic(row, categories); return semantic ? { ...semantic, categoryName: categories.find((category) => category.id === semantic.categoryId)?.name ?? 'Category', scope: 'COMPANY_LEVEL' } : null;
+      })(),
       allocations: row.allocations.map((allocation) => ({
         ...allocation,
         amountMinor: allocation.amountMinor.toString(),
@@ -278,6 +294,7 @@ export class BankLedgerService {
         },
       });
       if (!connection?.companyId) throw new BankLedgerNotFoundError();
+      const enabledRules = await transaction.bankCategorizationRule.findMany({ where: { companyId: connection.companyId, isEnabled: true }, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }] });
       const accountMap = new Map<string, string>();
       for (const account of connection.accounts) {
         if (account.externalAccountId) accountMap.set(account.externalAccountId, account.id);
@@ -328,16 +345,18 @@ export class BankLedgerService {
           updated += 1;
           continue;
         }
+        const matchedRule = matchRule({ ...sourceData(source, connection, subAccountId), bankAccountId }, enabledRules);
         const createdTransaction = await transaction.bankTransaction.create({
           data: {
             ...sourceData(source, connection, subAccountId),
-            classification: { create: {} },
+            classification: { create: matchedRule ? { categoryId: matchedRule.categoryId, scope: matchedRule.scope, reviewStatus: 'SUGGESTED', suggestionReason: `Matched approved rule: ${matchedRule.name}.` } : {} },
             externalIds: {
               create: { bankAccountId, externalId: source.externalId },
             },
           },
           select: { id: true },
         });
+        if (matchedRule) await transaction.bankCategorizationRule.update({ where: { id: matchedRule.id }, data: { matchCount: { increment: 1 } } });
         await transaction.financialAuditEvent.create({
           data: {
             operatingGroupId: context.operatingGroupId,
@@ -496,6 +515,35 @@ export class BankLedgerService {
       });
       return classification;
     }, { isolationLevel: 'Serializable' });
+  }
+
+  async bulkReviewTransactions(context: FinancialAuthorization, input: { transactionIds: string[]; categoryId: string; notes?: string | null }) {
+    const ids = [...new Set(input.transactionIds)];
+    if (!ids.length || ids.length > 500) throw new BankLedgerValidationError('Select between 1 and 500 transactions.');
+    return this.database.$transaction(async (transaction) => {
+      const category = await transaction.financialCategory.findFirst({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true } });
+      if (!category) throw new BankLedgerValidationError('Category is invalid.');
+      const rows = await transaction.bankTransaction.findMany({ where: { id: { in: ids }, companyId: { in: context.companyIds } }, include: { classification: true, allocations: true } });
+      if (rows.length !== ids.length) throw new BankLedgerNotFoundError();
+      if (new Set(rows.map((row) => row.companyId)).size !== 1 || !rows[0]?.companyId) throw new BankLedgerValidationError('Bulk review must stay within one company.');
+      if (rows.some((row) => row.classification && ['REVIEWED', 'IGNORED'].includes(row.classification.reviewStatus))) throw new BankLedgerValidationError('Reviewed or ignored transactions must be changed individually.');
+      for (const row of rows) {
+        if (row.allocations.length) throw new BankLedgerValidationError('Transactions with entity allocations require individual review.');
+        const before = row.classification;
+        const after = await transaction.bankTransactionClassification.upsert({ where: { bankTransactionId: row.id }, create: { bankTransactionId: row.id, categoryId: input.categoryId, scope: 'COMPANY_LEVEL', reviewStatus: 'REVIEWED', reconciliationStatus: 'UNMATCHED', notes: input.notes?.trim() || null, reviewedByUserId: context.userId, reviewedAt: new Date() }, update: { categoryId: input.categoryId, scope: 'COMPANY_LEVEL', reviewStatus: 'REVIEWED', notes: input.notes?.trim() || null, reviewedByUserId: context.userId, reviewedAt: new Date() } });
+        await transaction.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: row.companyId, bankTransactionId: row.id, actorUserId: context.userId, action: 'BANK_TRANSACTION_BULK_REVIEWED', before: jsonValue(before), after: jsonValue(after) } });
+      }
+      return { reviewed: rows.length };
+    }, { isolationLevel: 'Serializable' });
+  }
+
+  async bulkReviewPattern(context: FinancialAuthorization, input: { companyId: string; merchantNormalized: string; direction: FinancialDirection | null; categoryId: string }) {
+    this.requireAllowedCompany(context, input.companyId);
+    const candidates = await this.database.bankTransaction.findMany({ where: { companyId: input.companyId, direction: input.direction, OR: [{ classification: null }, { classification: { reviewStatus: { in: ['UNREVIEWED', 'SUGGESTED', 'NEEDS_REVIEW'] } } }] }, select: { id: true, merchantName: true, originalDescription: true }, take: 501 });
+    const ids = candidates.filter((row) => normalizeMerchant(row.merchantName || row.originalDescription) === input.merchantNormalized).map(({ id }) => id);
+    if (ids.length > 500) throw new BankLedgerValidationError('Pattern contains more than 500 transactions; narrow the review selection.');
+    if (!ids.length) throw new BankLedgerValidationError('No reviewable transactions remain in this pattern.');
+    return this.bulkReviewTransactions(context, { transactionIds: ids, categoryId: input.categoryId, notes: `Bulk review for normalized merchant: ${input.merchantNormalized}` });
   }
 
   private requireAllowedCompany(context: FinancialAuthorization, companyId: string) {
