@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
+import type { BankTransactionPeriod } from '@/lib/finance/bank-transaction-period';
 import PlaidLinkButton from './PlaidLinkButton';
 
 type Option = { id: string; name: string };
@@ -111,8 +112,10 @@ export default function BankingWorkspace() {
   const [direction, setDirection] = useState('');
   const [reviewStatus, setReviewStatus] = useState('UNREVIEWED');
   const [subAccountId, setSubAccountId] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const [period, setPeriod] = useState<BankTransactionPeriod>('all');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [appliedCustomRange, setAppliedCustomRange] = useState<{ from: string; to: string } | null>(null);
   const [minimumAmount, setMinimumAmount] = useState('');
   const [maximumAmount, setMaximumAmount] = useState('');
   const [error, setError] = useState('');
@@ -132,8 +135,12 @@ export default function BankingWorkspace() {
     if (direction) params.set('direction', direction);
     if (reviewStatus) params.set('reviewStatus', reviewStatus);
     if (subAccountId) params.set('subAccountId', subAccountId);
-    if (from) params.set('from', from);
-    if (to) params.set('to', to);
+    const effectivePeriod = period === 'custom' && !appliedCustomRange ? 'all' : period;
+    params.set('period', effectivePeriod);
+    if (period === 'custom' && appliedCustomRange) {
+      params.set('from', appliedCustomRange.from);
+      params.set('to', appliedCustomRange.to);
+    }
     if (minimumAmount) params.set('minimumAmount', minimumAmount);
     if (maximumAmount) params.set('maximumAmount', maximumAmount);
     const [nextConnections, nextTransactions, status] = await Promise.all([
@@ -146,7 +153,7 @@ export default function BankingWorkspace() {
     setProviderAvailable(status.liveProviderAvailable);
     setProviderEnvironment(status.environment);
     setWebhookConfigured(status.webhookConfigured);
-  }, [companyId, direction, from, maximumAmount, minimumAmount, query, reviewStatus, subAccountId, to]);
+  }, [appliedCustomRange, companyId, direction, maximumAmount, minimumAmount, period, query, reviewStatus, subAccountId]);
 
   useEffect(() => {
     loadOptions().catch((caught: Error) => setError(caught.message));
@@ -171,6 +178,27 @@ export default function BankingWorkspace() {
     } finally {
       setBusy('');
     }
+  }
+
+  function applyCustomPeriod() {
+    setError('');
+    if (!customFrom || !customTo) {
+      setError('Choose both a start date and an end date.');
+      return;
+    }
+    if (customFrom > customTo) {
+      setError('Start date cannot be after end date.');
+      return;
+    }
+    setAppliedCustomRange({ from: customFrom, to: customTo });
+  }
+
+  function resetPeriod() {
+    setPeriod('all');
+    setCustomFrom('');
+    setCustomTo('');
+    setAppliedCustomRange(null);
+    setError('');
   }
 
   const totalTransactions = useMemo(
@@ -240,16 +268,35 @@ export default function BankingWorkspace() {
         </section>
       ) : (
         <section className="space-y-4">
-          <div className={`${panel} grid gap-3 md:grid-cols-4 lg:grid-cols-8`}>
+          <div className={`${panel} grid gap-3 md:grid-cols-4 lg:grid-cols-7`}>
             <input aria-label="Search bank transactions" className={input} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Merchant, description, reference" />
             <select aria-label="Money direction" className={input} value={direction} onChange={(event) => setDirection(event.target.value)}><option value="">Money in and out</option><option value="INFLOW">Money in</option><option value="OUTFLOW">Money out</option><option value="TRANSFER">Transfer</option></select>
             <select aria-label="Review status" className={input} value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value)}><option value="">All review states</option>{['UNREVIEWED','SUGGESTED','REVIEWED','NEEDS_REVIEW','IGNORED'].map((status) => <option key={status}>{status}</option>)}</select>
             <select aria-label="Bank account" className={input} value={subAccountId} onChange={(event) => setSubAccountId(event.target.value)}><option value="">All bank accounts</option>{options?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}{account.mask ? ` ••${account.mask}` : ''}</option>)}</select>
-            <input aria-label="Bank transactions from" className={input} type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
-            <input aria-label="Bank transactions to" className={input} type="date" value={to} onChange={(event) => setTo(event.target.value)} />
+            <select aria-label="Transaction period" className={input} value={period} onChange={(event) => {
+              const nextPeriod = event.target.value as BankTransactionPeriod;
+              setPeriod(nextPeriod);
+              if (nextPeriod !== 'custom') setAppliedCustomRange(null);
+            }}>
+              <option value="all">All time</option>
+              <option value="7">Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="60">Last 60 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="custom">Custom</option>
+            </select>
             <input aria-label="Minimum transaction amount" className={input} inputMode="decimal" value={minimumAmount} onChange={(event) => setMinimumAmount(event.target.value)} placeholder="Minimum amount" />
             <input aria-label="Maximum transaction amount" className={input} inputMode="decimal" value={maximumAmount} onChange={(event) => setMaximumAmount(event.target.value)} placeholder="Maximum amount" />
           </div>
+          {period === 'custom' ? (
+            <div className={`${panel} flex flex-wrap items-end gap-3`}>
+              <label className="text-xs text-slate-400">From<input aria-label="Custom transaction start date" className={`mt-1 block ${input}`} type="date" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} /></label>
+              <label className="text-xs text-slate-400">To<input aria-label="Custom transaction end date" className={`mt-1 block ${input}`} type="date" value={customTo} onChange={(event) => setCustomTo(event.target.value)} /></label>
+              <button className="btn" type="button" onClick={applyCustomPeriod}>Apply</button>
+              <button className="rounded-lg px-3 py-2 text-sm text-slate-300" type="button" onClick={resetPeriod}>Reset period</button>
+            </div>
+          ) : null}
           {transactions.map((transaction) => <TransactionCard key={transaction.id} transaction={transaction} options={options} refresh={load} setError={setError} />)}
           {!transactions.length ? <p className={`${panel} text-sm text-slate-400`}>No transactions match this inbox view. No sample transactions are fabricated.</p> : null}
         </section>
