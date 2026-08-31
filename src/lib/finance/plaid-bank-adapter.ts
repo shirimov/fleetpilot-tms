@@ -6,6 +6,11 @@ import type {
   BankProviderTransaction,
 } from './bank-ledger-types';
 
+export function derivePlaidTransactionDirection(amount: number) {
+  if (amount === 0) return null;
+  return amount < 0 ? 'INFLOW' as const : 'OUTFLOW' as const;
+}
+
 function dateOnly(value?: string | null) {
   return value ? new Date(`${value}T00:00:00.000Z`) : null;
 }
@@ -22,7 +27,7 @@ function mapTransaction(transaction: Transaction): BankProviderTransaction {
     amountMinor,
     providerAmountText,
     currency: transaction.iso_currency_code ?? transaction.unofficial_currency_code ?? 'USD',
-    direction: transaction.amount < 0 ? 'INFLOW' : 'OUTFLOW',
+    direction: derivePlaidTransactionDirection(transaction.amount),
     originalDescription: transaction.name,
     merchantName: transaction.merchant_name ?? null,
     providerCategory: transaction.personal_finance_category ?? transaction.category ?? null,

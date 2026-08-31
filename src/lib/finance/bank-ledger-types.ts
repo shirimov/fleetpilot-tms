@@ -9,7 +9,7 @@ export type BankProviderTransaction = {
   amountMinor: bigint;
   providerAmountText: string;
   currency: string;
-  direction: FinancialDirection;
+  direction: FinancialDirection | null;
   originalDescription: string;
   merchantName?: string | null;
   providerCategory?: unknown;

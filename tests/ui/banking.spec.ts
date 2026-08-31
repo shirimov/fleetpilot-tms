@@ -76,6 +76,26 @@ test('banking workspace shows real source data separately from reviewed FleetPil
       externalIds: { create: { bankAccountId: connection.id, externalId: `ui-transaction-${suffix}` } },
     },
   });
+  const deposit = await prisma.bankTransaction.create({
+    data: {
+      bankAccountId: connection.id,
+      subAccountId: connection.accounts[0].id,
+      companyId: company.id,
+      providerTransactionId: `ui-deposit-${suffix}`,
+      date: new Date('2026-08-31T00:00:00.000Z'),
+      postedDate: new Date('2026-08-31T00:00:00.000Z'),
+      amount: 5000,
+      amountMinor: BigInt(500000),
+      providerAmountText: '-5000',
+      currency: 'USD',
+      direction: 'INFLOW',
+      name: 'INCOMING TRANSFER',
+      originalDescription: 'INCOMING TRANSFER',
+      merchantName: 'Customer deposit',
+      classification: { create: {} },
+      externalIds: { create: { bankAccountId: connection.id, externalId: `ui-deposit-${suffix}` } },
+    },
+  });
 
   try {
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
@@ -88,6 +108,8 @@ test('banking workspace shows real source data separately from reviewed FleetPil
 
     await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Transactions' }).click();
     await expect(page.getByRole('heading', { name: 'Roadside Fuel' })).toBeVisible();
+    await expect(page.getByText('-$125.40 · MONEY OUT')).toBeVisible();
+    await expect(page.getByText('+$5,000.00 · MONEY IN')).toBeVisible();
     const card = page.getByRole('heading', { name: 'Roadside Fuel' }).locator('xpath=ancestor::article');
     await card.getByText('Review transaction').click();
     await expect(card.getByRole('heading', { name: 'Bank data' })).toBeVisible();
@@ -102,10 +124,11 @@ test('banking workspace shows real source data separately from reviewed FleetPil
     expect(stored.amountMinor).toBe(BigInt(12540));
   } finally {
     await prisma.financialAuditEvent.deleteMany({ where: { operatingGroupId: group.id } });
-    await prisma.bankTransactionAllocation.deleteMany({ where: { bankTransactionId: transaction.id } });
-    await prisma.bankTransactionClassification.deleteMany({ where: { bankTransactionId: transaction.id } });
-    await prisma.bankTransactionExternalId.deleteMany({ where: { bankTransactionId: transaction.id } });
-    await prisma.bankTransaction.deleteMany({ where: { id: transaction.id } });
+    const transactionIds = [transaction.id, deposit.id];
+    await prisma.bankTransactionAllocation.deleteMany({ where: { bankTransactionId: { in: transactionIds } } });
+    await prisma.bankTransactionClassification.deleteMany({ where: { bankTransactionId: { in: transactionIds } } });
+    await prisma.bankTransactionExternalId.deleteMany({ where: { bankTransactionId: { in: transactionIds } } });
+    await prisma.bankTransaction.deleteMany({ where: { id: { in: transactionIds } } });
     await prisma.bankSubAccount.deleteMany({ where: { bankAccountId: connection.id } });
     await prisma.bankAccount.deleteMany({ where: { id: connection.id } });
     await prisma.financialCategory.deleteMany({ where: { operatingGroupId: group.id } });

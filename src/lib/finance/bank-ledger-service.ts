@@ -506,7 +506,13 @@ export class BankLedgerService {
     if (!source.externalId.trim() || !source.externalAccountId.trim()) {
       throw new BankLedgerValidationError('Provider transaction and account IDs are required.');
     }
-    if (!['INFLOW', 'OUTFLOW', 'TRANSFER'].includes(source.direction)) {
+    if (source.amountMinor === BigInt(0) && source.direction !== null) {
+      throw new BankLedgerValidationError('Zero-amount bank transactions must have neutral direction.');
+    }
+    if (source.amountMinor !== BigInt(0) && !source.direction) {
+      throw new BankLedgerValidationError('Non-zero bank transactions require a direction.');
+    }
+    if (source.direction !== null && !['INFLOW', 'OUTFLOW', 'TRANSFER'].includes(source.direction)) {
       throw new BankLedgerValidationError('Bank transaction direction is invalid.');
     }
     if (!source.originalDescription.trim()) {
