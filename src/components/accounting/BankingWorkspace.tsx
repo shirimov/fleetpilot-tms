@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
+import PlaidLinkButton from './PlaidLinkButton';
 
 type Option = { id: string; name: string };
 type EntityOptions = {
@@ -104,6 +105,8 @@ export default function BankingWorkspace() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [transactions, setTransactions] = useState<BankTransaction[]>([]);
   const [providerAvailable, setProviderAvailable] = useState(false);
+  const [providerEnvironment, setProviderEnvironment] = useState('unconfigured');
+  const [webhookConfigured, setWebhookConfigured] = useState(false);
   const [query, setQuery] = useState('');
   const [direction, setDirection] = useState('');
   const [reviewStatus, setReviewStatus] = useState('UNREVIEWED');
@@ -136,11 +139,13 @@ export default function BankingWorkspace() {
     const [nextConnections, nextTransactions, status] = await Promise.all([
       api<Connection[]>(`/api/finance/bank/connections?companyId=${encodeURIComponent(companyId)}`),
       api<BankTransaction[]>(`/api/finance/bank/transactions?${params}`),
-      api<{ liveProviderAvailable: boolean }>('/api/finance/bank/status'),
+      api<{ liveProviderAvailable: boolean; environment: string; webhookConfigured: boolean }>('/api/finance/bank/status'),
     ]);
     setConnections(nextConnections);
     setTransactions(nextTransactions);
     setProviderAvailable(status.liveProviderAvailable);
+    setProviderEnvironment(status.environment);
+    setWebhookConfigured(status.webhookConfigured);
   }, [companyId, direction, from, maximumAmount, minimumAmount, query, reviewStatus, subAccountId, to]);
 
   useEffect(() => {
@@ -205,6 +210,17 @@ export default function BankingWorkspace() {
               <button disabled className="mt-3 rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-500">Sync Transactions Now</button>
             </div>
           ) : null}
+          {providerAvailable ? (
+            <div className={`${panel} flex flex-wrap items-center justify-between gap-3`}>
+              <div>
+                <h2 className="font-semibold">Plaid read-only connection</h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  Environment: {providerEnvironment}. Transactions only. {webhookConfigured ? 'Webhook configured.' : 'Webhook not configured; use manual sync.'}
+                </p>
+              </div>
+              <PlaidLinkButton disabled={!companyId} onComplete={load} onError={setError} />
+            </div>
+          ) : null}
           <p className="text-sm text-slate-400">{connections.length} connections · {totalTransactions} source transactions</p>
           <div className="grid gap-4 lg:grid-cols-2">
             {connections.map((connection) => (
@@ -213,6 +229,7 @@ export default function BankingWorkspace() {
                   <div><h2 className="font-semibold">{connection.institutionName ?? 'Unknown institution'}</h2><p className="text-xs text-slate-400">{connection.provider} · {connection.status}</p></div>
                   <button className="btn" disabled={!providerAvailable || busy === connection.id} onClick={() => void sync(connection.id)}>{busy === connection.id ? 'Syncing…' : 'Sync Transactions Now'}</button>
                 </div>
+                {connection.status === 'REQUIRES_REAUTH' ? <div className="mt-3"><PlaidLinkButton connectionId={connection.id} onComplete={load} onError={setError} /></div> : null}
                 <p className="mt-2 text-xs text-slate-400">{connection.lastSync ? `Last synced ${new Date(connection.lastSync).toLocaleString()}` : 'Never synchronized'}</p>
                 {connection.lastSyncErrorMessage ? <p className="mt-2 text-xs text-red-300">{connection.lastSyncErrorMessage}</p> : null}
                 <div className="mt-4 space-y-2">{connection.accounts.map((account) => <div className="rounded-lg bg-slate-950/70 p-3" key={account.id}><div className="flex justify-between"><span>{account.name} {account.mask ? `••${account.mask}` : ''}</span><strong>{money(account.currentBalanceMinor, account.currency)}</strong></div><p className="text-xs text-slate-500">{account.type}{account.subtype ? ` · ${account.subtype}` : ''} · {account.isActive ? 'Active' : 'Inactive'}</p></div>)}</div>

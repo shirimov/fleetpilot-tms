@@ -187,6 +187,7 @@ model User {
   matchedFinancialEvidence      FinancialTransactionEvidence[]  @relation("FinancialEvidenceMatcher")
   createdFinancialExpectations  FinancialExpectation[]          @relation("FinancialExpectationCreator")
   financialAuditEvents          FinancialAuditEvent[]           @relation("FinancialAuditActor")
+  createdBankConnections        BankAccount[]                   @relation("BankConnectionCreator")
   reviewedBankTransactions      BankTransactionClassification[] @relation("BankTransactionReviewer")
   createdAdminFeeAgreements     AdminFeeAgreement[]             @relation("AdminFeeAgreementCreator")
   uploadedPilotInvoices         PilotProviderInvoice[]          @relation("PilotInvoiceUploader")
@@ -790,6 +791,14 @@ enum BankTransactionReviewStatus {
   IGNORED
 }
 
+enum BankWebhookEventStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  IGNORED
+}
+
 enum BankClassificationScope {
   COMPANY_LEVEL
   ENTITY_ALLOCATED
@@ -824,14 +833,33 @@ model BankAccount {
   lastSyncErrorMessage   String?
   disabledAt             DateTime?
   revokedAt              DateTime?
+  createdByUserId        String?
+  createdBy              User?                       @relation("BankConnectionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   accounts               BankSubAccount[]
   transactions           BankTransaction[]
   transactionExternalIds BankTransactionExternalId[]
+  webhookEvents          BankProviderWebhookEvent[]
   createdAt              DateTime                    @default(now())
   updatedAt              DateTime                    @updatedAt
 
   @@unique([companyId, provider, externalConnectionId])
   @@index([companyId, status])
+  @@index([createdByUserId])
+}
+
+model BankProviderWebhookEvent {
+  id              String                 @id @default(cuid())
+  bankAccountId   String
+  provider        BankConnectionProvider
+  eventHashSha256 String
+  webhookType     String
+  webhookCode     String
+  status          BankWebhookEventStatus @default(QUEUED)
+  receivedAt      DateTime               @default(now())
+  bankAccount     BankAccount            @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, eventHashSha256])
+  @@index([bankAccountId, status, receivedAt])
 }
 
 model BankSubAccount {

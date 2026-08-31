@@ -12,6 +12,9 @@ Live provider actions fail closed unless all of these server-only values exist:
 - `PLAID_CLIENT_ID`
 - `PLAID_SECRET`
 - `BANK_TOKEN_ENCRYPTION_KEY` (32 random bytes, encoded as 64 hex characters or base64)
+- `PLAID_PRODUCTS=transactions` (any money-movement product makes configuration fail closed)
+- `PLAID_WEBHOOK_URL` for signed incremental-update delivery
+- `PLAID_REDIRECT_URI` when OAuth institutions require a return URI
 
 `PLAID_ENV` selects `sandbox`, `development`, or `production` and defaults to
 `sandbox`. None of these variables use a `NEXT_PUBLIC_` prefix. Access tokens are
@@ -21,6 +24,19 @@ migrated through an approved operational process.
 
 Plaid HTTP requests use a 30-second timeout. Synchronization performs no
 automatic retries and caps cursor pagination at 20 pages per explicit run.
+
+Plaid Link is opened only from the trusted active-company context. Initial Link
+requests enable Transactions only; update-mode Link uses the existing encrypted
+access token and requests no new products. Public tokens are exchanged only on
+the server, and permanent access tokens are never returned to browser code.
+
+Plaid webhooks are verified using the official ES256 JWT key endpoint, a
+five-minute signature-age bound, and the signed SHA-256 request-body hash. Only
+`TRANSACTIONS/SYNC_UPDATES_AVAILABLE` queues synchronization. Verified payload
+hashes are unique, so retries do not run duplicate syncs. Processing uses the
+same bounded cursor pipeline and requires the connection creator to retain an
+ADMIN/OWNER operating-group role. Other verified webhook types are retained as
+ignored metadata without storing the raw payload.
 
 When provider configuration is absent, the Accounts view shows a disabled
 provider state and synchronization cannot start. File-import adapters can use
@@ -52,3 +68,8 @@ deployment must run `prisma migrate deploy` before recreating the application.
 No real provider should be enabled until the institution/provider account,
 consent scope, encryption-key custody, retention expectations, and revocation
 procedure are operationally approved.
+
+Plaid Transactions commonly provides up to 24 months of initial history,
+subject to institution and account availability. FleetPilot does not claim or
+fabricate a longer period. Webhooks require the public HTTPS URL to be entered in
+Alpha configuration before a live Item is connected.

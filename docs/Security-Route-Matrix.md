@@ -203,6 +203,8 @@ Employee. Existing rows remain null and hidden; no ownership is inferred.
 | `/api/plaid/accounts` | DELETE | bank account tree | yes | parent account | ADMIN | C/M/S | U/X/I/R | protected |
 | `/api/plaid/transactions` | GET | bank transactions | yes | parent account | ADMIN | C/S | U/X/I/R | protected |
 | `/api/plaid/transactions` | POST | Plaid sync | yes | parent account | ADMIN | C/M/S | U/X/I/R | protected |
+| `/api/finance/bank/connections/[id]/reauth` | POST | Plaid update-mode completion | yes | active company/connection | ADMIN | C/M/S | U/X/I/R | protected |
+| `/api/integrations/plaid/webhook` | POST | signed Plaid transaction update | verified Plaid JWT/body hash | provider Item | Integration | C/M/S/A | webhook/X/I/R | protected |
 
 Nullable legacy `BankAccount.companyId` rows must remain hidden until ownership
 is independently reconciled.

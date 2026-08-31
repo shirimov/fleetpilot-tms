@@ -8,6 +8,7 @@ import { BankLedgerNotFoundError, BankLedgerValidationError, BankProviderUnavail
 import { BankSyncService } from './bank-sync-service';
 import { encryptBankAccessToken } from './bank-token-crypto';
 import type { BankProviderAdapter, BankProviderTransaction } from './bank-ledger-types';
+import { PlaidConnectionService } from './plaid-connection-service';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const ledger = new BankLedgerService(prisma);
@@ -89,6 +90,7 @@ before(async () => {
 });
 
 after(async () => {
+  await prisma.bankProviderWebhookEvent.deleteMany({ where: { bankAccountId } });
   await prisma.financialAuditEvent.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.bankTransactionAllocation.deleteMany({ where: { bankTransaction: { bankAccountId } } });
   await prisma.bankTransactionClassification.deleteMany({ where: { bankTransaction: { bankAccountId } } });
@@ -119,6 +121,7 @@ test('ingestion stores exact source data and is idempotent', async () => {
   assert.equal(stored.amountMinor, BigInt(12540));
   assert.equal(stored.direction, 'OUTFLOW');
   assert.equal(stored.originalDescription, 'ACH PURCHASE TEST');
+  assert.equal((await prisma.bankTransactionClassification.findUniqueOrThrow({ where: { bankTransactionId: stored.id } })).reviewStatus, 'SUGGESTED');
   assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: source().externalId } }), 1);
   assert.equal(await prisma.financialAuditEvent.count({ where: { bankTransactionId: stored.id, action: 'BANK_TRANSACTION_INGESTED' } }), 1);
 });
@@ -267,5 +270,98 @@ test('provider cursor pagination stops at the bounded page limit', async () => {
   await assert.rejects(sync.syncNow(context(), bankAccountId), BankProviderUnavailableError);
   assert.equal(calls, 20);
   assert.equal((await prisma.bankAccount.findUniqueOrThrow({ where: { id: bankAccountId } })).lastSyncErrorMessage, 'Bank transaction synchronization failed.');
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
+});
+
+test('a verified webhook queue event runs the same idempotent sync pipeline once', async () => {
+  const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
+  await prisma.bankAccount.update({
+    where: { id: bankAccountId },
+    data: {
+      provider: 'OTHER',
+      createdByUserId: userId,
+      accessTokenCiphertext: encryptBankAccessToken(`webhook-${suffix}`),
+      status: 'ACTIVE',
+      syncCursor: null,
+    },
+  });
+  let calls = 0;
+  const adapter: BankProviderAdapter = {
+    provider: 'OTHER',
+    async syncTransactions() {
+      calls += 1;
+      return {
+        added: [source({ externalId: `webhook-transaction-${suffix}` })],
+        modified: [],
+        removedExternalIds: [],
+        nextCursor: 'webhook-cursor',
+        hasMore: false,
+      };
+    },
+  };
+  const event = await prisma.bankProviderWebhookEvent.create({
+    data: {
+      bankAccountId,
+      provider: 'OTHER',
+      eventHashSha256: `webhook-hash-${suffix}`,
+      webhookType: 'TRANSACTIONS',
+      webhookCode: 'SYNC_UPDATES_AVAILABLE',
+    },
+  });
+  const sync = new BankSyncService(prisma, ledger, new Map([['OTHER', adapter]]));
+  await sync.syncWebhookEvent(event.id);
+  await sync.syncWebhookEvent(event.id);
+  assert.equal(calls, 1);
+  assert.equal((await prisma.bankProviderWebhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status, 'COMPLETED');
+  assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: `webhook-transaction-${suffix}` } }), 1);
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
+});
+
+test('public-token exchange persistence creates one encrypted connection and masked accounts', async () => {
+  const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString('base64');
+  const service = new PlaidConnectionService(prisma);
+  const itemId = `plaid-item-${suffix}`;
+  const connection = await service.createConnection(context(), {
+    itemId,
+    accessToken: `plaid-token-${suffix}`,
+    institutionId: 'ins-test',
+    institutionName: 'Mock Bank',
+    consentedProducts: ['transactions'],
+    accounts: [{
+      accountId: `plaid-account-${suffix}`,
+      name: 'Checking',
+      officialName: 'Operating Checking',
+      type: 'depository',
+      subtype: 'checking',
+      mask: '1234',
+      currentBalance: 42.25,
+      availableBalance: 40,
+      currency: 'USD',
+    }],
+  });
+  const stored = await prisma.bankAccount.findUniqueOrThrow({
+    where: { id: connection.id },
+    include: { accounts: true },
+  });
+  assert.equal(stored.companyId, companyId);
+  assert.equal(stored.createdByUserId, userId);
+  assert.equal(stored.plaidAccessToken, null);
+  assert.ok(stored.accessTokenCiphertext?.startsWith('v1:'));
+  assert.equal(stored.accounts[0].mask, '1234');
+  assert.equal(stored.accounts[0].currentBalanceMinor, BigInt(4225));
+  await assert.rejects(
+    service.createConnection(context(), {
+      itemId,
+      accessToken: 'duplicate-not-real',
+      institutionName: 'Mock Bank',
+      accounts: [],
+    }),
+    BankLedgerValidationError,
+  );
+  await prisma.financialAuditEvent.deleteMany({ where: { metadata: { path: ['bankAccountId'], equals: connection.id } } });
+  await prisma.bankSubAccount.deleteMany({ where: { bankAccountId: connection.id } });
+  await prisma.bankAccount.delete({ where: { id: connection.id } });
   process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
 });

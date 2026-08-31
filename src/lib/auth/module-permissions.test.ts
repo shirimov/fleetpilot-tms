@@ -71,6 +71,10 @@ test('public Telegram webhook stays available for secret-token authentication', 
   assert.equal(moduleForPath('/api/telegram/webhook'), null);
 });
 
+test('public Plaid webhook stays available for provider-signature authentication', () => {
+  assert.equal(moduleForPath('/api/integrations/plaid/webhook'), null);
+});
+
 test('Auth.js session routes and login are never module-restricted', () => {
   for (const pathname of [
     '/login',

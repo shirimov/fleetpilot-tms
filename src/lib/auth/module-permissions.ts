@@ -72,6 +72,7 @@ const API_MODULES: ReadonlyArray<[prefix: string, module: FleetPilotModule]> = [
 const PUBLIC_API_PREFIXES = [
   '/api/health',
   '/api/integrations/telegram/webhook',
+  '/api/integrations/plaid/webhook',
   '/api/telegram/webhook',
 ] as const;
 

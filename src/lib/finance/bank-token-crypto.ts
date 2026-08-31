@@ -48,14 +48,40 @@ export function decryptBankAccessToken(ciphertext: string) {
   }
 }
 
+export function bankProviderHttpsUrl(name: 'PLAID_WEBHOOK_URL' | 'PLAID_REDIRECT_URI') {
+  const configured = process.env[name]?.trim();
+  if (!configured) return undefined;
+  try {
+    const parsed = new URL(configured);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password
+      ? parsed.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function bankProviderConfiguration() {
+  const environment = process.env.PLAID_ENV?.trim().toLowerCase() || 'sandbox';
+  const supportedEnvironment = ['sandbox', 'development', 'production'].includes(environment);
+  const products = (process.env.PLAID_PRODUCTS ?? 'transactions')
+    .split(',')
+    .map((product) => product.trim().toLowerCase())
+    .filter(Boolean);
+  const readOnlyProducts = products.length === 1 && products[0] === 'transactions';
   const plaidConfigured = Boolean(
     process.env.PLAID_CLIENT_ID?.trim() &&
       process.env.PLAID_SECRET?.trim() &&
-      process.env.BANK_TOKEN_ENCRYPTION_KEY?.trim(),
+      process.env.BANK_TOKEN_ENCRYPTION_KEY?.trim() &&
+      supportedEnvironment &&
+      readOnlyProducts,
   );
   return {
     plaidConfigured,
     liveProviderAvailable: plaidConfigured,
+    environment: supportedEnvironment ? environment : 'invalid',
+    products: readOnlyProducts ? ['transactions'] : [],
+    webhookConfigured: Boolean(bankProviderHttpsUrl('PLAID_WEBHOOK_URL')),
+    redirectConfigured: Boolean(bankProviderHttpsUrl('PLAID_REDIRECT_URI')),
   };
 }
