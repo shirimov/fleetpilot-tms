@@ -4,6 +4,7 @@ import type {
   Prisma,
   PrismaClient,
 } from '@prisma/client';
+import { normalizeVin } from '@/lib/fleet/truck-import-service';
 import { prisma } from '@/lib/prisma';
 import {
   DispatchConflictError,
@@ -228,6 +229,21 @@ export class DispatchService {
     return this.database.trailer.update({
       where: { id: trailerId, companyId: actor.companyId },
       data: input,
+    });
+  }
+
+  async updateTrailerVin(trailerId: string, vin: string, actor: DispatchActor) {
+    await this.requireTrailer(this.database, trailerId, actor.companyId);
+    const trailersWithVin = await this.database.trailer.findMany({
+      where: { id: { not: trailerId }, vin: { not: null } },
+      select: { vin: true },
+    });
+    if (trailersWithVin.some((trailer) => trailer.vin && normalizeVin(trailer.vin) === vin)) {
+      throw new DispatchConflictError('VIN is already assigned to another trailer.');
+    }
+    return this.database.trailer.update({
+      where: { id: trailerId, companyId: actor.companyId },
+      data: { vin },
     });
   }
 

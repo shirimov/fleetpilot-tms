@@ -201,6 +201,27 @@ test('customer contacts are company scoped and searchable', async () => {
   assert.equal((await service.getCustomers(foreignCompanyId, 'Dock')).length, 0);
 });
 
+test('trailer VIN update rejects duplicates and preserves strict validation', async () => {
+  const firstVin = '1HGCM82633A004352';
+  const secondVin = '1M8GDM9AXKP042788';
+  const first = await prisma.trailer.create({
+    data: { companyId, unitNumber: `VIN-A-${suffix}`, vin: firstVin },
+  });
+  const second = await prisma.trailer.create({
+    data: { companyId, unitNumber: `VIN-B-${suffix}` },
+  });
+  try {
+    await assert.rejects(
+      service.updateTrailerVin(second.id, firstVin, actor),
+      /already assigned/,
+    );
+    const updated = await service.updateTrailerVin(second.id, secondVin, actor);
+    assert.equal(updated.vin, secondVin);
+  } finally {
+    await prisma.trailer.deleteMany({ where: { id: { in: [first.id, second.id] } } });
+  }
+});
+
 test('load creation normalizes stop order and records verified activity', async () => {
   const load = await service.createLoad(loadInput(`ALPHA-${suffix}`), actor);
   createdLoadIds.push(load.id);
