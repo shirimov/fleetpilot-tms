@@ -79,6 +79,20 @@ type AllocationDraft = {
   driverId: string;
   partyId: string;
 };
+type BankExportPreview = {
+  mode: 'PREVIEW_ONLY';
+  account: { id: string; name: string; mask: string | null };
+  summary: { total: number; new: number; alreadyExists: number; possibleDuplicate: number; invalid: number };
+  rows: Array<{
+    rowNumber: number;
+    status: 'NEW' | 'ALREADY_EXISTS' | 'POSSIBLE_DUPLICATE' | 'INVALID';
+    postedDate: string | null;
+    amountMinor: string | null;
+    description: string | null;
+    externalIdPresent: boolean;
+    error: string | null;
+  }>;
+};
 
 const panel = 'rounded-xl border border-slate-800 bg-slate-900/70 p-4';
 const input = 'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100';
@@ -120,6 +134,7 @@ export default function BankingWorkspace() {
   const [maximumAmount, setMaximumAmount] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [exportPreview, setExportPreview] = useState<BankExportPreview | null>(null);
 
   const loadOptions = useCallback(async (targetCompanyId?: string) => {
     const suffix = targetCompanyId ? `?companyId=${encodeURIComponent(targetCompanyId)}` : '';
@@ -201,6 +216,26 @@ export default function BankingWorkspace() {
     setError('');
   }
 
+  async function previewBankExport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy('bank-export-preview');
+    setError('');
+    setExportPreview(null);
+    try {
+      const form = new FormData(event.currentTarget);
+      form.set('companyId', companyId);
+      const subAccountId = String(form.get('subAccountId') ?? '');
+      const connection = connections.find((candidate) => candidate.accounts.some((account) => account.id === subAccountId));
+      if (!connection) throw new Error('Choose the destination bank account.');
+      form.set('bankAccountId', connection.id);
+      setExportPreview(await api<BankExportPreview>('/api/finance/bank/import-preview', { method: 'POST', body: form }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Bank export preview failed.');
+    } finally {
+      setBusy('');
+    }
+  }
+
   const totalTransactions = useMemo(
     () => connections.reduce((sum, connection) => sum + connection._count.transactions, 0),
     [connections],
@@ -264,6 +299,21 @@ export default function BankingWorkspace() {
               </article>
             ))}
           </div>
+          <section className={`${panel} border-blue-900/70`}>
+            <h2 className="font-semibold">Historical bank export preview</h2>
+            <p className="mt-1 text-sm text-slate-300">Preview missing history in a bank-generated QFX, OFX, or CSV file. QFX is preferred because FITID provides the strongest stable transaction identity.</p>
+            <p className="mt-1 text-xs text-amber-200">Preview only: this screen cannot import or change ledger records.</p>
+            <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={previewBankExport}>
+              <label className="text-xs text-slate-400">Destination account<select aria-label="Historical export destination account" className={`mt-1 block ${input}`} name="subAccountId" required defaultValue=""><option value="">Choose account</option>{connections.flatMap((connection) => connection.accounts.map((account) => <option key={account.id} value={account.id}>{connection.institutionName ?? connection.provider} · {account.name}{account.mask ? ` ••${account.mask}` : ''}</option>))}</select></label>
+              <label className="text-xs text-slate-400">Bank export<input aria-label="Historical bank export file" className={`mt-1 block ${input}`} name="file" type="file" accept=".qfx,.ofx,.csv" required /></label>
+              <button className="btn" disabled={busy === 'bank-export-preview'}>{busy === 'bank-export-preview' ? 'Previewing…' : 'Preview file'}</button>
+            </form>
+            {exportPreview ? <div className="mt-4 space-y-3">
+              <p className="text-sm">{exportPreview.summary.total} rows · <span className="text-emerald-300">{exportPreview.summary.new} new</span> · {exportPreview.summary.alreadyExists} already exist · <span className="text-amber-200">{exportPreview.summary.possibleDuplicate} possible duplicates</span> · <span className="text-red-200">{exportPreview.summary.invalid} invalid</span></p>
+              <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-slate-400"><tr><th className="p-2">Row</th><th className="p-2">Status</th><th className="p-2">Posted</th><th className="p-2">Amount</th><th className="p-2">Description</th><th className="p-2">Stable ID</th></tr></thead><tbody>{exportPreview.rows.slice(0, 200).map((row) => <tr className="border-t border-slate-800" key={row.rowNumber}><td className="p-2">{row.rowNumber}</td><td className="p-2 font-semibold">{row.status}</td><td className="p-2">{row.postedDate ?? 'Invalid'}</td><td className="p-2">{row.amountMinor === null ? 'Invalid' : money((BigInt(row.amountMinor) < BigInt(0) ? -BigInt(row.amountMinor) : BigInt(row.amountMinor)).toString())}</td><td className="p-2">{row.error ?? row.description ?? 'Missing'}</td><td className="p-2">{row.externalIdPresent ? 'Present' : 'Missing'}</td></tr>)}</tbody></table></div>
+              {exportPreview.rows.length > 200 ? <p className="text-xs text-slate-400">Showing the first 200 preview rows. Summary counts include the entire file.</p> : null}
+            </div> : null}
+          </section>
           {!connections.length ? <p className={`${panel} text-sm text-slate-400`}>No bank connections exist for this company.</p> : null}
         </section>
       ) : (

@@ -103,8 +103,20 @@ test('banking workspace shows real source data separately from reviewed FleetPil
     await page.goto('/accounting/banking?view=accounts');
     await expect(page.getByRole('heading', { name: 'Bank transaction ledger' })).toBeVisible();
     await expect(page.getByText('Bank provider not connected')).toBeVisible();
-    await expect(page.getByText('Fixture Credit Union')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Fixture Credit Union' })).toBeVisible();
     await expect(page.getByText('$2,500.00')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Historical bank export preview' })).toBeVisible();
+    await expect(page.getByText('Preview only: this screen cannot import or change ledger records.')).toBeVisible();
+    await page.getByLabel('Historical export destination account').selectOption(connection.accounts[0].id);
+    await page.getByLabel('Historical bank export file').setInputFiles({
+      name: 'history.qfx',
+      mimeType: 'application/x-ofx',
+      buffer: Buffer.from('<OFX><STMTTRN><DTPOSTED>20260115<TRNAMT>-42.00<FITID>ui-export-new<NAME>Preview only</STMTTRN></BANKTRANLIST>'),
+    });
+    await page.getByRole('button', { name: 'Preview file' }).click();
+    await expect(page.getByText('1 rows')).toBeVisible();
+    await expect(page.getByText('NEW', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /import/i })).toHaveCount(0);
 
     await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Transactions' }).click();
     await expect(page.getByRole('heading', { name: 'Roadside Fuel' })).toBeVisible();
