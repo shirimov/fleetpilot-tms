@@ -121,7 +121,8 @@ test('ingestion stores exact source data and is idempotent', async () => {
   assert.equal(stored.amountMinor, BigInt(12540));
   assert.equal(stored.direction, 'OUTFLOW');
   assert.equal(stored.originalDescription, 'ACH PURCHASE TEST');
-  assert.equal((await prisma.bankTransactionClassification.findUniqueOrThrow({ where: { bankTransactionId: stored.id } })).reviewStatus, 'SUGGESTED');
+  assert.equal((await prisma.bankTransactionClassification.findUniqueOrThrow({ where: { bankTransactionId: stored.id } })).reviewStatus, 'UNREVIEWED');
+  assert.deepEqual(stored.providerCategory, { primary: 'GENERAL_MERCHANDISE' });
   assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: source().externalId } }), 1);
   assert.equal(await prisma.financialAuditEvent.count({ where: { bankTransactionId: stored.id, action: 'BANK_TRANSACTION_INGESTED' } }), 1);
 });
