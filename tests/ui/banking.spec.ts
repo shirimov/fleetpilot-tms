@@ -42,6 +42,7 @@ test('banking workspace shows real source data separately from reviewed FleetPil
       provider: 'FILE_IMPORT',
       externalConnectionId: `ui-${suffix}`,
       institutionName: 'Fixture Credit Union',
+      lastSync: new Date('2026-09-01T15:00:00.000Z'),
       accounts: {
         create: {
           externalAccountId: `checking-${suffix}`,
@@ -50,6 +51,8 @@ test('banking workspace shows real source data separately from reviewed FleetPil
           subtype: 'checking',
           mask: '0042',
           currentBalanceMinor: BigInt(250000),
+          availableBalanceMinor: BigInt(240000),
+          lastSyncedAt: new Date('2026-09-01T14:00:00.000Z'),
         },
       },
     },
@@ -100,11 +103,68 @@ test('banking workspace shows real source data separately from reviewed FleetPil
   try {
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+    let refreshed = false;
+    let refreshCalls = 0;
+    const freshAt = new Date().toISOString();
+    await page.route('**/api/finance/bank/status', async (route) => {
+      await route.fulfill({ json: { liveProviderAvailable: true, environment: 'production', webhookConfigured: true } });
+    });
+    await page.route(`**/api/finance/bank/connections/${connection.id}/sync`, async (route) => {
+      refreshCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (refreshCalls === 1) refreshed = true;
+      await route.fulfill({ json: {
+        added: 0,
+        updated: 0,
+        removed: 0,
+        cursor: 'ui-cursor',
+        balance: refreshCalls === 1
+          ? { status: 'updated', accountCount: 1, refreshedAt: '2026-09-01T16:00:00.000Z' }
+          : { status: 'failed', message: 'Transactions may be current, but bank balances could not be refreshed.' },
+      } });
+    });
+    await page.route('**/api/finance/bank/connections?**', async (route) => {
+      await route.fulfill({ json: [{
+        id: connection.id,
+        provider: 'PLAID',
+        institutionName: 'Fixture Credit Union',
+        status: 'ACTIVE',
+        lastSync: refreshed ? '2026-09-01T16:00:00.000Z' : '2026-09-01T15:00:00.000Z',
+        lastSyncErrorMessage: null,
+        accounts: [{
+          id: connection.accounts[0].id,
+          name: 'Operating checking',
+          type: 'depository',
+          subtype: 'checking',
+          mask: '0042',
+          currency: 'USD',
+          currentBalanceMinor: refreshed ? '245000' : '250000',
+          availableBalanceMinor: refreshed ? '235000' : '240000',
+          isActive: true,
+          lastSyncedAt: refreshed ? freshAt : '2020-01-01T00:00:00.000Z',
+        }],
+        _count: { transactions: 2 },
+      }] });
+    });
     await page.goto('/accounting/banking?view=accounts');
     await expect(page.getByRole('heading', { name: 'Bank transaction ledger' })).toBeVisible();
-    await expect(page.getByText('Bank provider not connected')).toBeVisible();
     await expect(page.getByText('Fixture Credit Union')).toBeVisible();
+    await expect(page.getByText('Current balance')).toBeVisible();
     await expect(page.getByText('$2,500.00')).toBeVisible();
+    await expect(page.getByText('Available: $2,400.00')).toBeVisible();
+    await expect(page.getByText(/Balance updated:/)).toBeVisible();
+    await expect(page.getByText(/Transactions updated:/)).toBeVisible();
+    await expect(page.getByText('Balance may be stale')).toBeVisible();
+    const refresh = page.getByRole('button', { name: 'Refresh' });
+    await refresh.click();
+    await expect(page.getByRole('button', { name: 'Refreshing…' })).toBeVisible();
+    await expect(page.getByText('$2,450.00')).toBeVisible();
+    await expect(page.getByText('Available: $2,350.00')).toBeVisible();
+    await expect(page.getByText('Balance may be stale')).toHaveCount(0);
+    await expect(refresh).toBeEnabled();
+    await refresh.click();
+    await expect(page.getByText('Transactions may be current, but bank balances could not be refreshed.', { exact: true })).toBeVisible();
+    await expect(page.getByText('$2,450.00')).toBeVisible();
 
     await page.getByRole('navigation', { name: 'Bank ledger views' }).getByRole('link', { name: 'Transactions' }).click();
     await expect(page.getByRole('heading', { name: 'Roadside Fuel' })).toBeVisible();

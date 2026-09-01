@@ -33,6 +33,7 @@ type Connection = {
     currentBalanceMinor: string | null;
     availableBalanceMinor: string | null;
     isActive: boolean;
+    lastSyncedAt: string | null;
   }>;
   _count: { transactions: number };
 };
@@ -96,6 +97,15 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 function money(value: string | null, currency = 'USD') {
   if (value === null) return 'Unavailable';
   return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(value) / 100);
+}
+
+function timestamp(value: string | null) {
+  return value ? new Date(value).toLocaleString() : 'Never';
+}
+
+function balanceMayBeStale(value: string | null) {
+  if (!value) return true;
+  return Date.now() - new Date(value).getTime() > 24 * 60 * 60 * 1000;
 }
 
 export default function BankingWorkspace() {
@@ -171,9 +181,16 @@ export default function BankingWorkspace() {
     setBusy(connectionId);
     setError('');
     try {
-      await api(`/api/finance/bank/connections/${connectionId}/sync`, { method: 'POST' });
+      const result = await api<{ balance?: { status: string; message?: string } }>(
+        `/api/finance/bank/connections/${connectionId}/sync`,
+        { method: 'POST' },
+      );
       await load();
+      if (result.balance?.status === 'failed') {
+        setError(result.balance.message ?? 'Transactions updated, but the balance refresh failed.');
+      }
     } catch (caught) {
+      await load().catch(() => undefined);
       setError(caught instanceof Error ? caught.message : 'Synchronization failed.');
     } finally {
       setBusy('');
@@ -243,7 +260,7 @@ export default function BankingWorkspace() {
               <div>
                 <h2 className="font-semibold">Plaid read-only connection</h2>
                 <p className="mt-1 text-xs text-slate-400">
-                  Environment: {providerEnvironment}. Transactions only. {webhookConfigured ? 'Webhook configured.' : 'Webhook not configured; use manual sync.'}
+                  Environment: {providerEnvironment}. Provider balances and transactions remain independent. {webhookConfigured ? 'Webhook configured.' : 'Webhook not configured; use manual refresh.'}
                 </p>
               </div>
               <PlaidLinkButton disabled={!companyId} onComplete={load} onError={setError} />
@@ -255,12 +272,17 @@ export default function BankingWorkspace() {
               <article className={panel} key={connection.id}>
                 <div className="flex items-start justify-between gap-3">
                   <div><h2 className="font-semibold">{connection.institutionName ?? 'Unknown institution'}</h2><p className="text-xs text-slate-400">{connection.provider} · {connection.status}</p></div>
-                  <button className="btn" disabled={!providerAvailable || busy === connection.id} onClick={() => void sync(connection.id)}>{busy === connection.id ? 'Syncing…' : 'Sync Transactions Now'}</button>
+                  <button className="btn" disabled={!providerAvailable || busy === connection.id} onClick={() => void sync(connection.id)}>{busy === connection.id ? 'Refreshing…' : 'Refresh'}</button>
                 </div>
                 {connection.status === 'REQUIRES_REAUTH' ? <div className="mt-3"><PlaidLinkButton connectionId={connection.id} onComplete={load} onError={setError} /></div> : null}
-                <p className="mt-2 text-xs text-slate-400">{connection.lastSync ? `Last synced ${new Date(connection.lastSync).toLocaleString()}` : 'Never synchronized'}</p>
+                <p className="mt-2 text-xs text-slate-400">Transactions updated: {timestamp(connection.lastSync)}</p>
                 {connection.lastSyncErrorMessage ? <p className="mt-2 text-xs text-red-300">{connection.lastSyncErrorMessage}</p> : null}
-                <div className="mt-4 space-y-2">{connection.accounts.map((account) => <div className="rounded-lg bg-slate-950/70 p-3" key={account.id}><div className="flex justify-between"><span>{account.name} {account.mask ? `••${account.mask}` : ''}</span><strong>{money(account.currentBalanceMinor, account.currency)}</strong></div><p className="text-xs text-slate-500">{account.type}{account.subtype ? ` · ${account.subtype}` : ''} · {account.isActive ? 'Active' : 'Inactive'}</p></div>)}</div>
+                <div className="mt-4 space-y-2">{connection.accounts.map((account) => <div className="rounded-lg bg-slate-950/70 p-3" key={account.id}>
+                  <div className="flex flex-wrap items-start justify-between gap-3"><span>{account.name} {account.mask ? `••${account.mask}` : ''}</span><div className="text-right"><p className="text-xs text-slate-400">Current balance</p><strong>{money(account.currentBalanceMinor, account.currency)}</strong>{account.availableBalanceMinor !== null ? <p className="mt-1 text-xs text-slate-300">Available: {money(account.availableBalanceMinor, account.currency)}</p> : null}</div></div>
+                  <p className="mt-2 text-xs text-slate-500">{account.type}{account.subtype ? ` · ${account.subtype}` : ''} · {account.isActive ? 'Active' : 'Inactive'}</p>
+                  <p className="mt-1 text-xs text-slate-500">Balance updated: {timestamp(account.lastSyncedAt)}</p>
+                  {balanceMayBeStale(account.lastSyncedAt) ? <p className="mt-1 text-xs font-medium text-amber-300">Balance may be stale</p> : null}
+                </div>)}</div>
               </article>
             ))}
           </div>

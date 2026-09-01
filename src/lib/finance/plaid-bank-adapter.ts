@@ -1,10 +1,15 @@
 import type { Transaction } from 'plaid';
 import { plaidClient } from '@/lib/plaid';
 import type {
+  BankProviderAccountSnapshot,
   BankProviderAdapter,
   BankProviderSyncPage,
   BankProviderTransaction,
 } from './bank-ledger-types';
+
+export function plaidBalanceMinor(value: number | null | undefined) {
+  return value == null ? null : BigInt(Math.round(value * 100));
+}
 
 export function derivePlaidTransactionDirection(amount: number) {
   if (amount === 0) return null;
@@ -43,6 +48,23 @@ function mapTransaction(transaction: Transaction): BankProviderTransaction {
 
 export class PlaidBankProviderAdapter implements BankProviderAdapter {
   readonly provider = 'PLAID';
+
+  async syncAccounts(input: {
+    accessToken: string;
+  }): Promise<BankProviderAccountSnapshot[]> {
+    const response = await plaidClient.accountsGet({ access_token: input.accessToken });
+    return response.data.accounts.map((account) => ({
+      externalAccountId: account.account_id,
+      name: account.name,
+      officialName: account.official_name ?? null,
+      type: account.type,
+      subtype: account.subtype ?? null,
+      mask: account.mask ?? null,
+      currency: account.balances.iso_currency_code ?? account.balances.unofficial_currency_code ?? 'USD',
+      currentBalanceMinor: plaidBalanceMinor(account.balances.current),
+      availableBalanceMinor: plaidBalanceMinor(account.balances.available),
+    }));
+  }
 
   async syncTransactions(input: {
     accessToken: string;

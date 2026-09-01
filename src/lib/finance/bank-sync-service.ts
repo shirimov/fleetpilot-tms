@@ -8,6 +8,20 @@ import { decryptBankAccessToken } from './bank-token-crypto';
 import { PlaidBankProviderAdapter } from './plaid-bank-adapter';
 
 const MAX_SYNC_PAGES = 20;
+const activeSyncs = new Map<string, Promise<BankSyncResult>>();
+
+type BalanceSyncResult =
+  | { status: 'unsupported' }
+  | { status: 'updated'; accountCount: number; refreshedAt: Date }
+  | { status: 'failed'; code: string; message: string };
+
+type BankSyncResult = {
+  added: number;
+  updated: number;
+  removed: number;
+  cursor: string | null;
+  balance?: BalanceSyncResult;
+};
 
 function sanitizeProviderFailure(error: unknown) {
   const providerCode =
@@ -32,6 +46,21 @@ function sanitizeProviderFailure(error: unknown) {
   };
 }
 
+function balanceFailure(error: unknown) {
+  const failure = sanitizeProviderFailure(error);
+  return {
+    code: failure.code === 'LOGIN_REQUIRED' ? failure.code : 'BALANCE_REFRESH_FAILED',
+    message: failure.code === 'LOGIN_REQUIRED'
+      ? failure.message
+      : 'Transactions may be current, but bank balances could not be refreshed.',
+    status: failure.status,
+  };
+}
+
+function balanceNumber(value: bigint | null) {
+  return value === null ? null : Number(value) / 100;
+}
+
 export class BankSyncService {
   constructor(
     private readonly database: PrismaClient = prisma,
@@ -42,6 +71,26 @@ export class BankSyncService {
   ) {}
 
   async syncNow(context: FinancialAuthorization, bankAccountId: string) {
+    const authorized = await this.database.bankAccount.count({
+      where: {
+        id: bankAccountId,
+        companyId: { in: context.companyIds },
+        status: { in: ['ACTIVE', 'ERROR'] },
+      },
+    });
+    if (!authorized) throw new BankLedgerNotFoundError();
+    const existing = activeSyncs.get(bankAccountId);
+    if (existing) return existing;
+    const pending = this.performSync(context, bankAccountId);
+    activeSyncs.set(bankAccountId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (activeSyncs.get(bankAccountId) === pending) activeSyncs.delete(bankAccountId);
+    }
+  }
+
+  private async performSync(context: FinancialAuthorization, bankAccountId: string): Promise<BankSyncResult> {
     const connection = await this.database.bankAccount.findFirst({
       where: {
         id: bankAccountId,
@@ -51,6 +100,8 @@ export class BankSyncService {
       select: {
         id: true,
         provider: true,
+        companyId: true,
+        institutionName: true,
         accessTokenCiphertext: true,
         syncCursor: true,
       },
@@ -65,6 +116,89 @@ export class BankSyncService {
       where: { id: connection.id },
       data: { lastSyncAttemptAt: new Date() },
     });
+    let balance: BalanceSyncResult = { status: 'unsupported' };
+    if (adapter.syncAccounts) {
+      try {
+        const accounts = await adapter.syncAccounts({ accessToken });
+        const refreshedAt = new Date();
+        const externalAccountIds = accounts.map(({ externalAccountId }) => externalAccountId);
+        await this.database.$transaction(async (database) => {
+          for (const account of accounts) {
+            await database.bankSubAccount.upsert({
+              where: {
+                bankAccountId_externalAccountId: {
+                  bankAccountId: connection.id,
+                  externalAccountId: account.externalAccountId,
+                },
+              },
+              create: {
+                bankAccountId: connection.id,
+                externalAccountId: account.externalAccountId,
+                plaidAccountId: connection.provider === 'PLAID' ? account.externalAccountId : null,
+                institutionName: connection.institutionName,
+                name: account.name,
+                officialName: account.officialName ?? null,
+                type: account.type,
+                subtype: account.subtype ?? null,
+                mask: account.mask ?? null,
+                currency: account.currency,
+                currentBalance: balanceNumber(account.currentBalanceMinor),
+                availableBalance: balanceNumber(account.availableBalanceMinor),
+                currentBalanceMinor: account.currentBalanceMinor,
+                availableBalanceMinor: account.availableBalanceMinor,
+                isActive: true,
+                lastSyncedAt: refreshedAt,
+              },
+              update: {
+                name: account.name,
+                officialName: account.officialName ?? null,
+                type: account.type,
+                subtype: account.subtype ?? null,
+                mask: account.mask ?? null,
+                currency: account.currency,
+                currentBalance: balanceNumber(account.currentBalanceMinor),
+                availableBalance: balanceNumber(account.availableBalanceMinor),
+                currentBalanceMinor: account.currentBalanceMinor,
+                availableBalanceMinor: account.availableBalanceMinor,
+                isActive: true,
+                lastSyncedAt: refreshedAt,
+              },
+            });
+          }
+          await database.bankSubAccount.updateMany({
+            where: {
+              bankAccountId: connection.id,
+              ...(externalAccountIds.length
+                ? { externalAccountId: { notIn: externalAccountIds } }
+                : {}),
+            },
+            data: { isActive: false },
+          });
+          await database.financialAuditEvent.create({
+            data: {
+              operatingGroupId: context.operatingGroupId,
+              companyId: connection.companyId,
+              actorUserId: context.userId,
+              action: 'BANK_BALANCE_REFRESHED',
+              metadata: { bankAccountId: connection.id, accountCount: accounts.length },
+            },
+          });
+        });
+        balance = { status: 'updated', accountCount: accounts.length, refreshedAt };
+      } catch (error) {
+        const failure = balanceFailure(error);
+        balance = { status: 'failed', code: failure.code, message: failure.message };
+        await this.database.financialAuditEvent.create({
+          data: {
+            operatingGroupId: context.operatingGroupId,
+            companyId: connection.companyId,
+            actorUserId: context.userId,
+            action: 'BANK_BALANCE_REFRESH_FAILED',
+            metadata: { bankAccountId: connection.id, code: failure.code },
+          },
+        });
+      }
+    }
     let cursor = connection.syncCursor;
     let added = 0;
     let updated = 0;
@@ -92,12 +226,23 @@ export class BankSyncService {
             data: {
               syncCursor: cursor,
               lastSync: new Date(),
-              lastSyncErrorCode: null,
-              lastSyncErrorMessage: null,
-              status: 'ACTIVE',
+              status: balance.status === 'failed' && balance.code === 'LOGIN_REQUIRED'
+                ? 'REQUIRES_REAUTH'
+                : 'ACTIVE',
+              ...(balance.status === 'failed'
+                ? {
+                    lastSyncErrorCode: balance.code,
+                    lastSyncErrorMessage: balance.message,
+                  }
+                : {
+                    lastSyncErrorCode: null,
+                    lastSyncErrorMessage: null,
+                  }),
             },
           });
-          return { added, updated, removed, cursor };
+          return balance.status === 'unsupported'
+            ? { added, updated, removed, cursor }
+            : { added, updated, removed, cursor, balance };
         }
       }
       throw new Error('Provider pagination exceeded the bounded sync limit.');

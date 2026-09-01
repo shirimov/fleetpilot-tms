@@ -28,8 +28,23 @@ export type BankProviderSyncPage = {
   hasMore: boolean;
 };
 
+export type BankProviderAccountSnapshot = {
+  externalAccountId: string;
+  name: string;
+  officialName?: string | null;
+  type: string;
+  subtype?: string | null;
+  mask?: string | null;
+  currency: string;
+  currentBalanceMinor: bigint | null;
+  availableBalanceMinor: bigint | null;
+};
+
 export interface BankProviderAdapter {
   readonly provider: string;
+  syncAccounts?(input: {
+    accessToken: string;
+  }): Promise<BankProviderAccountSnapshot[]>;
   syncTransactions(input: {
     accessToken: string;
     cursor: string | null;
