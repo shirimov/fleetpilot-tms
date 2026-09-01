@@ -8,7 +8,13 @@ import type {
 } from './bank-ledger-types';
 
 export function plaidBalanceMinor(value: number | null | undefined) {
-  return value == null ? null : BigInt(Math.round(value * 100));
+  if (value == null) return null;
+  if (!Number.isFinite(value)) throw new Error('Provider returned an invalid balance.');
+  const minor = Math.round(value * 100);
+  if (!Number.isSafeInteger(minor) || Math.abs(value * 100 - minor) > 1e-6) {
+    throw new Error('Provider returned a balance outside supported cent precision.');
+  }
+  return BigInt(minor);
 }
 
 export function derivePlaidTransactionDirection(amount: number) {

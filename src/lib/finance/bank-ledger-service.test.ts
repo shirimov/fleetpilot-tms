@@ -386,7 +386,7 @@ test('provider cursor pagination stops at the bounded page limit', async () => {
   process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
 });
 
-test('a verified webhook queue event runs the same idempotent sync pipeline once', async () => {
+test('a burst of verified webhook queue events coalesces into one idempotent sync pipeline', async () => {
   const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
   process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
   await prisma.bankAccount.update({
@@ -413,20 +413,22 @@ test('a verified webhook queue event runs the same idempotent sync pipeline once
       };
     },
   };
-  const event = await prisma.bankProviderWebhookEvent.create({
+  const events = await Promise.all([0, 1, 2].map((index) => prisma.bankProviderWebhookEvent.create({
     data: {
       bankAccountId,
       provider: 'OTHER',
-      eventHashSha256: `webhook-hash-${suffix}`,
+      eventHashSha256: `webhook-hash-${suffix}-${index}`,
       webhookType: 'TRANSACTIONS',
       webhookCode: 'SYNC_UPDATES_AVAILABLE',
     },
-  });
+  })));
   const sync = new BankSyncService(prisma, ledger, new Map([['OTHER', adapter]]));
-  await sync.syncWebhookEvent(event.id);
-  await sync.syncWebhookEvent(event.id);
+  await Promise.all(events.map((event) => sync.syncWebhookEvent(event.id)));
+  await sync.syncWebhookEvent(events[0].id);
   assert.equal(calls, 1);
-  assert.equal((await prisma.bankProviderWebhookEvent.findUniqueOrThrow({ where: { id: event.id } })).status, 'COMPLETED');
+  assert.equal(await prisma.bankProviderWebhookEvent.count({
+    where: { id: { in: events.map(({ id }) => id) }, status: 'COMPLETED' },
+  }), 3);
   assert.equal(await prisma.bankTransaction.count({ where: { bankAccountId, providerTransactionId: `webhook-transaction-${suffix}` } }), 1);
   process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
 });
@@ -491,6 +493,16 @@ test('normal refresh updates provider balances independently from transactions b
       syncCursor: null,
     },
   });
+  const secondExternalAccountId = `second-${suffix}`;
+  await prisma.bankSubAccount.create({
+    data: {
+      bankAccountId,
+      externalAccountId: secondExternalAccountId,
+      name: 'Stored second account',
+      type: 'credit',
+      currentBalanceMinor: BigInt(500),
+    },
+  });
   let currentBalanceMinor = BigInt(4_332_278);
   let transactionExternalId = `balance-transaction-${suffix}`;
   let includeSecondAccount = true;
@@ -508,7 +520,7 @@ test('normal refresh updates provider balances independently from transactions b
           availableBalanceMinor: BigInt(2_923_220),
         },
         ...(includeSecondAccount ? [{
-          externalAccountId: `second-${suffix}`,
+          externalAccountId: secondExternalAccountId,
           name: 'Second provider account',
           type: 'credit',
           currency: 'USD',
@@ -553,13 +565,91 @@ test('normal refresh updates provider balances independently from transactions b
     where: {
       bankAccountId_externalAccountId: {
         bankAccountId,
-        externalAccountId: `second-${suffix}`,
+        externalAccountId: secondExternalAccountId,
       },
     },
   })).isActive, false);
   assert.equal(await prisma.financialAuditEvent.count({
     where: { operatingGroupId: groupId, action: 'BANK_BALANCE_REFRESHED' },
   }), 3);
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
+});
+
+test('balance refresh preserves missing accounts and does not auto-create unknown provider accounts', async () => {
+  const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 16).toString('base64');
+  await prisma.bankAccount.update({
+    where: { id: bankAccountId },
+    data: {
+      provider: 'OTHER',
+      accessTokenCiphertext: encryptBankAccessToken(`account-discovery-${suffix}`),
+      status: 'ACTIVE',
+    },
+  });
+  const before = await prisma.bankSubAccount.findUniqueOrThrow({
+    where: { bankAccountId_externalAccountId: { bankAccountId, externalAccountId } },
+  });
+  const unknownId = `unknown-${suffix}`;
+  const adapter: BankProviderAdapter = {
+    provider: 'OTHER',
+    async syncAccounts() {
+      return [{
+        externalAccountId: unknownId,
+        name: 'New unapproved provider account',
+        type: 'depository',
+        currency: 'USD',
+        currentBalanceMinor: BigInt(999_999),
+        availableBalanceMinor: BigInt(999_999),
+      }];
+    },
+    async syncTransactions() {
+      return { added: [], modified: [], removedExternalIds: [], nextCursor: 'discovery', hasMore: false };
+    },
+  };
+  const result = await new BankSyncService(prisma, ledger, new Map([['OTHER', adapter]])).syncNow(context(), bankAccountId);
+  assert.equal(result.balance?.status, 'updated');
+  if (result.balance?.status === 'updated') {
+    assert.equal(result.balance.unknownAccountCount, 1);
+    assert.ok(result.balance.missingAccountCount >= 1);
+  }
+  assert.equal(await prisma.bankSubAccount.count({ where: { bankAccountId, externalAccountId: unknownId } }), 0);
+  const after = await prisma.bankSubAccount.findUniqueOrThrow({
+    where: { bankAccountId_externalAccountId: { bankAccountId, externalAccountId } },
+  });
+  assert.equal(after.currentBalanceMinor, before.currentBalanceMinor);
+  assert.equal(after.lastSyncedAt?.getTime(), before.lastSyncedAt?.getTime());
+  assert.equal(after.isActive, false);
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
+});
+
+test('malformed provider account snapshots fail closed without changing last known balances', async () => {
+  const priorKey = process.env.BANK_TOKEN_ENCRYPTION_KEY;
+  process.env.BANK_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32, 17).toString('base64');
+  await prisma.bankAccount.update({
+    where: { id: bankAccountId },
+    data: {
+      provider: 'OTHER',
+      accessTokenCiphertext: encryptBankAccessToken(`malformed-accounts-${suffix}`),
+      status: 'ACTIVE',
+    },
+  });
+  const before = await prisma.bankSubAccount.findUniqueOrThrow({
+    where: { bankAccountId_externalAccountId: { bankAccountId, externalAccountId } },
+  });
+  const adapter: BankProviderAdapter = {
+    provider: 'OTHER',
+    async syncAccounts() { return []; },
+    async syncTransactions() {
+      return { added: [], modified: [], removedExternalIds: [], nextCursor: 'malformed', hasMore: false };
+    },
+  };
+  const result = await new BankSyncService(prisma, ledger, new Map([['OTHER', adapter]])).syncNow(context(), bankAccountId);
+  assert.equal(result.balance?.status, 'failed');
+  const after = await prisma.bankSubAccount.findUniqueOrThrow({
+    where: { bankAccountId_externalAccountId: { bankAccountId, externalAccountId } },
+  });
+  assert.equal(after.currentBalanceMinor, before.currentBalanceMinor);
+  assert.equal(after.lastSyncedAt?.getTime(), before.lastSyncedAt?.getTime());
   process.env.BANK_TOKEN_ENCRYPTION_KEY = priorKey;
 });
 

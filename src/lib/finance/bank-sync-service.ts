@@ -12,7 +12,13 @@ const activeSyncs = new Map<string, Promise<BankSyncResult>>();
 
 type BalanceSyncResult =
   | { status: 'unsupported' }
-  | { status: 'updated'; accountCount: number; refreshedAt: Date }
+  | {
+      status: 'updated';
+      accountCount: number;
+      refreshedAt: Date;
+      missingAccountCount: number;
+      unknownAccountCount: number;
+    }
   | { status: 'failed'; code: string; message: string };
 
 type BankSyncResult = {
@@ -59,6 +65,17 @@ function balanceFailure(error: unknown) {
 
 function balanceNumber(value: bigint | null) {
   return value === null ? null : Number(value) / 100;
+}
+
+function validateAccountSnapshots(accounts: Awaited<ReturnType<NonNullable<BankProviderAdapter['syncAccounts']>>>) {
+  if (!accounts.length) throw new Error('Provider returned no accounts.');
+  const identifiers = new Set<string>();
+  for (const account of accounts) {
+    if (!account.externalAccountId || identifiers.has(account.externalAccountId)) {
+      throw new Error('Provider returned invalid account identity data.');
+    }
+    identifiers.add(account.externalAccountId);
+  }
 }
 
 export class BankSyncService {
@@ -120,36 +137,26 @@ export class BankSyncService {
     if (adapter.syncAccounts) {
       try {
         const accounts = await adapter.syncAccounts({ accessToken });
+        validateAccountSnapshots(accounts);
         const refreshedAt = new Date();
         const externalAccountIds = accounts.map(({ externalAccountId }) => externalAccountId);
+        const storedAccounts = await this.database.bankSubAccount.findMany({
+          where: { bankAccountId: connection.id },
+          select: { id: true, externalAccountId: true },
+        });
+        const storedByExternalId = new Map(
+          storedAccounts.flatMap((account) => account.externalAccountId ? [[account.externalAccountId, account]] : []),
+        );
+        const knownAccounts = accounts.filter((account) => storedByExternalId.has(account.externalAccountId));
+        const unknownAccountCount = accounts.length - knownAccounts.length;
+        const missingAccountCount = storedAccounts.filter(
+          (account) => account.externalAccountId && !externalAccountIds.includes(account.externalAccountId),
+        ).length;
         await this.database.$transaction(async (database) => {
-          for (const account of accounts) {
-            await database.bankSubAccount.upsert({
-              where: {
-                bankAccountId_externalAccountId: {
-                  bankAccountId: connection.id,
-                  externalAccountId: account.externalAccountId,
-                },
-              },
-              create: {
-                bankAccountId: connection.id,
-                externalAccountId: account.externalAccountId,
-                plaidAccountId: connection.provider === 'PLAID' ? account.externalAccountId : null,
-                institutionName: connection.institutionName,
-                name: account.name,
-                officialName: account.officialName ?? null,
-                type: account.type,
-                subtype: account.subtype ?? null,
-                mask: account.mask ?? null,
-                currency: account.currency,
-                currentBalance: balanceNumber(account.currentBalanceMinor),
-                availableBalance: balanceNumber(account.availableBalanceMinor),
-                currentBalanceMinor: account.currentBalanceMinor,
-                availableBalanceMinor: account.availableBalanceMinor,
-                isActive: true,
-                lastSyncedAt: refreshedAt,
-              },
-              update: {
+          for (const account of knownAccounts) {
+            await database.bankSubAccount.update({
+              where: { id: storedByExternalId.get(account.externalAccountId)!.id },
+              data: {
                 name: account.name,
                 officialName: account.officialName ?? null,
                 type: account.type,
@@ -180,11 +187,22 @@ export class BankSyncService {
               companyId: connection.companyId,
               actorUserId: context.userId,
               action: 'BANK_BALANCE_REFRESHED',
-              metadata: { bankAccountId: connection.id, accountCount: accounts.length },
+              metadata: {
+                bankAccountId: connection.id,
+                accountCount: knownAccounts.length,
+                missingAccountCount,
+                unknownAccountCount,
+              },
             },
           });
         });
-        balance = { status: 'updated', accountCount: accounts.length, refreshedAt };
+        balance = {
+          status: 'updated',
+          accountCount: knownAccounts.length,
+          refreshedAt,
+          missingAccountCount,
+          unknownAccountCount,
+        };
       } catch (error) {
         const failure = balanceFailure(error);
         balance = { status: 'failed', code: failure.code, message: failure.message };
@@ -303,11 +321,20 @@ export class BankSyncService {
       });
       return;
     }
-    const claimed = await this.database.bankProviderWebhookEvent.updateMany({
-      where: { id: event.id, status: 'QUEUED' },
-      data: { status: 'PROCESSING' },
+    const claimedEventIds = await this.database.$transaction(async (database) => {
+      const queued = await database.bankProviderWebhookEvent.findMany({
+        where: { bankAccountId: connection.id, status: 'QUEUED' },
+        select: { id: true },
+      });
+      if (!queued.some(({ id }) => id === event.id)) return [];
+      const ids = queued.map(({ id }) => id);
+      await database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: ids }, status: 'QUEUED' },
+        data: { status: 'PROCESSING' },
+      });
+      return ids;
     });
-    if (!claimed.count) return;
+    if (!claimedEventIds.length) return;
     try {
       await this.syncNow({
         userId: actor.userId,
@@ -316,13 +343,13 @@ export class BankSyncService {
         role: actor.role,
         companyIds: group.operatingGroup.companies.map(({ companyId }) => companyId),
       }, connection.id);
-      await this.database.bankProviderWebhookEvent.update({
-        where: { id: event.id },
+      await this.database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: claimedEventIds }, status: 'PROCESSING' },
         data: { status: 'COMPLETED' },
       });
     } catch {
-      await this.database.bankProviderWebhookEvent.update({
-        where: { id: event.id },
+      await this.database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: claimedEventIds }, status: 'PROCESSING' },
         data: { status: 'FAILED' },
       });
     }
