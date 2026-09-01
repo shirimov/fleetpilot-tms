@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { authorizationService } from '@/lib/auth/authorization';
+import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
 import { DispatchValidationError } from '@/lib/dispatch/dispatch-errors';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
@@ -13,7 +13,8 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany('ADMIN');
+    const trailerId = validateId((await params).id, 'Trailer ID');
+    const context = await fleetAuthorizationService.requireTrailer(trailerId, 'ADMIN');
     const form = await request.formData();
     const file = form.get('file');
     const type = form.get('type');
@@ -31,7 +32,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     }
     return NextResponse.json(
       await dispatchService.addTrailerDocument(
-        validateId((await params).id, 'Trailer ID'),
+        trailerId,
         validateDispatchDocument(file, type as never, bytes),
         bytes,
         context,
@@ -43,4 +44,3 @@ export async function POST(request: Request, { params }: RouteContext) {
     return dispatchRouteErrorResponse(error);
   }
 }
-

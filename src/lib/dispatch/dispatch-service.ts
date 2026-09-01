@@ -207,6 +207,69 @@ export class DispatchService {
     }));
   }
 
+  async getTrailersPage(
+    companyIds: string[],
+    query = '',
+    status = 'active',
+    page = 1,
+    pageSize = 100,
+  ) {
+    const where = {
+      companyId: { in: companyIds },
+      ...(status === 'active'
+        ? { status: { not: 'INACTIVE' as const } }
+        : status === 'inactive'
+          ? { status: 'INACTIVE' as const }
+          : {}),
+      ...(query
+        ? {
+            OR: [
+              { unitNumber: { contains: query, mode: 'insensitive' as const } },
+              { vin: { contains: query, mode: 'insensitive' as const } },
+              { plate: { contains: query, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [total, trailers] = await this.database.$transaction([
+      this.database.trailer.count({ where }),
+      this.database.trailer.findMany({
+        where,
+        include: {
+          company: { select: { id: true, name: true } },
+          documents: {
+            select: {
+              id: true,
+              type: true,
+              displayFilename: true,
+              mimeType: true,
+              byteSize: true,
+              expiresAt: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          },
+          loads: {
+            where: { status: { in: activeAssignmentStatuses } },
+            select: { id: true, loadNumber: true, status: true },
+            take: 1,
+          },
+        },
+        orderBy: [{ unitNumber: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+    ]);
+    return {
+      items: trailers.map((trailer) => ({
+        ...trailer,
+        assignment: trailer.loads[0] ?? null,
+        loads: undefined,
+      })),
+      total,
+    };
+  }
+
   async createTrailer(input: TrailerInput, actor: DispatchActor) {
     return this.database.trailer.create({
       data: { ...input, companyId: actor.companyId },

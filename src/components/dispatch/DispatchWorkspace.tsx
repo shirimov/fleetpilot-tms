@@ -40,8 +40,18 @@ type Trailer = {
   status: string;
   vin: string | null;
   plate: string | null;
+  companyId: string;
+  company?: { id: string; name: string };
+  canManage?: boolean;
   assignment: { loadNumber: string } | null;
   documents: Array<{ id: string; type: string; displayFilename: string }>;
+};
+type FleetCompany = { id: string; name: string; role: string; canManage: boolean };
+type TrailerPage = {
+  items: Trailer[];
+  companies: FleetCompany[];
+  selectedCompany: string;
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
 };
 
 type Load = {
@@ -223,6 +233,14 @@ export default function DispatchWorkspace() {
   const [board, setBoard] = useState<Board>({ columns: [] });
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
+  const [fleetTrailers, setFleetTrailers] = useState<Trailer[]>([]);
+  const [fleetCompanies, setFleetCompanies] = useState<FleetCompany[]>([]);
+  const [trailerScope, setTrailerScope] = useState(() => searchParams.get('company') ?? '');
+  const [trailerQuery, setTrailerQuery] = useState('');
+  const [trailerStatus, setTrailerStatus] = useState<'active' | 'inactive' | 'all'>('active');
+  const [trailerPage, setTrailerPage] = useState(1);
+  const [trailerTotal, setTrailerTotal] = useState(0);
+  const [trailerTotalPages, setTrailerTotalPages] = useState(1);
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [query, setQuery] = useState('');
@@ -261,6 +279,22 @@ export default function DispatchWorkspace() {
     setDrivers(nextDrivers);
   }
 
+  async function refreshFleetTrailers() {
+    const params = new URLSearchParams({
+      format: 'page',
+      view: trailerStatus,
+      q: trailerQuery,
+      page: String(trailerPage),
+    });
+    if (trailerScope) params.set('company', trailerScope);
+    const result = await fetchJson<TrailerPage>(`/api/trailers?${params}`);
+    setFleetTrailers(result.items);
+    setFleetCompanies(result.companies);
+    setTrailerTotal(result.pagination.total);
+    setTrailerTotalPages(result.pagination.totalPages);
+    if (!trailerScope) setTrailerScope(result.selectedCompany);
+  }
+
   useEffect(() => {
     refresh('').catch((caught: Error) => setError(caught.message));
     // The initial request intentionally excludes the mutable search value.
@@ -278,6 +312,25 @@ export default function DispatchWorkspace() {
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, exception]);
+
+  useEffect(() => {
+    if (view !== 'trailers') return;
+    const timer = window.setTimeout(() => {
+      refreshFleetTrailers().catch((caught: Error) => setError(caught.message));
+    }, 250);
+    return () => window.clearTimeout(timer);
+    // The fleet query intentionally follows these dedicated trailer filters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, trailerScope, trailerQuery, trailerStatus, trailerPage]);
+
+  function changeTrailerScope(scope: string) {
+    setTrailerScope(scope);
+    setTrailerPage(1);
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', 'trailers');
+    url.searchParams.set('company', scope);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+  }
 
   const allLoads = useMemo(
     () => board.columns.flatMap(({ loads }) => loads),
@@ -409,6 +462,7 @@ export default function DispatchWorkspace() {
     });
     form.reset();
     await refresh();
+    await refreshFleetTrailers();
   }
 
   async function deleteCustomer(customerId: string) {
@@ -419,6 +473,7 @@ export default function DispatchWorkspace() {
   async function deleteTrailer(trailerId: string) {
     await fetchJson(`/api/trailers/${trailerId}`, { method: 'DELETE' });
     await refresh();
+    await refreshFleetTrailers();
   }
 
   async function uploadLoadDocument() {
@@ -443,6 +498,7 @@ export default function DispatchWorkspace() {
       body: form,
     });
     await refresh();
+    await refreshFleetTrailers();
   }
 
   return (
@@ -509,6 +565,19 @@ export default function DispatchWorkspace() {
               </select>
             </>
           )}
+          {view === 'trailers' && <>
+            <select aria-label="Filter trailers by company" value={trailerScope} onChange={(event) => changeTrailerScope(event.target.value)} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm">
+              <option value="all">All Companies</option>
+              {fleetCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
+            </select>
+            <select aria-label="Filter trailer status" value={trailerStatus} onChange={(event) => { setTrailerStatus(event.target.value as typeof trailerStatus); setTrailerPage(1); }} className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm">
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+              <option value="all">All statuses</option>
+            </select>
+            <input aria-label="Search trailers" value={trailerQuery} onChange={(event) => { setTrailerQuery(event.target.value); setTrailerPage(1); }} placeholder="Search unit, VIN, plate" className="min-w-64 flex-1 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm" />
+            <span className="text-sm text-gray-400">{trailerTotal} total</span>
+          </>}
         </div>
 
         {error && (
@@ -659,16 +728,17 @@ export default function DispatchWorkspace() {
               <button className="w-full rounded-lg bg-blue-600 py-2 text-sm font-semibold">Save trailer</button>
             </form>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {trailers.map((trailer) => (
+              {fleetTrailers.map((trailer) => (
                 <article key={trailer.id} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
                   <div className="flex items-start justify-between">
                     <h3 className="font-mono font-semibold text-blue-300">{trailer.unitNumber}</h3>
                     <span className="text-xs text-gray-400">{trailer.status}</span>
                   </div>
                   <p className="mt-2 text-sm">{trailer.equipmentType.replaceAll('_', ' ')}</p>
+                  <p className="mt-2 text-xs font-medium text-gray-300">{trailer.company?.name ?? 'Unknown company'}</p>
                   <p className="mt-2 text-xs text-gray-400">{trailer.assignment ? `Assigned to ${trailer.assignment.loadNumber}` : 'Available'}</p>
                   <p className="mt-2 text-xs text-gray-500">{trailer.documents.length} documents</p>
-                  <label className="mt-3 block cursor-pointer text-xs text-blue-300">
+                  {trailer.canManage && <label className="mt-3 block cursor-pointer text-xs text-blue-300">
                     Add registration
                     <input
                       type="file"
@@ -679,17 +749,22 @@ export default function DispatchWorkspace() {
                         if (file) uploadTrailerDocument(trailer.id, file).catch((caught: Error) => setError(caught.message));
                       }}
                     />
-                  </label>
-                  <button
+                  </label>}
+                  {trailer.canManage ? <button
                     type="button"
                     onClick={() => deleteTrailer(trailer.id).catch((caught: Error) => setError(caught.message))}
                     className="mt-3 block text-xs text-red-300"
                   >
                     Delete trailer
-                  </button>
+                  </button> : <span className="mt-3 block text-xs text-gray-500">Read only</span>}
                 </article>
               ))}
             </div>
+            {trailerTotalPages > 1 && <nav aria-label="Trailer pages" className="flex items-center justify-end gap-3 text-sm lg:col-start-2">
+              <button disabled={trailerPage <= 1} onClick={() => setTrailerPage(value => value - 1)} className="rounded border border-gray-700 px-3 py-1.5 disabled:opacity-40">Previous</button>
+              <span>Page {trailerPage} of {trailerTotalPages}</span>
+              <button disabled={trailerPage >= trailerTotalPages} onClick={() => setTrailerPage(value => value + 1)} className="rounded border border-gray-700 px-3 py-1.5 disabled:opacity-40">Next</button>
+            </nav>}
           </section>
         )}
       </main>

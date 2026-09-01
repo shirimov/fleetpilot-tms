@@ -80,6 +80,9 @@ async function mockDispatch(page: Page) {
       status: 'AVAILABLE',
       vin: null,
       plate: 'ABC123',
+      companyId: 'company-alpha',
+      company: { id: 'company-alpha', name: 'Alpha Transport' },
+      canManage: true,
       assignment: null,
       documents: [],
     },
@@ -130,6 +133,17 @@ async function mockDispatch(page: Page) {
         documents: [],
       });
       await route.fulfill({ status: 201, json: trailers.at(-1) });
+      return;
+    }
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('format') === 'page') {
+      await route.fulfill({ json: {
+        items: trailers,
+        companies: [{ id: 'company-alpha', name: 'Alpha Transport', role: 'OWNER', canManage: true }],
+        activeCompanyId: 'company-alpha',
+        selectedCompany: url.searchParams.get('company') ?? 'company-alpha',
+        pagination: { page: 1, pageSize: 100, total: trailers.length, totalPages: 1 },
+      } });
       return;
     }
     await route.fulfill({ json: trailers });

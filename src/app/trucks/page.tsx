@@ -7,7 +7,12 @@ import { TruckImportPanel } from '@/components/fleet/TruckImportPanel'
 type CompanyOption = { id: string; name: string }
 type TruckItem = {
   id: string; unitNumber: string; vin: string | null; year: number | null; make: string | null; model: string | null;
-  status: string; companyId: string; company?: CompanyOption; cabType: string; isOwnerOp: boolean; ownerName: string | null;
+  status: string; companyId: string; company?: CompanyOption; cabType: string; isOwnerOp: boolean; ownerName: string | null; canManage?: boolean;
+}
+type FleetCompanyOption = CompanyOption & { role: string; canManage: boolean }
+type TruckPage = {
+  items: TruckItem[]; companies: FleetCompanyOption[]; activeCompanyId: string; selectedCompany: string;
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
 }
 type VinResult = { Variable?: string; Value?: string }
 
@@ -34,6 +39,7 @@ const statusColor: Record<string, string> = {
 export default function TrucksPage() {
   const [trucks, setTrucks] = useState<TruckItem[]>([])
   const [companies, setCompanies] = useState<CompanyOption[]>([])
+  const [fleetCompanies, setFleetCompanies] = useState<FleetCompanyOption[]>([])
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(defaultForm)
@@ -43,12 +49,39 @@ export default function TrucksPage() {
   const [view, setView] = useState<'active' | 'inactive' | 'all'>('active')
   const [query, setQuery] = useState('')
   const [pageError, setPageError] = useState('')
+  const [companyScope, setCompanyScope] = useState(() =>
+    typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('company') ?? '',
+  )
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
 
-  const loadData = () => fetch(`/api/trucks?view=${view}&q=${encodeURIComponent(query)}`).then(r => r.json()).then(setTrucks)
+  const loadData = async () => {
+    const params = new URLSearchParams({ view, q: query, format: 'page', page: String(page) })
+    if (companyScope) params.set('company', companyScope)
+    const response = await fetch(`/api/trucks?${params}`)
+    const body = await response.json() as TruckPage & { error?: string }
+    if (!response.ok) throw new Error(body.error ?? 'Truck request failed.')
+    setTrucks(body.items)
+    setFleetCompanies(body.companies)
+    setTotal(body.pagination.total)
+    setTotalPages(body.pagination.totalPages)
+    if (!companyScope) setCompanyScope(body.selectedCompany)
+  }
   useEffect(() => {
-    fetch(`/api/trucks?view=${view}&q=${encodeURIComponent(query)}`).then(r => r.json()).then(setTrucks)
+    loadData().catch(error => setPageError(error instanceof Error ? error.message : 'Truck request failed.'))
     fetch('/api/companies').then(r => r.json()).then(setCompanies)
-  }, [view, query])
+    // loadData intentionally follows the filter state listed below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, query, companyScope, page])
+
+  const changeCompanyScope = (scope: string) => {
+    setCompanyScope(scope)
+    setPage(1)
+    const url = new URL(window.location.href)
+    url.searchParams.set('company', scope)
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`)
+  }
 
   const lifecycle = async (truck: TruckItem) => {
     const action = truck.status === 'INACTIVE' ? 'REACTIVATE' : 'DEACTIVATE'
@@ -143,7 +176,7 @@ export default function TrucksPage() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h2 className="text-2xl font-bold">Trucks</h2>
-            <p className="text-gray-400 text-sm mt-1">{trucks.length} total</p>
+            <p className="text-gray-400 text-sm mt-1">{total} total</p>
           </div>
           <button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
             + Add Truck
@@ -256,6 +289,12 @@ export default function TrucksPage() {
         <TruckImportPanel onCommitted={loadData} />
 
         <div className="mb-4 flex flex-wrap items-center gap-3">
+          <label className="text-sm text-gray-400">Company
+            <select aria-label="Filter trucks by company" value={companyScope} onChange={event => changeCompanyScope(event.target.value)} className="ml-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white">
+              <option value="all">All Companies</option>
+              {fleetCompanies.map(company => <option key={company.id} value={company.id}>{company.name}</option>)}
+            </select>
+          </label>
           <div className="flex rounded-lg border border-gray-700 p-1" aria-label="Truck status filter">
             {(['active', 'inactive', 'all'] as const).map(option => <button key={option} onClick={() => setView(option)} className={`rounded-md px-3 py-1.5 text-sm capitalize ${view === option ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>{option}</button>)}
           </div>
@@ -296,9 +335,11 @@ export default function TrucksPage() {
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor[t.status]}`}>{t.status}</span>
                     </td>
                     <td className="px-6 py-4 text-right space-x-4">
-                      <button onClick={() => openEdit(t)} className="text-blue-400 hover:text-blue-300 text-xs font-medium">Edit</button>
-                      <button onClick={() => lifecycle(t)} className="text-amber-400 hover:text-amber-300 text-xs font-medium">{t.status === 'INACTIVE' ? 'Reactivate' : 'Deactivate'}</button>
-                      <button onClick={() => del(t.id)} className="text-red-400 hover:text-red-300 text-xs font-medium">Delete</button>
+                      {t.canManage ? <>
+                        <button onClick={() => openEdit(t)} className="text-blue-400 hover:text-blue-300 text-xs font-medium">Edit</button>
+                        <button onClick={() => lifecycle(t)} className="text-amber-400 hover:text-amber-300 text-xs font-medium">{t.status === 'INACTIVE' ? 'Reactivate' : 'Deactivate'}</button>
+                        <button onClick={() => del(t.id)} className="text-red-400 hover:text-red-300 text-xs font-medium">Delete</button>
+                      </> : <span className="text-xs text-gray-500">Read only</span>}
                     </td>
                   </tr>
                 ))}
@@ -306,6 +347,11 @@ export default function TrucksPage() {
             </table>
           )}
         </div>
+        {totalPages > 1 && <nav aria-label="Truck pages" className="mt-4 flex items-center justify-end gap-3 text-sm">
+          <button disabled={page <= 1} onClick={() => setPage(value => value - 1)} className="rounded border border-gray-700 px-3 py-1.5 disabled:opacity-40">Previous</button>
+          <span>Page {page} of {totalPages}</span>
+          <button disabled={page >= totalPages} onClick={() => setPage(value => value + 1)} className="rounded border border-gray-700 px-3 py-1.5 disabled:opacity-40">Next</button>
+        </nav>}
       </main>
     </div>
   )

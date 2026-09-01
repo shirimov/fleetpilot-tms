@@ -3,17 +3,19 @@ import { NextResponse } from 'next/server';
 import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
 import { fleetRouteErrorResponse } from '@/lib/fleet/fleet-route-response';
 import { isValidVin, normalizeUnitNumber, normalizeVin, TruckImportValidationError } from '@/lib/fleet/truck-import-service';
+import { equipmentScopeService } from '@/lib/fleet/equipment-scope';
 
 export async function GET(request: Request) {
   try {
-    const context = await fleetAuthorizationService.requireCompany();
     const url = new URL(request.url);
+    const scope = await equipmentScopeService.resolve(url.searchParams.get('company'));
     const view = url.searchParams.get('view') ?? 'active';
-    const query = url.searchParams.get('q')?.trim();
+    const query = url.searchParams.get('q')?.trim().slice(0, 100);
+    const page = Math.max(1, Number.parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get('pageSize') ?? '100', 10) || 100));
     if (!['active', 'inactive', 'all'].includes(view)) throw new TruckImportValidationError('Truck view is invalid.');
-    const trucks = await prisma.truck.findMany({
-      where: {
-        companyId: context.companyId,
+    const where = {
+        companyId: { in: scope.companyIds },
         ...(view === 'active' ? { status: { not: 'INACTIVE' as const } } : view === 'inactive' ? { status: 'INACTIVE' as const } : {}),
         ...(query ? { OR: [
           { unitNumber: { contains: query, mode: 'insensitive' as const } },
@@ -21,11 +23,26 @@ export async function GET(request: Request) {
           { make: { contains: query, mode: 'insensitive' as const } },
           { model: { contains: query, mode: 'insensitive' as const } },
         ] } : {}),
-      },
+      };
+    const [total, trucks] = await prisma.$transaction([
+      prisma.truck.count({ where }),
+      prisma.truck.findMany({
+      where,
       include: { company: true },
-      orderBy: { unitNumber: 'asc' },
+      orderBy: [{ unitNumber: 'asc' }, { id: 'asc' }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    ]);
+    if (url.searchParams.get('format') !== 'page') return NextResponse.json(trucks);
+    const manageByCompany = new Map(scope.companies.map(({ id, canManage }) => [id, canManage]));
+    return NextResponse.json({
+      items: trucks.map((truck) => ({ ...truck, canManage: manageByCompany.get(truck.companyId) ?? false })),
+      companies: scope.companies,
+      activeCompanyId: scope.activeCompanyId,
+      selectedCompany: scope.selectedCompany,
+      pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
     });
-    return NextResponse.json(trucks);
   } catch (error) {
     return fleetRouteErrorResponse(error, 'Failed to fetch trucks');
   }
