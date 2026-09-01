@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { authorizationService } from '@/lib/auth/authorization';
+import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
 import { validateId } from '@/lib/dispatch/dispatch-validation';
@@ -9,10 +9,11 @@ type RouteContext = { params: Promise<{ id: string; documentId: string }> };
 
 export async function GET(_request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany();
     const route = await params;
+    const trailerId = validateId(route.id, 'Trailer ID');
+    const context = await fleetAuthorizationService.requireTrailer(trailerId);
     const document = await dispatchService.getTrailerDocument(
-      validateId(route.id, 'Trailer ID'),
+      trailerId,
       validateId(route.documentId, 'Document ID'),
       context,
     );
@@ -29,10 +30,11 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
 export async function DELETE(_request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany('ADMIN');
     const route = await params;
+    const trailerId = validateId(route.id, 'Trailer ID');
+    const context = await fleetAuthorizationService.requireTrailer(trailerId, 'ADMIN');
     await dispatchService.deleteTrailerDocument(
-      validateId(route.id, 'Trailer ID'),
+      trailerId,
       validateId(route.documentId, 'Document ID'),
       context,
     );

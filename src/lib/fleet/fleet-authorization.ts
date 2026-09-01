@@ -5,6 +5,7 @@ import {
   authorizationService,
   type CompanyAuthorization,
 } from '@/lib/auth/authorization';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 
 export class FleetResourceNotFoundError extends Error {
   constructor() {
@@ -29,13 +30,48 @@ export class FleetAuthorizationService {
     truckId: string,
     minimumRole: CompanyMembershipRole = 'MEMBER',
   ): Promise<CompanyAuthorization> {
-    const context = await this.requireCompany(minimumRole);
-    const truck = await this.database.truck.findFirst({
-      where: { id: truckId, companyId: context.companyId },
-      select: { id: true },
+    const user = await this.authorization.requireUser();
+    const truck = await this.database.truck.findUnique({
+      where: { id: truckId },
+      select: { companyId: true },
     });
     if (!truck) throw new FleetResourceNotFoundError();
-    return context;
+    try {
+      return await this.authorization.requireCompanyMembership(
+        truck.companyId,
+        minimumRole,
+      );
+    } catch (error) {
+      if (error instanceof AuthorizationDeniedError && await this.database.companyMembership.findUnique({
+        where: { userId_companyId: { userId: user.id, companyId: truck.companyId } },
+        select: { id: true },
+      })) throw error;
+      throw new FleetResourceNotFoundError();
+    }
+  }
+
+  async requireTrailer(
+    trailerId: string,
+    minimumRole: CompanyMembershipRole = 'MEMBER',
+  ): Promise<CompanyAuthorization> {
+    const user = await this.authorization.requireUser();
+    const trailer = await this.database.trailer.findUnique({
+      where: { id: trailerId },
+      select: { companyId: true },
+    });
+    if (!trailer) throw new FleetResourceNotFoundError();
+    try {
+      return await this.authorization.requireCompanyMembership(
+        trailer.companyId,
+        minimumRole,
+      );
+    } catch (error) {
+      if (error instanceof AuthorizationDeniedError && await this.database.companyMembership.findUnique({
+        where: { userId_companyId: { userId: user.id, companyId: trailer.companyId } },
+        select: { id: true },
+      })) throw error;
+      throw new FleetResourceNotFoundError();
+    }
   }
 
   async requireTruckInspection(

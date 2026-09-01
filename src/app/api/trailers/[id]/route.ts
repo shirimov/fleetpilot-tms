@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { authorizationService } from '@/lib/auth/authorization';
+import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
 import { dispatchRouteErrorResponse } from '@/lib/dispatch/dispatch-route-response';
 import { dispatchService } from '@/lib/dispatch/dispatch-service';
 import {
@@ -11,7 +11,10 @@ type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany('ADMIN');
+    const context = await fleetAuthorizationService.requireTrailer(
+      validateId((await params).id, 'Trailer ID'),
+      'ADMIN',
+    );
     return NextResponse.json(
       await dispatchService.updateTrailer(
         validateId((await params).id, 'Trailer ID'),
@@ -26,9 +29,10 @@ export async function PATCH(request: Request, { params }: RouteContext) {
 
 export async function DELETE(_request: Request, { params }: RouteContext) {
   try {
-    const context = await authorizationService.requireActiveCompany('ADMIN');
+    const trailerId = validateId((await params).id, 'Trailer ID');
+    const context = await fleetAuthorizationService.requireTrailer(trailerId, 'ADMIN');
     await dispatchService.deleteTrailer(
-      validateId((await params).id, 'Trailer ID'),
+      trailerId,
       context,
     );
     return NextResponse.json({ ok: true });
@@ -36,4 +40,3 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     return dispatchRouteErrorResponse(error);
   }
 }
-
