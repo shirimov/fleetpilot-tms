@@ -40,12 +40,23 @@ export class FinancialControlAuthorizationService {
     if (!link || !groupRole || weight[groupRole] < weight[minimumRole]) {
       throw new AuthorizationDeniedError();
     }
+    const groupCompanyIds = link.operatingGroup.companies.map(({ companyId }) => companyId);
+    const authorizedMemberships = await this.database.companyMembership.findMany({
+      where: {
+        userId: active.user.id,
+        companyId: { in: groupCompanyIds },
+        role: { in: minimumRole === 'OWNER' ? ['OWNER'] : ['ADMIN', 'OWNER'] },
+      },
+      select: { companyId: true },
+    });
+    const companyIds = authorizedMemberships.map(({ companyId }) => companyId);
+    if (!companyIds.includes(active.companyId)) throw new AuthorizationDeniedError();
     return {
       userId: active.user.id,
       activeCompanyId: active.companyId,
       operatingGroupId: link.operatingGroupId,
       role: groupRole,
-      companyIds: link.operatingGroup.companies.map(({ companyId }) => companyId),
+      companyIds,
     };
   }
 

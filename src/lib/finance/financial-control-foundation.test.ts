@@ -20,7 +20,7 @@ const service = new FinancialControlService(prisma);
 let session: TrustedSession = null;
 const authorization = new AuthorizationService(prisma, async () => session);
 const financialAuthorization = new FinancialControlAuthorizationService(prisma, authorization);
-let companyId = ''; let foreignCompanyId = ''; let ownerId = ''; let adminId = ''; let memberId = ''; let groupId = ''; let categoryId = ''; let sourceId = ''; let destinationSourceId = ''; let euroSourceId = ''; let truckId = ''; let secondTruckId = ''; let foreignTruckId = ''; let statementId = ''; let recordId = ''; let transactionId = '';
+let companyId = ''; let authorizedCompanyId = ''; let foreignCompanyId = ''; let ownerId = ''; let adminId = ''; let memberId = ''; let groupId = ''; let categoryId = ''; let sourceId = ''; let destinationSourceId = ''; let euroSourceId = ''; let truckId = ''; let secondTruckId = ''; let foreignTruckId = ''; let statementId = ''; let recordId = ''; let transactionId = '';
 
 function companyContext(userId: string, role: 'OWNER' | 'ADMIN' | 'MEMBER'): CompanyAuthorization {
   return { companyId, role, user: { id: userId, email: `${userId}@test.dev`, displayName: role, isActive: true, activeCompanyId: companyId } };
@@ -30,8 +30,8 @@ function context(userId = ownerId, role: 'OWNER' | 'ADMIN' = 'OWNER'): Financial
 }
 
 before(async () => {
-  const [company, foreign] = await Promise.all([prisma.company.create({ data: { name: `Financial ${suffix}` } }), prisma.company.create({ data: { name: `Financial foreign ${suffix}` } })]);
-  companyId = company.id; foreignCompanyId = foreign.id;
+  const [company, authorized, foreign] = await Promise.all([prisma.company.create({ data: { name: `Financial ${suffix}` } }), prisma.company.create({ data: { name: `Financial authorized ${suffix}` } }), prisma.company.create({ data: { name: `Financial foreign ${suffix}` } })]);
+  companyId = company.id; authorizedCompanyId = authorized.id; foreignCompanyId = foreign.id;
   const [owner, admin, member] = await Promise.all([
     prisma.user.create({ data: { email: `financial-owner-${suffix}@test.dev`, displayName: 'Owner', activeCompanyId: companyId } }),
     prisma.user.create({ data: { email: `financial-admin-${suffix}@test.dev`, displayName: 'Admin', activeCompanyId: companyId } }),
@@ -41,6 +41,10 @@ before(async () => {
   await prisma.companyMembership.createMany({ data: [{ companyId, userId: ownerId, role: 'OWNER' }, { companyId, userId: adminId, role: 'ADMIN' }, { companyId, userId: memberId, role: 'MEMBER' }] });
   const group = await service.createGroup(`Financial Group ${suffix}`, companyContext(ownerId, 'OWNER'));
   groupId = group.id;
+  await prisma.$transaction([
+    prisma.operatingGroupCompany.create({ data: { operatingGroupId: groupId, companyId: authorizedCompanyId } }),
+    prisma.companyMembership.create({ data: { companyId: authorizedCompanyId, userId: ownerId, role: 'OWNER' } }),
+  ]);
   categoryId = (await prisma.financialCategory.findFirstOrThrow({ where: { operatingGroupId: groupId, name: 'Fuel' } })).id;
   sourceId = (await service.createSource({ name: `Bank ${suffix}`, type: 'BANK_ACCOUNT', companyId, currency: 'USD' }, context())).id;
   destinationSourceId = (await service.createSource({ name: `Savings ${suffix}`, type: 'BANK_ACCOUNT', companyId, currency: 'USD' }, context())).id;
@@ -67,7 +71,7 @@ after(async () => {
   await prisma.operatingGroup.deleteMany({ where: { id: groupId } });
   await prisma.truck.deleteMany({ where: { id: { in: [truckId, secondTruckId, foreignTruckId] } } });
   await prisma.user.deleteMany({ where: { id: { in: [ownerId, adminId, memberId] } } });
-  await prisma.company.deleteMany({ where: { id: { in: [companyId, foreignCompanyId] } } });
+  await prisma.company.deleteMany({ where: { id: { in: [companyId, authorizedCompanyId, foreignCompanyId] } } });
   await prisma.$disconnect();
 });
 
@@ -136,7 +140,7 @@ test('dimension discovery reuses canonical equipment classification data', async
   await prisma.truck.update({ where: { id: truckId }, data: { year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true } });
   const trailer = await prisma.trailer.create({ data: { companyId, unitNumber: `dimension-${suffix}`, equipmentType: 'REEFER' } });
   const dimensions = await service.listDimensions(context());
-  assert.deepEqual(dimensions.trucks.find((truck) => truck.id === truckId), { id: truckId, unitNumber: `financial-${suffix}`, year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true });
+  assert.deepEqual(dimensions.trucks.find((truck) => truck.id === truckId), { id: truckId, unitNumber: `financial-${suffix}`, year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true, companyId, company: { name: `Financial ${suffix}` } });
   assert.equal(dimensions.trailers.find((item) => item.id === trailer.id)?.equipmentType, 'REEFER');
   assert.equal(await prisma.truck.count({ where: { id: truckId } }), 1);
   await prisma.trailer.delete({ where: { id: trailer.id } });
@@ -253,9 +257,13 @@ test('OWNER cleanup permanently deletes only dependency-free financial records',
 
 test('OWNER and ADMIN group access is allowed while MEMBER is denied', async () => {
   session = { user: { id: ownerId } };
-  assert.equal((await financialAuthorization.requireContext()).operatingGroupId, groupId);
+  const ownerContext = await financialAuthorization.requireContext();
+  assert.equal(ownerContext.operatingGroupId, groupId);
+  assert.deepEqual(new Set(ownerContext.companyIds), new Set([companyId, authorizedCompanyId]));
   session = { user: { id: adminId } };
-  assert.equal((await financialAuthorization.requireContext()).role, 'ADMIN');
+  const adminContext = await financialAuthorization.requireContext();
+  assert.equal(adminContext.role, 'ADMIN');
+  assert.deepEqual(adminContext.companyIds, [companyId]);
   session = { user: { id: memberId } };
   await assert.rejects(financialAuthorization.requireContext(), AuthorizationDeniedError);
 });

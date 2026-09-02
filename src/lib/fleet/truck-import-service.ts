@@ -3,6 +3,7 @@ import type { CompanyAuthorization } from '@/lib/auth/authorization';
 import { prisma } from '@/lib/prisma';
 import type { PrismaClient, TruckStatus } from '@prisma/client';
 import * as XLSX from '@e965/xlsx';
+import { normalizeTruckUnitNumber } from './truck-normalization';
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const STATUSES = new Set<TruckStatus>(['ACTIVE', 'INACTIVE', 'MAINTENANCE']);
@@ -21,7 +22,7 @@ export class TruckImportValidationError extends Error {
 }
 
 export function normalizeUnitNumber(value: string) {
-  return value.trim().replace(/\s+/g, ' ').toUpperCase();
+  return normalizeTruckUnitNumber(value);
 }
 
 export function normalizeVin(value: string) {

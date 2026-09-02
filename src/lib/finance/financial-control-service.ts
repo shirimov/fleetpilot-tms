@@ -248,7 +248,7 @@ export class FinancialControlService {
     const companyWhere = { companyId: { in: context.companyIds } };
     const [companies, trucks, trailers, drivers, employees, loads, customers, parties, programs] = await Promise.all([
       this.database.company.findMany({ where: { id: { in: context.companyIds } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
-      this.database.truck.findMany({ where: companyWhere, select: { id: true, unitNumber: true, year: true, make: true, model: true, isOwnerOp: true }, orderBy: { unitNumber: 'asc' } }),
+      this.database.truck.findMany({ where: { ...companyWhere, status: 'ACTIVE' }, select: { id: true, unitNumber: true, year: true, make: true, model: true, isOwnerOp: true, companyId: true, company: { select: { name: true } } }, orderBy: [{ company: { name: 'asc' } }, { unitNumber: 'asc' }] }),
       this.database.trailer.findMany({ where: companyWhere, select: { id: true, unitNumber: true, equipmentType: true }, orderBy: { unitNumber: 'asc' } }),
       this.database.driver.findMany({ where: companyWhere, select: { id: true, firstName: true, lastName: true }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }] }),
       this.database.employee.findMany({ where: companyWhere, select: { id: true, firstName: true, lastName: true, preferredName: true }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }] }),
