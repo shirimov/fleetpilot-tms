@@ -7,12 +7,14 @@ import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialControlService } from './financial-control-service';
 import { FinancialConflictError, FinancialValidationError } from './financial-control-errors';
 import { PilotImportService } from './pilot-import-service';
+import { OperatingGroupCompanyService } from './operating-group-company-service';
 import { pilotXlsFixture } from '../../../tests/fixtures/pilot-xls';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const control = new FinancialControlService(prisma);
 const importer = new PilotImportService(prisma);
+const groupCompanies = new OperatingGroupCompanyService(prisma);
 class MemoryStatementStorage implements PrivateFileStorage {
   readonly files = new Map<string, Uint8Array>();
   async put(bytes: Uint8Array) { const key = randomUUID(); this.files.set(key, bytes); return key; }
@@ -24,6 +26,7 @@ const reparseImporter = new PilotImportService(prisma, statementStorage);
 let companyId = ''; let relatedCompanyId = ''; let foreignCompanyId = ''; let userId = ''; let groupId = ''; let sourceId = ''; let truckId = ''; let relatedTruckId = ''; let foreignTruckId = ''; let fuelCategoryId = ''; let adjustmentCategoryId = '';
 const importedInvoiceIds: string[] = [];
 const extraTruckIds: string[] = [];
+const extraCompanyIds: string[] = [];
 const providerAccountHash = createHash('sha256').update('123456789').digest('hex');
 const hashForTest = (value: string) => createHash('sha256').update(`${suffix}:${value}`).digest('hex');
 
@@ -94,7 +97,7 @@ after(async () => {
   await prisma.truck.deleteMany({ where: { id: { in: [truckId, relatedTruckId, foreignTruckId, ...extraTruckIds] } } });
   await prisma.companyMembership.deleteMany({ where: { userId } });
   await prisma.user.deleteMany({ where: { id: userId } });
-  await prisma.company.deleteMany({ where: { id: { in: [companyId, relatedCompanyId, foreignCompanyId] } } });
+  await prisma.company.deleteMany({ where: { id: { in: [companyId, relatedCompanyId, foreignCompanyId, ...extraCompanyIds] } } });
   await prisma.$disconnect();
 });
 
@@ -213,6 +216,39 @@ test('safe rematch resolves only truck issues and preserves financial values and
     { invoice: before.invoiceTotalMinor, parsed: before.parsedTotalMinor, difference: before.differenceMinor, lines: before.productLines.map(({ amountMinor, quantity, unitPrice, categoryId }) => ({ amountMinor, quantity: quantity.toString(), unitPrice: unitPrice.toString(), categoryId })), adjustments: before.adjustments },
   );
   assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: String(preview.id), action: 'PILOT_TRUCK_MATCHING_RERUN' } }), 1);
+});
+
+test('adding an OWNER-authorized company expands a fresh Pilot rematch without changing invoice financial values', async () => {
+  const candidateCompany = await prisma.company.create({ data: { name: `Pilot candidate ${suffix}` } });
+  extraCompanyIds.push(candidateCompany.id);
+  await prisma.companyMembership.create({ data: { companyId: candidateCompany.id, userId, role: 'OWNER' } });
+  const candidateTruck = await prisma.truck.create({ data: { companyId: candidateCompany.id, unitNumber: 'GROUPADD', unitNumberNormalized: 'GROUPADD' } });
+  extraTruckIds.push(candidateTruck.id);
+
+  const preview = await importer.createImport(
+    pilotXlsFixture({ invoiceNumber: '910030', unitNumber: 'GROUPADD', productCode: '999' }),
+    metadata('pilot-910030'),
+    sourceId,
+    context(),
+  );
+  importedInvoiceIds.push(String(preview.id));
+  assert.equal((preview.events as Array<{ truckId: string | null }>)[0].truckId, null);
+  const before = await prisma.pilotProviderInvoice.findUniqueOrThrow({
+    where: { id: String(preview.id) },
+    select: { invoiceTotalMinor: true, parsedTotalMinor: true, differenceMinor: true },
+  });
+
+  await groupCompanies.add(candidateCompany.id, context());
+  const expandedContext = { ...context(), companyIds: [companyId, candidateCompany.id] };
+  const rematched = await importer.rematchTrucks(String(preview.id), expandedContext);
+  assert.equal((rematched.events as Array<{ truckId: string | null }>)[0].truckId, candidateTruck.id);
+  assert.ok((rematched.issues as Array<{ code: string; status: string }>).some(({ code, status }) => code === 'MISSING_CATEGORY' && status === 'OPEN'));
+  const after = await prisma.pilotProviderInvoice.findUniqueOrThrow({
+    where: { id: String(preview.id) },
+    select: { invoiceTotalMinor: true, parsedTotalMinor: true, differenceMinor: true },
+  });
+  assert.deepEqual(after, before);
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910030' } }), 0);
 });
 
 test('posting revalidates the matched truck against the current authorized company scope', async () => {
