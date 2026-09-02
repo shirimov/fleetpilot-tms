@@ -24,6 +24,14 @@ migrated through an approved operational process.
 
 Plaid HTTP requests use a 30-second timeout. Synchronization performs no
 automatic retries and caps cursor pagination at 20 pages per explicit run.
+Each normal refresh requests provider account snapshots and transaction cursor
+updates independently. Provider current and available balances are stored as
+exact minor units and are never derived from transaction arithmetic.
+`BankSubAccount.lastSyncedAt` records the last successful balance refresh while
+`BankAccount.lastSync` records the last successful transaction refresh. A
+partial failure preserves the last known balance and its timestamp, records a
+sanitized error, and does not claim that both sides refreshed successfully.
+Duplicate in-process refresh requests for one connection are coalesced.
 
 Plaid Link is opened only from the trusted active-company context. Initial Link
 requests enable Transactions only; update-mode Link uses the existing encrypted

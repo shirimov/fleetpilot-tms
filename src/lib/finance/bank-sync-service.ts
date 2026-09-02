@@ -8,6 +8,26 @@ import { decryptBankAccessToken } from './bank-token-crypto';
 import { PlaidBankProviderAdapter } from './plaid-bank-adapter';
 
 const MAX_SYNC_PAGES = 20;
+const activeSyncs = new Map<string, Promise<BankSyncResult>>();
+
+type BalanceSyncResult =
+  | { status: 'unsupported' }
+  | {
+      status: 'updated';
+      accountCount: number;
+      refreshedAt: Date;
+      missingAccountCount: number;
+      unknownAccountCount: number;
+    }
+  | { status: 'failed'; code: string; message: string };
+
+type BankSyncResult = {
+  added: number;
+  updated: number;
+  removed: number;
+  cursor: string | null;
+  balance?: BalanceSyncResult;
+};
 
 function sanitizeProviderFailure(error: unknown) {
   const providerCode =
@@ -32,6 +52,32 @@ function sanitizeProviderFailure(error: unknown) {
   };
 }
 
+function balanceFailure(error: unknown) {
+  const failure = sanitizeProviderFailure(error);
+  return {
+    code: failure.code === 'LOGIN_REQUIRED' ? failure.code : 'BALANCE_REFRESH_FAILED',
+    message: failure.code === 'LOGIN_REQUIRED'
+      ? failure.message
+      : 'Transactions may be current, but bank balances could not be refreshed.',
+    status: failure.status,
+  };
+}
+
+function balanceNumber(value: bigint | null) {
+  return value === null ? null : Number(value) / 100;
+}
+
+function validateAccountSnapshots(accounts: Awaited<ReturnType<NonNullable<BankProviderAdapter['syncAccounts']>>>) {
+  if (!accounts.length) throw new Error('Provider returned no accounts.');
+  const identifiers = new Set<string>();
+  for (const account of accounts) {
+    if (!account.externalAccountId || identifiers.has(account.externalAccountId)) {
+      throw new Error('Provider returned invalid account identity data.');
+    }
+    identifiers.add(account.externalAccountId);
+  }
+}
+
 export class BankSyncService {
   constructor(
     private readonly database: PrismaClient = prisma,
@@ -42,6 +88,26 @@ export class BankSyncService {
   ) {}
 
   async syncNow(context: FinancialAuthorization, bankAccountId: string) {
+    const authorized = await this.database.bankAccount.count({
+      where: {
+        id: bankAccountId,
+        companyId: { in: context.companyIds },
+        status: { in: ['ACTIVE', 'ERROR'] },
+      },
+    });
+    if (!authorized) throw new BankLedgerNotFoundError();
+    const existing = activeSyncs.get(bankAccountId);
+    if (existing) return existing;
+    const pending = this.performSync(context, bankAccountId);
+    activeSyncs.set(bankAccountId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (activeSyncs.get(bankAccountId) === pending) activeSyncs.delete(bankAccountId);
+    }
+  }
+
+  private async performSync(context: FinancialAuthorization, bankAccountId: string): Promise<BankSyncResult> {
     const connection = await this.database.bankAccount.findFirst({
       where: {
         id: bankAccountId,
@@ -51,6 +117,8 @@ export class BankSyncService {
       select: {
         id: true,
         provider: true,
+        companyId: true,
+        institutionName: true,
         accessTokenCiphertext: true,
         syncCursor: true,
       },
@@ -65,6 +133,90 @@ export class BankSyncService {
       where: { id: connection.id },
       data: { lastSyncAttemptAt: new Date() },
     });
+    let balance: BalanceSyncResult = { status: 'unsupported' };
+    if (adapter.syncAccounts) {
+      try {
+        const accounts = await adapter.syncAccounts({ accessToken });
+        validateAccountSnapshots(accounts);
+        const refreshedAt = new Date();
+        const externalAccountIds = accounts.map(({ externalAccountId }) => externalAccountId);
+        const storedAccounts = await this.database.bankSubAccount.findMany({
+          where: { bankAccountId: connection.id },
+          select: { id: true, externalAccountId: true },
+        });
+        const storedByExternalId = new Map(
+          storedAccounts.flatMap((account) => account.externalAccountId ? [[account.externalAccountId, account]] : []),
+        );
+        const knownAccounts = accounts.filter((account) => storedByExternalId.has(account.externalAccountId));
+        const unknownAccountCount = accounts.length - knownAccounts.length;
+        const missingAccountCount = storedAccounts.filter(
+          (account) => account.externalAccountId && !externalAccountIds.includes(account.externalAccountId),
+        ).length;
+        await this.database.$transaction(async (database) => {
+          for (const account of knownAccounts) {
+            await database.bankSubAccount.update({
+              where: { id: storedByExternalId.get(account.externalAccountId)!.id },
+              data: {
+                name: account.name,
+                officialName: account.officialName ?? null,
+                type: account.type,
+                subtype: account.subtype ?? null,
+                mask: account.mask ?? null,
+                currency: account.currency,
+                currentBalance: balanceNumber(account.currentBalanceMinor),
+                availableBalance: balanceNumber(account.availableBalanceMinor),
+                currentBalanceMinor: account.currentBalanceMinor,
+                availableBalanceMinor: account.availableBalanceMinor,
+                isActive: true,
+                lastSyncedAt: refreshedAt,
+              },
+            });
+          }
+          await database.bankSubAccount.updateMany({
+            where: {
+              bankAccountId: connection.id,
+              ...(externalAccountIds.length
+                ? { externalAccountId: { notIn: externalAccountIds } }
+                : {}),
+            },
+            data: { isActive: false },
+          });
+          await database.financialAuditEvent.create({
+            data: {
+              operatingGroupId: context.operatingGroupId,
+              companyId: connection.companyId,
+              actorUserId: context.userId,
+              action: 'BANK_BALANCE_REFRESHED',
+              metadata: {
+                bankAccountId: connection.id,
+                accountCount: knownAccounts.length,
+                missingAccountCount,
+                unknownAccountCount,
+              },
+            },
+          });
+        });
+        balance = {
+          status: 'updated',
+          accountCount: knownAccounts.length,
+          refreshedAt,
+          missingAccountCount,
+          unknownAccountCount,
+        };
+      } catch (error) {
+        const failure = balanceFailure(error);
+        balance = { status: 'failed', code: failure.code, message: failure.message };
+        await this.database.financialAuditEvent.create({
+          data: {
+            operatingGroupId: context.operatingGroupId,
+            companyId: connection.companyId,
+            actorUserId: context.userId,
+            action: 'BANK_BALANCE_REFRESH_FAILED',
+            metadata: { bankAccountId: connection.id, code: failure.code },
+          },
+        });
+      }
+    }
     let cursor = connection.syncCursor;
     let added = 0;
     let updated = 0;
@@ -92,12 +244,23 @@ export class BankSyncService {
             data: {
               syncCursor: cursor,
               lastSync: new Date(),
-              lastSyncErrorCode: null,
-              lastSyncErrorMessage: null,
-              status: 'ACTIVE',
+              status: balance.status === 'failed' && balance.code === 'LOGIN_REQUIRED'
+                ? 'REQUIRES_REAUTH'
+                : 'ACTIVE',
+              ...(balance.status === 'failed'
+                ? {
+                    lastSyncErrorCode: balance.code,
+                    lastSyncErrorMessage: balance.message,
+                  }
+                : {
+                    lastSyncErrorCode: null,
+                    lastSyncErrorMessage: null,
+                  }),
             },
           });
-          return { added, updated, removed, cursor };
+          return balance.status === 'unsupported'
+            ? { added, updated, removed, cursor }
+            : { added, updated, removed, cursor, balance };
         }
       }
       throw new Error('Provider pagination exceeded the bounded sync limit.');
@@ -158,11 +321,20 @@ export class BankSyncService {
       });
       return;
     }
-    const claimed = await this.database.bankProviderWebhookEvent.updateMany({
-      where: { id: event.id, status: 'QUEUED' },
-      data: { status: 'PROCESSING' },
+    const claimedEventIds = await this.database.$transaction(async (database) => {
+      const queued = await database.bankProviderWebhookEvent.findMany({
+        where: { bankAccountId: connection.id, status: 'QUEUED' },
+        select: { id: true },
+      });
+      if (!queued.some(({ id }) => id === event.id)) return [];
+      const ids = queued.map(({ id }) => id);
+      await database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: ids }, status: 'QUEUED' },
+        data: { status: 'PROCESSING' },
+      });
+      return ids;
     });
-    if (!claimed.count) return;
+    if (!claimedEventIds.length) return;
     try {
       await this.syncNow({
         userId: actor.userId,
@@ -171,13 +343,13 @@ export class BankSyncService {
         role: actor.role,
         companyIds: group.operatingGroup.companies.map(({ companyId }) => companyId),
       }, connection.id);
-      await this.database.bankProviderWebhookEvent.update({
-        where: { id: event.id },
+      await this.database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: claimedEventIds }, status: 'PROCESSING' },
         data: { status: 'COMPLETED' },
       });
     } catch {
-      await this.database.bankProviderWebhookEvent.update({
-        where: { id: event.id },
+      await this.database.bankProviderWebhookEvent.updateMany({
+        where: { id: { in: claimedEventIds }, status: 'PROCESSING' },
         data: { status: 'FAILED' },
       });
     }
