@@ -203,3 +203,75 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await prisma.company.delete({ where: { id: company.id } });
   }
 });
+
+test('OWNER explicitly adds an authorized company to the Accounting operating group', async ({ page }) => {
+  test.setTimeout(60_000);
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const [companyA, companyB, companyD] = await Promise.all([
+    prisma.company.create({ data: { name: `Operating Group A ${suffix}` } }),
+    prisma.company.create({ data: { name: `Operating Group B ${suffix}` } }),
+    prisma.company.create({ data: { name: `Operating Group D ${suffix}` } }),
+  ]);
+  const [owner, admin] = await Promise.all([
+    prisma.user.create({ data: {
+      email: `operating-group-owner-${suffix}@example.test`,
+      displayName: 'Operating Group Owner',
+      activeCompanyId: companyA.id,
+      memberships: { create: [{ companyId: companyA.id, role: 'OWNER' }, { companyId: companyB.id, role: 'OWNER' }] },
+    } }),
+    prisma.user.create({ data: {
+      email: `operating-group-admin-${suffix}@example.test`,
+      displayName: 'Operating Group Admin',
+      activeCompanyId: companyA.id,
+      memberships: { create: { companyId: companyA.id, role: 'ADMIN' } },
+    } }),
+  ]);
+  let groupId = '';
+  try {
+    await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+    await page.goto('/accounting');
+    await page.getByPlaceholder('Marybeg Group').fill(`Operating Group ${suffix}`);
+    await page.getByRole('button', { name: 'Create operating group' }).click();
+    await expect(page.getByRole('button', { name: 'Overview' })).toBeVisible();
+    groupId = (await prisma.operatingGroupCompany.findUniqueOrThrow({ where: { companyId: companyA.id } })).operatingGroupId;
+
+    await page.getByRole('button', { name: 'Operating Group' }).click();
+    const included = page.getByRole('heading', { name: 'Included companies' }).locator('xpath=ancestor::section');
+    await expect(included).toBeVisible();
+    await expect(included.getByText(companyA.name, { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Company to add').locator(`option:has-text("${companyD.name}")`)).toHaveCount(0);
+    await page.getByLabel('Company to add').selectOption(companyB.id);
+    await page.getByRole('button', { name: 'Review addition' }).click();
+    const confirmation = page.getByRole('dialog', { name: 'Confirm operating-group company' });
+    await expect(confirmation).toContainText(companyB.name);
+    await expect(confirmation).toContainText(`Operating Group ${suffix}`);
+    await confirmation.getByRole('button', { name: 'Confirm add' }).click();
+
+    await expect(included.getByText(companyB.name, { exact: true })).toBeVisible();
+    await expect(page.getByText('No additional OWNER-authorized companies are available.')).toBeVisible();
+    expect((await prisma.operatingGroupCompany.findUniqueOrThrow({ where: { companyId: companyB.id } })).operatingGroupId).toBe(groupId);
+    expect(await prisma.financialAuditEvent.count({ where: { operatingGroupId: groupId, companyId: companyB.id, action: 'OPERATING_GROUP_COMPANY_ADDED' } })).toBe(1);
+
+    await page.context().clearCookies();
+    await page.goto(`/login/email/verify#token=${await issueToken(admin.id, admin.email)}`);
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+    await page.goto('/accounting');
+    await page.getByRole('button', { name: 'Operating Group' }).click();
+    await expect(page.getByText('Your access is view-only.')).toBeVisible();
+    await expect(page.getByLabel('Company to add')).toHaveCount(0);
+    const denied = await page.request.post('/api/finance/group/companies', { data: { companyId: companyB.id } });
+    expect(denied.status()).toBe(403);
+  } finally {
+    if (groupId) {
+      await prisma.financialAuditEvent.deleteMany({ where: { operatingGroupId: groupId } });
+      await prisma.financialCategory.deleteMany({ where: { operatingGroupId: groupId } });
+      await prisma.operatingGroupMembership.deleteMany({ where: { operatingGroupId: groupId } });
+      await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: groupId } });
+      await prisma.operatingGroup.deleteMany({ where: { id: groupId } });
+    }
+    await prisma.financialAuditEvent.deleteMany({ where: { actorUserId: owner.id } });
+    await prisma.user.deleteMany({ where: { id: { in: [owner.id, admin.id] } } });
+    await prisma.company.deleteMany({ where: { id: { in: [companyA.id, companyB.id, companyD.id] } } });
+  }
+});
