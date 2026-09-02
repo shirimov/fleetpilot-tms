@@ -212,14 +212,20 @@ test('OWNER explicitly adds an authorized company to the Accounting operating gr
     prisma.company.create({ data: { name: `Operating Group B ${suffix}` } }),
     prisma.company.create({ data: { name: `Operating Group D ${suffix}` } }),
   ]);
-  const owner = await prisma.user.create({
-    data: {
+  const [owner, admin] = await Promise.all([
+    prisma.user.create({ data: {
       email: `operating-group-owner-${suffix}@example.test`,
       displayName: 'Operating Group Owner',
       activeCompanyId: companyA.id,
       memberships: { create: [{ companyId: companyA.id, role: 'OWNER' }, { companyId: companyB.id, role: 'OWNER' }] },
-    },
-  });
+    } }),
+    prisma.user.create({ data: {
+      email: `operating-group-admin-${suffix}@example.test`,
+      displayName: 'Operating Group Admin',
+      activeCompanyId: companyA.id,
+      memberships: { create: { companyId: companyA.id, role: 'ADMIN' } },
+    } }),
+  ]);
   let groupId = '';
   try {
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
@@ -239,12 +245,23 @@ test('OWNER explicitly adds an authorized company to the Accounting operating gr
     await page.getByRole('button', { name: 'Review addition' }).click();
     const confirmation = page.getByRole('dialog', { name: 'Confirm operating-group company' });
     await expect(confirmation).toContainText(companyB.name);
+    await expect(confirmation).toContainText(`Operating Group ${suffix}`);
     await confirmation.getByRole('button', { name: 'Confirm add' }).click();
 
     await expect(included.getByText(companyB.name, { exact: true })).toBeVisible();
     await expect(page.getByText('No additional OWNER-authorized companies are available.')).toBeVisible();
     expect((await prisma.operatingGroupCompany.findUniqueOrThrow({ where: { companyId: companyB.id } })).operatingGroupId).toBe(groupId);
     expect(await prisma.financialAuditEvent.count({ where: { operatingGroupId: groupId, companyId: companyB.id, action: 'OPERATING_GROUP_COMPANY_ADDED' } })).toBe(1);
+
+    await page.context().clearCookies();
+    await page.goto(`/login/email/verify#token=${await issueToken(admin.id, admin.email)}`);
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+    await page.goto('/accounting');
+    await page.getByRole('button', { name: 'Operating Group' }).click();
+    await expect(page.getByText('Your access is view-only.')).toBeVisible();
+    await expect(page.getByLabel('Company to add')).toHaveCount(0);
+    const denied = await page.request.post('/api/finance/group/companies', { data: { companyId: companyB.id } });
+    expect(denied.status()).toBe(403);
   } finally {
     if (groupId) {
       await prisma.financialAuditEvent.deleteMany({ where: { operatingGroupId: groupId } });
@@ -254,7 +271,7 @@ test('OWNER explicitly adds an authorized company to the Accounting operating gr
       await prisma.operatingGroup.deleteMany({ where: { id: groupId } });
     }
     await prisma.financialAuditEvent.deleteMany({ where: { actorUserId: owner.id } });
-    await prisma.user.deleteMany({ where: { id: owner.id } });
+    await prisma.user.deleteMany({ where: { id: { in: [owner.id, admin.id] } } });
     await prisma.company.deleteMany({ where: { id: { in: [companyA.id, companyB.id, companyD.id] } } });
   }
 });

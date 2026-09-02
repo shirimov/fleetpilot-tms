@@ -376,7 +376,7 @@ export class PilotImportService {
       if (invoice.status === 'POSTED') throw new FinancialConflictError('Posted Pilot invoices cannot be rematched.');
 
       const events = await tx.pilotFuelingEvent.findMany({
-        where: { invoiceId, truckMatchStatus: { in: ['UNMATCHED', 'AMBIGUOUS'] } },
+        where: { invoiceId, truckMatchStatus: { in: ['MATCHED', 'UNMATCHED', 'AMBIGUOUS'] } },
         select: { id: true, sourceUnitNumber: true },
       });
       const units = [...new Set(events.map(({ sourceUnitNumber }) => normalizeTruckUnitNumber(sourceUnitNumber)).filter(Boolean))];
@@ -406,11 +406,15 @@ export class PilotImportService {
           matched += 1;
         } else if (candidates.length > 1) {
           await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: null, truckMatchStatus: 'AMBIGUOUS' } });
-          await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { code: 'AMBIGUOUS_TRUCK', message: `Unit ${event.sourceUnitNumber} matched more than one authorized truck.` } });
+          const message = `Unit ${event.sourceUnitNumber} matched more than one authorized truck.`;
+          const updated = await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { code: 'AMBIGUOUS_TRUCK', message } });
+          if (updated.count === 0) await tx.pilotImportIssue.create({ data: { invoiceId, eventId: event.id, code: 'AMBIGUOUS_TRUCK', message } });
           ambiguous += 1;
         } else {
           await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: null, truckMatchStatus: 'UNMATCHED' } });
-          await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { code: 'UNMATCHED_TRUCK', message: `Unit ${event.sourceUnitNumber || '(blank)'} did not match an authorized truck.` } });
+          const message = `Unit ${event.sourceUnitNumber || '(blank)'} did not match an authorized truck.`;
+          const updated = await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { code: 'UNMATCHED_TRUCK', message } });
+          if (updated.count === 0) await tx.pilotImportIssue.create({ data: { invoiceId, eventId: event.id, code: 'UNMATCHED_TRUCK', message } });
           unmatched += 1;
         }
       }

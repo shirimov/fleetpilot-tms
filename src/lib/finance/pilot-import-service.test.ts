@@ -239,6 +239,10 @@ test('adding an OWNER-authorized company expands a fresh Pilot rematch without c
   });
 
   await groupCompanies.add(candidateCompany.id, context());
+  const unchangedUntilRematch = await prisma.pilotFuelingEvent.findFirstOrThrow({ where: { invoiceId: String(preview.id) } });
+  assert.equal(unchangedUntilRematch.truckId, null);
+  assert.equal(context().activeCompanyId, companyId);
+  assert.equal((await prisma.financialSource.findUniqueOrThrow({ where: { id: sourceId } })).companyId, companyId);
   const expandedContext = { ...context(), companyIds: [companyId, candidateCompany.id] };
   const rematched = await importer.rematchTrucks(String(preview.id), expandedContext);
   assert.equal((rematched.events as Array<{ truckId: string | null }>)[0].truckId, candidateTruck.id);
@@ -249,6 +253,33 @@ test('adding an OWNER-authorized company expands a fresh Pilot rematch without c
   });
   assert.deepEqual(after, before);
   assert.equal(await prisma.financialTransaction.count({ where: { reference: '910030' } }), 0);
+});
+
+test('group expansion makes a previously unique automatic unit match ambiguous on explicit rematch', async () => {
+  const candidateCompany = await prisma.company.create({ data: { name: `Pilot duplicate expansion ${suffix}` } });
+  extraCompanyIds.push(candidateCompany.id);
+  await prisma.companyMembership.create({ data: { companyId: candidateCompany.id, userId, role: 'OWNER' } });
+  const [activeCompanyTruck, candidateTruck] = await Promise.all([
+    prisma.truck.create({ data: { companyId, unitNumber: 'EXPAND123', unitNumberNormalized: 'EXPAND123' } }),
+    prisma.truck.create({ data: { companyId: candidateCompany.id, unitNumber: 'EXPAND123', unitNumberNormalized: 'EXPAND123' } }),
+  ]);
+  extraTruckIds.push(activeCompanyTruck.id, candidateTruck.id);
+  const preview = await importer.createImport(
+    pilotXlsFixture({ invoiceNumber: '910031', unitNumber: 'EXPAND123', productCode: '999' }),
+    metadata('pilot-910031'),
+    sourceId,
+    context(),
+  );
+  importedInvoiceIds.push(String(preview.id));
+  assert.equal((preview.events as Array<{ truckId: string | null; truckMatchStatus: string }>)[0].truckId, activeCompanyTruck.id);
+  assert.equal((preview.events as Array<{ truckMatchStatus: string }>)[0].truckMatchStatus, 'MATCHED');
+
+  await groupCompanies.add(candidateCompany.id, context());
+  const rematched = await importer.rematchTrucks(String(preview.id), { ...context(), companyIds: [companyId, candidateCompany.id] });
+  assert.equal((rematched.events as Array<{ truckId: string | null; truckMatchStatus: string }>)[0].truckId, null);
+  assert.equal((rematched.events as Array<{ truckMatchStatus: string }>)[0].truckMatchStatus, 'AMBIGUOUS');
+  assert.ok((rematched.issues as Array<{ code: string; status: string }>).some(({ code, status }) => code === 'AMBIGUOUS_TRUCK' && status === 'OPEN'));
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910031' } }), 0);
 });
 
 test('posting revalidates the matched truck against the current authorized company scope', async () => {

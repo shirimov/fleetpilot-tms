@@ -61,18 +61,25 @@ export class OperatingGroupCompanyService {
     return this.database.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`operating-group-company:${companyId}`}, 0))::text AS lock_result`;
 
-      const user = await tx.user.findUnique({ where: { id: context.userId }, select: { isActive: true } });
-      if (!user?.isActive) throw new AuthorizationDeniedError();
+      const lockedUsers = await tx.$queryRaw<Array<{ isActive: boolean }>>`
+        SELECT "isActive"
+        FROM "User"
+        WHERE id = ${context.userId}
+        FOR UPDATE
+      `;
+      if (!lockedUsers[0]?.isActive) throw new AuthorizationDeniedError();
 
       const activeGroupLink = await tx.operatingGroupCompany.findUnique({
         where: { companyId: context.activeCompanyId },
         select: { operatingGroupId: true },
       });
-      const groupMembership = await tx.operatingGroupMembership.findUnique({
-        where: { operatingGroupId_userId: { operatingGroupId: context.operatingGroupId, userId: context.userId } },
-        select: { role: true },
-      });
-      if (activeGroupLink?.operatingGroupId !== context.operatingGroupId || groupMembership?.role !== 'OWNER') {
+      const lockedGroupMemberships = await tx.$queryRaw<Array<{ role: string }>>`
+        SELECT role::text
+        FROM "OperatingGroupMembership"
+        WHERE "operatingGroupId" = ${context.operatingGroupId} AND "userId" = ${context.userId}
+        FOR UPDATE
+      `;
+      if (activeGroupLink?.operatingGroupId !== context.operatingGroupId || lockedGroupMemberships[0]?.role !== 'OWNER') {
         throw new AuthorizationDeniedError();
       }
 

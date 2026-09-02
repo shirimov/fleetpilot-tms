@@ -96,7 +96,7 @@ export default function AccountingWorkspace() {
     {tab === 'admin-fees' && <AdminFeeView rows={adminFees} dimensions={dimensions} busy={busy} submit={submit} refresh={refresh} setError={setError} canDelete={role === 'OWNER'} />}
     {tab === 'statements' && <StatementView rows={statements} sources={sources} busy={busy} submit={submit} />}
     {tab === 'pilot-imports' && <PilotImportWorkspace sources={sources} categories={categories} trucks={dimensions.trucks} />}
-    {tab === 'group' && <OperatingGroupCompanies onChanged={refresh} />}
+    {tab === 'group' && <OperatingGroupCompanies groupName={String(group.name)} onChanged={refresh} />}
     {tab === 'transactions' && <TransactionView rows={transactions} records={records} categories={categories} sources={sources} dimensions={dimensions} busy={busy} submit={submit} refresh={refresh} setError={setError} exceptionFilter={exceptionFilter} canDelete={role === 'OWNER'} />}
   </main>;
 }

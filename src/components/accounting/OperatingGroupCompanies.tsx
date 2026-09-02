@@ -19,7 +19,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export default function OperatingGroupCompanies({ onChanged }: { onChanged: () => Promise<void> }) {
+export default function OperatingGroupCompanies({ groupName, onChanged }: { groupName: string; onChanged: () => Promise<void> }) {
   const [state, setState] = useState<GroupCompaniesResponse | null>(null);
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [confirming, setConfirming] = useState(false);
@@ -81,7 +81,7 @@ export default function OperatingGroupCompanies({ onChanged }: { onChanged: () =
         </div>
         {confirming && selected && <div role="dialog" aria-label="Confirm operating-group company" className="mt-4 rounded-lg border border-amber-400/40 bg-amber-950/30 p-4">
           <h3 className="font-semibold text-amber-100">Confirm company addition</h3>
-          <p className="mt-2 text-sm text-amber-50">Add <strong>{selected.company.name}</strong> to this Accounting operating group?</p>
+          <p className="mt-2 text-sm text-amber-50">Add <strong>{selected.company.name}</strong> to <strong>{groupName}</strong>?</p>
           <p className="mt-1 text-xs text-amber-100/80">This expands authorized Accounting matching and views. It does not rematch Pilot invoices or modify company business records.</p>
           <div className="mt-3 flex gap-2"><button className="btn" disabled={busy} onClick={addCompany}>{busy ? 'Adding…' : 'Confirm add'}</button><button disabled={busy} className="rounded-lg bg-slate-800 px-3 py-2 text-sm" onClick={() => setConfirming(false)}>Cancel</button></div>
         </div>}
