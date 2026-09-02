@@ -186,11 +186,16 @@ export class PilotImportService {
       adjustments: { include: { category: { select: { id: true, name: true } } } }, issues: { orderBy: [{ status: 'asc' }, { createdAt: 'asc' }] },
     } });
     if (!invoice) throw new FinancialNotFoundError();
-    return json({
+    const serialized = json({
       ...invoice,
       canReparse: invoice.status === 'NEEDS_REVIEW' && invoice.parseVersion !== PILOT_XLS_PARSER_VERSION,
       canRematchTrucks: invoice.status !== 'POSTED' && invoice.issues.some((issue) => issue.status === 'OPEN' && ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'].includes(issue.code)),
     });
+    serialized.events = serialized.events.map((event: { truck: { companyId: string } | null }) => ({
+      ...event,
+      truck: event.truck && context.companyIds.includes(event.truck.companyId) ? event.truck : null,
+    }));
+    return serialized;
   }
 
   async reparseInvoice(invoiceId: string, context: FinancialAuthorization) {
@@ -386,6 +391,7 @@ export class PilotImportService {
       }
 
       let matched = 0; let ambiguous = 0; let unmatched = 0;
+      const matchedTrucks: Array<{ sourceUnitNumber: string; truckId: string; companyId: string; occurrenceCount: number }> = [];
       for (const event of events) {
         const candidates = trucksByUnit.get(normalizeTruckUnitNumber(event.sourceUnitNumber)) ?? [];
         if (candidates.length === 1) {
@@ -394,6 +400,9 @@ export class PilotImportService {
             where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } },
             data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action: 'AUTOMATIC_REMATCH', truckId: candidates[0].id } },
           });
+          const prior = matchedTrucks.find((item) => item.sourceUnitNumber === event.sourceUnitNumber && item.truckId === candidates[0].id);
+          if (prior) prior.occurrenceCount += 1;
+          else matchedTrucks.push({ sourceUnitNumber: event.sourceUnitNumber, truckId: candidates[0].id, companyId: candidates[0].companyId, occurrenceCount: 1 });
           matched += 1;
         } else if (candidates.length > 1) {
           await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: null, truckMatchStatus: 'AMBIGUOUS' } });
@@ -410,7 +419,7 @@ export class PilotImportService {
       await tx.financialAuditEvent.create({ data: {
         operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId,
         pilotProviderInvoiceId: invoiceId, action: 'PILOT_TRUCK_MATCHING_RERUN',
-        metadata: { consideredEventCount: events.length, matched, ambiguous, unmatched, authorizedCompanyCount: context.companyIds.length },
+        metadata: { consideredEventCount: events.length, matched, ambiguous, unmatched, authorizedCompanyCount: context.companyIds.length, matchedTrucks },
       } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     return this.getInvoice(invoiceId, context);
@@ -436,6 +445,7 @@ export class PilotImportService {
         await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: { in: eventIds }, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action, truckId: truck.id, sourceUnitNumber: sourceEvent.sourceUnitNumber } } });
         resolution.truckId = truck.id;
         resolution.companyId = truck.companyId;
+        resolution.sourceUnitNumber = sourceEvent.sourceUnitNumber;
         resolution.affectedEventCount = String(eventIds.length);
       } else if (action === 'SET_CATEGORY' && typeof input.categoryId === 'string' && (issue.productLineId || issue.adjustmentId)) {
         const category = await tx.financialCategory.findFirst({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
@@ -486,8 +496,18 @@ export class PilotImportService {
       const validCategoryCount = await tx.financialCategory.count({ where: { id: { in: categoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } });
       if (categoryIds.length === 0 || validCategoryCount !== categoryIds.length) throw new FinancialValidationError('Every Pilot category must be active and belong to this operating group at posting time.');
       const truckIds = [...new Set(invoice.events.map(({ truckId }) => truckId).filter((id): id is string => Boolean(id)))];
-      const authorizedActiveTruckCount = await tx.truck.count({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' } });
-      if (invoice.events.some(({ truckId }) => !truckId) || authorizedActiveTruckCount !== truckIds.length) throw new FinancialValidationError('Every fueling event must have an active truck in your authorized Accounting company scope at posting time.');
+      const postingTrucks = await tx.truck.findMany({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' }, select: { id: true, companyId: true } });
+      const postingCompanyIds = [...new Set(postingTrucks.map(({ companyId }) => companyId))];
+      const [currentGroupMembership, currentCompanyMembershipCount, currentGroupCompanyCount] = await Promise.all([
+        tx.operatingGroupMembership.findUnique({ where: { operatingGroupId_userId: { operatingGroupId: context.operatingGroupId, userId: context.userId } }, select: { role: true } }),
+        tx.companyMembership.count({ where: { userId: context.userId, companyId: { in: postingCompanyIds }, role: { in: ['ADMIN', 'OWNER'] } } }),
+        tx.operatingGroupCompany.count({ where: { operatingGroupId: context.operatingGroupId, companyId: { in: postingCompanyIds } } }),
+      ]);
+      if (invoice.events.some(({ truckId }) => !truckId) || postingTrucks.length !== truckIds.length
+        || !currentGroupMembership || !['ADMIN', 'OWNER'].includes(currentGroupMembership.role)
+        || currentCompanyMembershipCount !== postingCompanyIds.length || currentGroupCompanyCount !== postingCompanyIds.length) {
+        throw new FinancialValidationError('Every fueling event must have an active truck in your current authorized Accounting company scope at posting time.');
+      }
       let postedSignedTotal = BigInt(0);
       for (const event of invoice.events) {
         if (!event.truck || !context.companyIds.includes(event.truck.companyId)) throw new FinancialValidationError('Every fueling event must have a same-group truck match.');
