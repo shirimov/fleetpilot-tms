@@ -9,25 +9,43 @@ async function issueToken(userId: string, email: string) {
   return token;
 }
 
-test('OWNER explicitly reparses an unposted legacy preview and then posts without double counting', async ({ page }) => {
+test('OWNER matches and reviews Pilot trucks across authorized companies without changing active company', async ({ page }) => {
   test.setTimeout(90_000);
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const company = await prisma.company.create({ data: { name: `Pilot UI ${suffix}` } });
+  const relatedCompany = await prisma.company.create({ data: { name: `Pilot UI Related ${suffix}` } });
+  const unauthorizedCompany = await prisma.company.create({ data: { name: `Pilot UI Unauthorized ${suffix}` } });
   const owner = await prisma.user.create({ data: { email: `pilot-ui-${suffix}@example.test`, displayName: 'Pilot Owner', activeCompanyId: company.id, memberships: { create: { companyId: company.id, role: 'OWNER' } } } });
   const group = await prisma.operatingGroup.create({ data: { name: `Pilot UI Group ${suffix}`, companies: { create: { companyId: company.id } }, memberships: { create: { userId: owner.id, role: 'OWNER' } }, categories: { create: [{ name: 'Fuel', type: 'DIRECT_EXPENSE' }] } } });
   const category = await prisma.financialCategory.findFirstOrThrow({ where: { operatingGroupId: group.id, name: 'Fuel' } });
   const source = await prisma.financialSource.create({ data: { operatingGroupId: group.id, companyId: company.id, name: `Pilot EFS ${suffix}`, type: 'FUEL_CARD', provider: 'Pilot' } });
+  await prisma.$transaction([
+    prisma.companyMembership.create({ data: { companyId: relatedCompany.id, userId: owner.id, role: 'OWNER' } }),
+    prisma.operatingGroupCompany.create({ data: { operatingGroupId: group.id, companyId: relatedCompany.id } }),
+    prisma.operatingGroupCompany.create({ data: { operatingGroupId: group.id, companyId: unauthorizedCompany.id } }),
+  ]);
   await prisma.pilotProductMapping.create({ data: { operatingGroupId: group.id, providerAccountHash: createHash('sha256').update('123456789').digest('hex'), productCode: '020', productType: 'TRUCK_DIESEL', categoryId: category.id, approvedByUserId: owner.id } });
-  await prisma.truck.create({ data: { companyId: company.id, unitNumber: '125' } });
+  await prisma.truck.createMany({ data: [
+    { companyId: company.id, unitNumber: '125', unitNumberNormalized: '125' },
+    { companyId: relatedCompany.id, unitNumber: '777', unitNumberNormalized: '777' },
+    { companyId: company.id, unitNumber: '888', unitNumberNormalized: '888' },
+    { companyId: relatedCompany.id, unitNumber: '888', unitNumberNormalized: '888' },
+    { companyId: unauthorizedCompany.id, unitNumber: '999', unitNumberNormalized: '999' },
+  ] });
   try {
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
     await page.goto('/accounting');
     await page.getByRole('button', { name: 'Pilot Fuel Imports' }).click();
     await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
-    await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920001.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920001' })) });
+    await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920001.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({
+      invoiceNumber: '920001', total: 151,
+      rowsBeforeTotal: [['1111222233334444', '777', '0099', 'Austin                  TX', 'TICKET-2', 'AUTH-2', 'Driver Two', '08/19', 123457, '020', 5, 10, 50, 0, 0, 0, 0, 0, 50, 50]],
+    })) });
     await page.getByRole('button', { name: 'Parse statement' }).click();
     await expect(page.getByRole('heading', { name: '920001' })).toBeVisible();
+    await expect(page.getByText(`125 — Pilot UI ${suffix}`)).toBeVisible();
+    await expect(page.getByText(`777 — Pilot UI Related ${suffix}`)).toBeVisible();
     const imported = await prisma.pilotProviderInvoice.findFirstOrThrow({ where: { operatingGroupId: group.id, invoiceNumber: '920001' } });
     await prisma.$transaction([
       prisma.pilotProviderInvoice.update({ where: { id: imported.id }, data: { parseVersion: 'pilot-biff-v1', status: 'NEEDS_REVIEW', parsedTotalMinor: BigInt(1010000), differenceMinor: BigInt(999900) } }),
@@ -47,17 +65,20 @@ test('OWNER explicitly reparses an unposted legacy preview and then posts withou
     expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(0);
     expect(await prisma.financialExpectation.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(0);
     expect(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: imported.id, action: 'PILOT_INVOICE_REPARSED' } })).toBe(1);
-    page.once('dialog', (dialog) => dialog.accept());
-    await page.getByRole('button', { name: 'Post reconciled invoice' }).click();
-    await expect(page.getByRole('button', { name: /Invoice 920001 .* POSTED/ })).toBeVisible();
-    const invoice = await prisma.pilotProviderInvoice.findFirstOrThrow({ where: { operatingGroupId: group.id, invoiceNumber: '920001' }, include: { events: { include: { transaction: { include: { allocations: true, evidence: true } } } }, expectation: true } });
-    expect(invoice.expectation?.expectedAmountMinor).toBe(BigInt(10100));
-    expect(invoice.events).toHaveLength(1);
-    expect(invoice.events[0].transaction?.amountMinor).toBe(BigInt(10100));
-    expect(invoice.events[0].transaction?.role).toBe('ECONOMIC');
-    expect(invoice.events[0].transaction?.allocations).toHaveLength(1);
-    expect(invoice.events[0].transaction?.evidence).toHaveLength(1);
-    expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(1);
+
+    await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
+    await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920002.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920002', unitNumber: '888' })) });
+    await page.getByRole('button', { name: 'Parse statement' }).click();
+    await expect(page.getByRole('heading', { name: '920002' })).toBeVisible();
+    const truckSelect = page.getByLabel('Resolve AMBIGUOUS_TRUCK');
+    await expect(truckSelect).toContainText(`Truck 888 — Pilot UI ${suffix}`);
+    await expect(truckSelect).toContainText(`Truck 888 — Pilot UI Related ${suffix}`);
+    await expect(truckSelect).not.toContainText(`Pilot UI Unauthorized ${suffix}`);
+    await page.getByLabel('Search trucks for AMBIGUOUS_TRUCK').fill('Related');
+    await expect(truckSelect).toContainText(`Truck 888 — Pilot UI Related ${suffix}`);
+    await expect(truckSelect).not.toContainText(`Truck 888 — Pilot UI ${suffix}`);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).activeCompanyId).toBe(company.id);
+    expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id } })).toBe(0);
   } finally {
     await prisma.financialAllocation.deleteMany({ where: { transaction: { operatingGroupId: group.id } } });
     await prisma.financialTransactionEvidence.deleteMany({ where: { transaction: { operatingGroupId: group.id } } });
@@ -78,8 +99,8 @@ test('OWNER explicitly reparses an unposted legacy preview and then posts withou
     await prisma.operatingGroupMembership.deleteMany({ where: { operatingGroupId: group.id } });
     await prisma.operatingGroupCompany.deleteMany({ where: { operatingGroupId: group.id } });
     await prisma.operatingGroup.delete({ where: { id: group.id } });
-    await prisma.truck.deleteMany({ where: { companyId: company.id } });
+    await prisma.truck.deleteMany({ where: { companyId: { in: [company.id, relatedCompany.id, unauthorizedCompany.id] } } });
     await prisma.user.delete({ where: { id: owner.id } });
-    await prisma.company.delete({ where: { id: company.id } });
+    await prisma.company.deleteMany({ where: { id: { in: [company.id, relatedCompany.id, unauthorizedCompany.id] } } });
   }
 });
