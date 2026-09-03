@@ -20,6 +20,22 @@ General overhead is represented by an allocation whose category has explicit
 `OVERHEAD` meaning and which does not falsely require an equipment dimension.
 This sprint does not allocate overhead to equipment.
 
+## Category lifecycle audit
+
+Category creation, material updates, reparenting, activation, deactivation, and
+safe permanent deletion write a group-level `FinancialAuditEvent` in the same
+database transaction as the category mutation. Events identify the actor and
+active company and retain safe before/after category state, including category
+type, status, and parent identity. Multi-field edits produce one event listing
+the changed fields; exact no-op submissions produce no audit noise. A deletion
+event retains the deleted category identifier and safe prior state without
+depending on the deleted row. Audit persistence failure rolls back the category
+write.
+
+Category changes made before this lifecycle coverage existed are not
+automatically backfilled; any later historical annotation must be an explicit
+administrative record rather than a fabricated mutation-time event.
+
 ## Dates and exact money
 
 Financial calendar inputs use `YYYY-MM-DD` and are validated as real Gregorian

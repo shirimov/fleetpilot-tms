@@ -80,12 +80,22 @@ export class FinancialControlService {
             create: defaults.map(([type, categoryName]) => ({ type, name: categoryName, isSystemDefault: true })),
           },
         },
-        select: { id: true, name: true, currency: true },
+        select: { id: true, name: true, currency: true, categories: { select: { id: true, name: true, type: true, isActive: true, parentCategoryId: true } } },
       });
       await tx.financialAuditEvent.create({
         data: { operatingGroupId: group.id, companyId: active.companyId, actorUserId: active.user.id, action: 'OPERATING_GROUP_CREATED' },
       });
-      return group;
+      for (const category of group.categories) {
+        await this.recordCategoryAudit(tx, {
+          operatingGroupId: group.id,
+          companyId: active.companyId,
+          actorUserId: active.user.id,
+          action: 'FINANCIAL_CATEGORY_CREATED',
+          after: this.categoryAuditState(category, null),
+          metadata: { categoryId: category.id, source: 'OPERATING_GROUP_DEFAULTS' },
+        });
+      }
+      return { id: group.id, name: group.name, currency: group.currency };
     });
   }
 
@@ -156,47 +166,93 @@ export class FinancialControlService {
   async deleteCategory(categoryId: string, context: FinancialAuthorization) {
     this.requireOwner(context);
     return this.database.$transaction(async (tx) => {
-      await this.lockFinancialRows(tx, [`financial-category:${categoryId}`]);
-      const category = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, isSystemDefault: true, _count: { select: { childCategories: true, transactions: true, allocations: true, pilotProductMappings: true } } } });
+      await this.lockFinancialRows(tx, [`financial-category-group:${context.operatingGroupId}`, `financial-category:${categoryId}`]);
+      await this.revalidateCategoryAuthority(tx, context, 'OWNER');
+      const category = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, type: true, isActive: true, parentCategoryId: true, isSystemDefault: true, parentCategory: { select: { id: true, name: true } }, _count: { select: { childCategories: true, transactions: true, allocations: true, pilotProductMappings: true } } } });
       if (!category) throw new FinancialNotFoundError();
       if (category.isSystemDefault || Object.values(category._count).some((count) => count > 0)) throw new FinancialConflictError('This category cannot be deleted because it has financial history, dependent categories, or provider mappings. Deactivate or remap it instead.');
       await tx.financialCategory.delete({ where: { id: categoryId } });
-      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'FINANCIAL_CATEGORY_DELETED', metadata: { deletedCategoryId: category.id, name: category.name } } });
+      await this.recordCategoryAudit(tx, {
+        operatingGroupId: context.operatingGroupId,
+        companyId: context.activeCompanyId,
+        actorUserId: context.userId,
+        action: 'FINANCIAL_CATEGORY_DELETED',
+        before: this.categoryAuditState(category, category.parentCategory),
+        metadata: { deletedCategoryId: category.id },
+      });
       return { deleted: true };
     });
   }
 
   async createCategory(input: Record<string, unknown>, context: FinancialAuthorization) {
     const parentCategoryId = optionalText(input.parentCategoryId);
-    if (parentCategoryId) await this.requireCategory(parentCategoryId, context);
-    return this.database.financialCategory.create({ data: {
-      operatingGroupId: context.operatingGroupId,
-      name: text(input.name, 'Category name'),
-      type: enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
-      parentCategoryId,
-    } });
+    const name = text(input.name, 'Category name');
+    const type = enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type');
+    return this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`financial-category-group:${context.operatingGroupId}`]);
+      await this.revalidateCategoryAuthority(tx, context, 'ADMIN');
+      const parent = parentCategoryId
+        ? await tx.financialCategory.findFirst({ where: { id: parentCategoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true } })
+        : null;
+      if (parentCategoryId && !parent) throw new FinancialValidationError('Category is outside this operating group.');
+      const category = await tx.financialCategory.create({ data: { operatingGroupId: context.operatingGroupId, name, type, parentCategoryId } });
+      await this.recordCategoryAudit(tx, {
+        operatingGroupId: context.operatingGroupId,
+        companyId: context.activeCompanyId,
+        actorUserId: context.userId,
+        action: 'FINANCIAL_CATEGORY_CREATED',
+        after: this.categoryAuditState(category, parent),
+        metadata: { categoryId: category.id },
+      });
+      return category;
+    });
   }
 
   async updateCategory(categoryId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
     return this.database.$transaction(async (tx) => {
-      await this.lockFinancialRows(tx, [`financial-category:${categoryId}`]);
+      await this.lockFinancialRows(tx, [`financial-category-group:${context.operatingGroupId}`, `financial-category:${categoryId}`]);
+      await this.revalidateCategoryAuthority(tx, context, 'ADMIN');
       const existing = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId } });
       if (!existing) throw new FinancialNotFoundError();
       const parentCategoryId = input.parentCategoryId === undefined ? existing.parentCategoryId : optionalText(input.parentCategoryId);
+      const name = input.name === undefined ? existing.name : text(input.name, 'Category name');
+      const type = input.type === undefined ? existing.type : enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type');
+      const isActive = typeof input.isActive === 'boolean' ? input.isActive : existing.isActive;
       if (parentCategoryId === categoryId) throw new FinancialValidationError('A category cannot be its own parent.');
+      const [existingParent, parent] = await Promise.all([
+        existing.parentCategoryId ? tx.financialCategory.findUnique({ where: { id: existing.parentCategoryId }, select: { id: true, name: true } }) : null,
+        parentCategoryId ? tx.financialCategory.findFirst({ where: { id: parentCategoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true, name: true } }) : null,
+      ]);
       if (parentCategoryId) {
-        const parent = await tx.financialCategory.findFirst({ where: { id: parentCategoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
         if (!parent) throw new FinancialValidationError('Category is outside this operating group.');
-        const descendants = await this.categoryDescendantIds(categoryId, context);
+        const descendants = await this.categoryDescendantIds(categoryId, context, tx);
         if (descendants.has(parentCategoryId)) throw new FinancialValidationError('Category hierarchy cannot contain a cycle.');
       }
-      return tx.financialCategory.update({ where: { id: categoryId }, data: {
-        name: input.name === undefined ? undefined : text(input.name, 'Category name'),
-        type: input.type === undefined ? undefined : enumValue(input.type, ['INCOME', 'DIRECT_EXPENSE', 'EQUIPMENT_FINANCING', 'OVERHEAD', 'OTHER'] satisfies FinancialCategoryType[], 'Category type'),
-        isActive: typeof input.isActive === 'boolean' ? input.isActive : undefined,
-        parentCategoryId,
-      } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      const changedFields = [
+        name !== existing.name ? 'name' : null,
+        type !== existing.type ? 'type' : null,
+        parentCategoryId !== existing.parentCategoryId ? 'parent' : null,
+        isActive !== existing.isActive ? 'isActive' : null,
+      ].filter((field): field is string => Boolean(field));
+      if (changedFields.length === 0) return existing;
+
+      const updated = await tx.financialCategory.update({ where: { id: categoryId }, data: { name, type, isActive, parentCategoryId } });
+      const action = changedFields.length === 1 && changedFields[0] === 'parent'
+        ? 'FINANCIAL_CATEGORY_REPARENTED'
+        : changedFields.length === 1 && changedFields[0] === 'isActive'
+          ? isActive ? 'FINANCIAL_CATEGORY_ACTIVATED' : 'FINANCIAL_CATEGORY_DEACTIVATED'
+          : 'FINANCIAL_CATEGORY_UPDATED';
+      await this.recordCategoryAudit(tx, {
+        operatingGroupId: context.operatingGroupId,
+        companyId: context.activeCompanyId,
+        actorUserId: context.userId,
+        action,
+        before: this.categoryAuditState(existing, existingParent),
+        after: this.categoryAuditState(updated, parent),
+        metadata: { categoryId, changedFields },
+      });
+      return updated;
+    });
   }
 
   async listPrograms(context: FinancialAuthorization) {
@@ -696,6 +752,44 @@ export class FinancialControlService {
     if (context.role !== 'OWNER') throw new AuthorizationDeniedError();
   }
 
+  private categoryAuditState(
+    category: { id: string; name: string; type: FinancialCategoryType; isActive: boolean; parentCategoryId: string | null },
+    parent: { id: string; name: string } | null,
+  ) {
+    return {
+      categoryId: category.id,
+      name: category.name,
+      type: category.type,
+      isActive: category.isActive,
+      parent: parent ? { id: parent.id, name: parent.name } : null,
+    };
+  }
+
+  protected async recordCategoryAudit(
+    tx: Prisma.TransactionClient,
+    data: Prisma.FinancialAuditEventUncheckedCreateInput,
+  ) {
+    return tx.financialAuditEvent.create({ data });
+  }
+
+  private async revalidateCategoryAuthority(
+    tx: Prisma.TransactionClient,
+    context: FinancialAuthorization,
+    minimumRole: 'ADMIN' | 'OWNER',
+  ) {
+    const [users, groupMemberships, activeGroups, companyMemberships] = await Promise.all([
+      tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ operatingGroupId: string }>>`SELECT "operatingGroupId" FROM "OperatingGroupCompany" WHERE "companyId"=${context.activeCompanyId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "CompanyMembership" WHERE "companyId"=${context.activeCompanyId} AND "userId"=${context.userId} FOR UPDATE`,
+    ]);
+    const allowedRoles = minimumRole === 'OWNER' ? ['OWNER'] : ['OWNER', 'ADMIN'];
+    if (!users[0]?.isActive || activeGroups[0]?.operatingGroupId !== context.operatingGroupId
+      || !allowedRoles.includes(groupMemberships[0]?.role ?? '') || !allowedRoles.includes(companyMemberships[0]?.role ?? '')) {
+      throw new AuthorizationDeniedError();
+    }
+  }
+
   private async validateDimensions(input: { companyId: string | null; sourceId: string | null; categoryId: string | null; customerId: string | null; vendorId: string | null; ownerId: string | null }, context: FinancialAuthorization) {
     if (input.companyId && !context.companyIds.includes(input.companyId)) throw new FinancialValidationError('Company is outside this operating group.');
     const checks: Array<Promise<unknown>> = [];
@@ -731,8 +825,8 @@ export class FinancialControlService {
     return category;
   }
 
-  private async categoryDescendantIds(categoryId: string, context: FinancialAuthorization) {
-    const categories = await this.database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, select: { id: true, parentCategoryId: true } });
+  private async categoryDescendantIds(categoryId: string, context: FinancialAuthorization, database: Prisma.TransactionClient) {
+    const categories = await database.financialCategory.findMany({ where: { operatingGroupId: context.operatingGroupId }, select: { id: true, parentCategoryId: true } });
     const descendants = new Set<string>();
     let frontier = [categoryId];
     while (frontier.length) {
