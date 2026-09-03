@@ -22,8 +22,14 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [issueFilter, setIssueFilter] = useState('OPEN');
+  const [productMappings, setProductMappings] = useState<Row[]>([]);
   const fuelSources = sources.filter((source) => source.type === 'FUEL_CARD' && source.isActive);
   const activeCategories = categories.filter((category) => category.isActive);
+  const directExpenseCategories = activeCategories.filter((category) => category.type === 'DIRECT_EXPENSE');
+
+  const refreshMappings = useCallback(async () => {
+    setProductMappings(await request<Row[]>('/api/finance/pilot-product-mappings'));
+  }, []);
 
   const refresh = useCallback(async (selectedId?: string) => {
     const rows = await request<Row[]>('/api/finance/imports/pilot');
@@ -31,7 +37,27 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
     const id = selectedId ?? String(invoice?.id ?? '');
     if (id) setInvoice(await request<Row>(`/api/finance/imports/pilot/${id}`));
   }, [invoice?.id]);
-  useEffect(() => { refresh().catch((caught) => setError(caught.message)); }, [refresh]);
+  useEffect(() => {
+    Promise.all([refresh(), refreshMappings()]).catch((caught) => setError(caught.message));
+  }, [refresh, refreshMappings]);
+
+  async function saveProductMapping(productCode: string, categoryId: string) {
+    if (!categoryId) return;
+    setBusy(true); setError('');
+    try {
+      await request('/api/finance/pilot-product-mappings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ productCode, categoryId }) });
+      await refreshMappings();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Pilot product mapping failed.'); }
+    finally { setBusy(false); }
+  }
+
+  async function applyProductMappings() {
+    if (!invoice || !window.confirm(`Apply current Pilot product mappings to unposted invoice ${String(invoice.invoiceNumber)}? Existing manual category decisions are preserved and this does not post the invoice.`)) return;
+    setBusy(true); setError('');
+    try { setInvoice(await request<Row>(`/api/finance/imports/pilot/${String(invoice.id)}/apply-product-mappings`, { method: 'POST' })); await refresh(String(invoice.id)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : 'Applying product mappings failed.'); }
+    finally { setBusy(false); }
+  }
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('');
@@ -80,6 +106,15 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
 
   return <div className="space-y-4">
     {error && <p role="alert" className="rounded-lg bg-red-950/60 p-3 text-red-200">{error}</p>}
+    <section className={card}>
+      <div className="mb-3"><p className="text-xs uppercase text-emerald-400">Reusable accounting rules</p><h2 className="font-semibold">Pilot Product Mappings</h2><p className="text-xs text-slate-400">Map each known Pilot product code to one active Direct Expense category for this operating group. Future imports apply the rule automatically.</p></div>
+      <div className="grid gap-3 lg:grid-cols-3">{productMappings.map((product) => {
+        const mapping = product.mapping as Row | null;
+        const mappedCategory = mapping?.category as Row | undefined;
+        return <label key={String(product.productCode)} className="grid gap-1 rounded-lg bg-slate-950/60 p-3 text-sm"><span><strong>{String(product.productCode)}</strong> · {String(product.label)}</span><span className={mapping ? 'text-xs text-emerald-300' : 'text-xs text-amber-200'}>{mapping ? `Mapped to ${String(mappedCategory?.name ?? '')}` : 'Not mapped'}</span><select aria-label={`Pilot product ${String(product.productCode)} category`} className={field} value={String(mappedCategory?.id ?? '')} disabled={busy} onChange={(event) => saveProductMapping(String(product.productCode), event.target.value)}><option value="">Select Direct Expense category…</option>{directExpenseCategories.map((category) => <option key={String(category.id)} value={String(category.id)}>{String(category.path ?? category.name)}</option>)}</select></label>;
+      })}</div>
+      {productMappings.length === 0 && <p className="text-sm text-slate-400">Loading Pilot product mappings…</p>}
+    </section>
     <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
       <form className={`${card} grid gap-3`} onSubmit={upload}>
         <h2 className="font-semibold">Upload Pilot legacy XLS</h2>
@@ -93,7 +128,7 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
     </div>
     {invoice && <>
       <section className={card}>
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase text-emerald-400">Pilot invoice</p><h2 className="text-xl font-semibold">{String(invoice.invoiceNumber)}</h2><p className="text-xs text-slate-400">Period {String(invoice.periodStart).slice(0, 10)} – {String(invoice.periodEnd).slice(0, 10)} · Due {invoice.dueDate ? String(invoice.dueDate).slice(0, 10) : 'not provided'} · Parser {String(invoice.parseVersion)}</p></div><div className="flex flex-wrap gap-2">{invoice.canRematchTrucks === true && <button className="btn" disabled={busy} onClick={rematchTrucks}>Re-run truck matching</button>}{invoice.canReparse === true && <button className="btn" disabled={busy} onClick={reparse}>Reparse invoice</button>}<button className="btn" disabled={busy || invoice.status !== 'READY_TO_POST'} onClick={post}>Post reconciled invoice</button></div></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase text-emerald-400">Pilot invoice</p><h2 className="text-xl font-semibold">{String(invoice.invoiceNumber)}</h2><p className="text-xs text-slate-400">Period {String(invoice.periodStart).slice(0, 10)} – {String(invoice.periodEnd).slice(0, 10)} · Due {invoice.dueDate ? String(invoice.dueDate).slice(0, 10) : 'not provided'} · Parser {String(invoice.parseVersion)}</p></div><div className="flex flex-wrap gap-2">{invoice.status !== 'POSTED' && <button className="btn" disabled={busy} onClick={applyProductMappings}>Apply product mappings</button>}{invoice.canRematchTrucks === true && <button className="btn" disabled={busy} onClick={rematchTrucks}>Re-run truck matching</button>}{invoice.canReparse === true && <button className="btn" disabled={busy} onClick={reparse}>Reparse invoice</button>}<button className="btn" disabled={busy || invoice.status !== 'READY_TO_POST'} onClick={post}>Post reconciled invoice</button></div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-4"><Metric label="Invoice total" value={money(invoice.invoiceTotalMinor)} /><Metric label="Parsed total" value={money(invoice.parsedTotalMinor)} /><Metric label="Difference" value={money(invoice.differenceMinor)} warn={String(invoice.differenceMinor) !== '0'} /><Metric label="Open issues" value={String(openIssues)} warn={openIssues > 0} /></div>
         <p className="mt-3 text-xs text-slate-400">Reparse reads the immutable stored XLS, replaces only an eligible unposted review preview, and retains before/after audit provenance. It never posts automatically. Posting creates one economic transaction per fueling event plus explicit adjustment transactions.</p>
       </section>

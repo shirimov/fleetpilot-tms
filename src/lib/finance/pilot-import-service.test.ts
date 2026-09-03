@@ -8,12 +8,14 @@ import { FinancialControlService } from './financial-control-service';
 import { FinancialConflictError, FinancialValidationError } from './financial-control-errors';
 import { PilotImportService } from './pilot-import-service';
 import { OperatingGroupCompanyService } from './operating-group-company-service';
+import { PilotProductMappingService, PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
 import { pilotXlsFixture } from '../../../tests/fixtures/pilot-xls';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const control = new FinancialControlService(prisma);
 const importer = new PilotImportService(prisma);
+const productMappings = new PilotProductMappingService(prisma);
 const groupCompanies = new OperatingGroupCompanyService(prisma);
 class MemoryStatementStorage implements PrivateFileStorage {
   readonly files = new Map<string, Uint8Array>();
@@ -567,4 +569,30 @@ test('manual truck resolution rejects cross-company canonical references', async
   await assert.rejects(() => importer.resolveIssue(String(invoice.id), issue.id, { action: 'MATCH_TRUCK', truckId: foreignTruckId }, context()), FinancialValidationError);
   const unchanged = await importer.getInvoice(String(invoice.id), context());
   assert.equal((unchanged.events as Array<{ truckId: string | null }>)[0].truckId, null);
+});
+
+test('group product mappings apply to future and existing unposted invoices without overwriting manual review', async () => {
+  await prisma.pilotProductMapping.deleteMany({ where: { operatingGroupId: groupId, providerAccountHash, productCode: '033' } });
+  const existing = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910098', productCode: '033' }), metadata('pilot-910098'), sourceId, context());
+  importedInvoiceIds.push(String(existing.id));
+  const missing = (existing.issues as Array<{ id: string; code: string }>).find(({ code }) => code === 'MISSING_CATEGORY');
+  assert.ok(missing);
+  await importer.resolveIssue(String(existing.id), missing.id, { action: 'SET_CATEGORY', categoryId: adjustmentCategoryId }, context());
+  await productMappings.save('033', fuelCategoryId, context());
+  const reapplied = await importer.applyProductMappings(String(existing.id), context());
+  const manuallyReviewedLine = (reapplied.events as Array<{ productLines: Array<{ categoryId: string }> }>)[0].productLines[0];
+  assert.equal(manuallyReviewedLine.categoryId, adjustmentCategoryId);
+
+  const future = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910099', productCode: '033', additionalProductCode: '033', total: 121 }), metadata('pilot-910099'), sourceId, context());
+  importedInvoiceIds.push(String(future.id));
+  const lines = (future.events as Array<{ productLines: Array<{ categoryId: string; productType: string }> }>)[0].productLines;
+  assert.equal(lines.length, 2);
+  assert.ok(lines.every(({ categoryId, productType }) => categoryId === fuelCategoryId && productType === 'REEFER_FUEL'));
+  assert.equal((future.issues as Array<{ code: string }>).some(({ code }) => code === 'MISSING_CATEGORY'), false);
+  const totalsBefore = [future.invoiceTotalMinor, future.parsedTotalMinor, future.differenceMinor];
+  const applied = await importer.applyProductMappings(String(future.id), context());
+  assert.deepEqual([applied.invoiceTotalMinor, applied.parsedTotalMinor, applied.differenceMinor], totalsBefore);
+  await importer.postInvoice(String(future.id), context());
+  await assert.rejects(() => importer.applyProductMappings(String(future.id), context()), /cannot be reclassified/);
+  assert.equal(await prisma.pilotProductMapping.count({ where: { operatingGroupId: groupId, providerAccountHash: PILOT_GROUP_MAPPING_ACCOUNT, productCode: '033' } }), 1);
 });

@@ -24,7 +24,6 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     prisma.operatingGroupCompany.create({ data: { operatingGroupId: group.id, companyId: relatedCompany.id } }),
     prisma.operatingGroupCompany.create({ data: { operatingGroupId: group.id, companyId: unauthorizedCompany.id } }),
   ]);
-  await prisma.pilotProductMapping.create({ data: { operatingGroupId: group.id, providerAccountHash: createHash('sha256').update('123456789').digest('hex'), productCode: '020', productType: 'TRUCK_DIESEL', categoryId: category.id, approvedByUserId: owner.id } });
   await prisma.truck.createMany({ data: [
     { companyId: company.id, unitNumber: '125', unitNumberNormalized: '125' },
     { companyId: relatedCompany.id, unitNumber: '777', unitNumberNormalized: '777' },
@@ -37,6 +36,11 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
     await page.goto('/accounting');
     await page.getByRole('button', { name: 'Pilot Fuel Imports' }).click();
+    await expect(page.getByRole('heading', { name: 'Pilot Product Mappings' })).toBeVisible();
+    await expect(page.getByLabel('Pilot product 020 category')).toBeVisible();
+    await expect(page.getByLabel('Pilot product 033 category')).toBeVisible();
+    await expect(page.getByLabel('Pilot product 140 category')).toBeVisible();
+    await expect(page.getByText('Not mapped')).toHaveCount(3);
     await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
     await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920001.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({
       invoiceNumber: '920001', total: 151,
@@ -46,6 +50,17 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await expect(page.getByRole('heading', { name: '920001' })).toBeVisible();
     await expect(page.getByText(`125 — Pilot UI ${suffix}`)).toBeVisible();
     await expect(page.getByText(`777 — Pilot UI Related ${suffix}`)).toBeVisible();
+    await expect(page.getByText('MISSING CATEGORY').first()).toBeVisible();
+    await expect(page.getByText('Invoice total').locator('..')).toContainText('$151.00');
+    await expect(page.getByText('Difference').locator('..')).toContainText('$0.00');
+    await page.getByLabel('Pilot product 020 category').selectOption(category.id);
+    await expect(page.getByText('Mapped to Fuel')).toBeVisible();
+    expect(await prisma.pilotProductMapping.count({ where: { operatingGroupId: group.id, providerAccountHash: '*', productCode: '020' } })).toBe(1);
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Apply product mappings' }).click();
+    await expect(page.getByText('No issues in this view.')).toBeVisible();
+    await expect(page.getByText('Invoice total').locator('..')).toContainText('$151.00');
+    await expect(page.getByText('Difference').locator('..')).toContainText('$0.00');
     const imported = await prisma.pilotProviderInvoice.findFirstOrThrow({ where: { operatingGroupId: group.id, invoiceNumber: '920001' } });
     await prisma.$transaction([
       prisma.pilotProviderInvoice.update({ where: { id: imported.id }, data: { parseVersion: 'pilot-biff-v1', status: 'NEEDS_REVIEW', parsedTotalMinor: BigInt(1010000), differenceMinor: BigInt(999900) } }),

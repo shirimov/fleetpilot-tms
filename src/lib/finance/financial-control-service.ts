@@ -157,9 +157,9 @@ export class FinancialControlService {
     this.requireOwner(context);
     return this.database.$transaction(async (tx) => {
       await this.lockFinancialRows(tx, [`financial-category:${categoryId}`]);
-      const category = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, isSystemDefault: true, _count: { select: { childCategories: true, transactions: true, allocations: true } } } });
+      const category = await tx.financialCategory.findFirst({ where: { id: categoryId, operatingGroupId: context.operatingGroupId }, select: { id: true, name: true, isSystemDefault: true, _count: { select: { childCategories: true, transactions: true, allocations: true, pilotProductMappings: true } } } });
       if (!category) throw new FinancialNotFoundError();
-      if (category.isSystemDefault || Object.values(category._count).some((count) => count > 0)) throw new FinancialConflictError('This category cannot be deleted because it has financial history or dependent categories. Deactivate it instead.');
+      if (category.isSystemDefault || Object.values(category._count).some((count) => count > 0)) throw new FinancialConflictError('This category cannot be deleted because it has financial history, dependent categories, or provider mappings. Deactivate or remap it instead.');
       await tx.financialCategory.delete({ where: { id: categoryId } });
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, action: 'FINANCIAL_CATEGORY_DELETED', metadata: { deletedCategoryId: category.id, name: category.name } } });
       return { deleted: true };
