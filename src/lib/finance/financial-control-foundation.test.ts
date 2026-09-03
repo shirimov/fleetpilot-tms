@@ -101,8 +101,10 @@ test('category hierarchy supports arbitrary depth and full paths', async () => {
   const mvr = await service.createCategory({ name: `MVR ${suffix}`, type: 'DIRECT_EXPENSE', parentCategoryId: compliance.id }, context());
   const categories = await service.listCategories(context());
   assert.equal(categories.find((category) => category.id === mvr.id)?.path, `Company Expenses ${suffix} / Admin ${suffix} / Compliance ${suffix} / MVR ${suffix}`);
+  const rootAuditCount = await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: root.id } } });
   await assert.rejects(service.updateCategory(root.id, { parentCategoryId: mvr.id }, context()), /cycle/);
   await assert.rejects(service.updateCategory(root.id, { parentCategoryId: root.id }, context()), /own parent/);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: root.id } } }), rootAuditCount);
   await service.updateCategory(mvr.id, { isActive: false }, context());
   assert.equal((await prisma.financialCategory.findUniqueOrThrow({ where: { id: mvr.id } })).isActive, false);
   await assert.rejects(service.createTransaction({ transactionDate: '2026-08-17', amount: '18.00', direction: 'OUTFLOW', description: 'Inactive MVR', categoryId: mvr.id, currency: 'USD' }, context()), /dimension/);
@@ -163,6 +165,20 @@ test('category concurrent partial updates serialize without losing either change
   assert.ok(audits.some((later) => audits.some((earlier) => earlier.id !== later.id && JSON.stringify(earlier.after) === JSON.stringify(later.before))));
 });
 
+test('category concurrent deactivation and rename produce a complete auditable state', async () => {
+  const category = await service.createCategory({ name: `Lifecycle concurrent ${suffix}`, type: 'OTHER' }, context());
+  await Promise.all([
+    service.updateCategory(category.id, { isActive: false }, context()),
+    service.updateCategory(category.id, { name: `Lifecycle renamed ${suffix}` }, context()),
+  ]);
+  const stored = await prisma.financialCategory.findUniqueOrThrow({ where: { id: category.id } });
+  assert.equal(stored.name, `Lifecycle renamed ${suffix}`);
+  assert.equal(stored.isActive, false);
+  const audits = await prisma.financialAuditEvent.findMany({ where: { metadata: { path: ['categoryId'], equals: category.id }, action: { in: ['FINANCIAL_CATEGORY_UPDATED', 'FINANCIAL_CATEGORY_DEACTIVATED'] } } });
+  assert.equal(audits.length, 2);
+  assert.ok(audits.some((later) => audits.some((earlier) => earlier.id !== later.id && JSON.stringify(earlier.after) === JSON.stringify(later.before))));
+});
+
 test('category mutations revalidate current authorization and preserve tenant boundaries', async () => {
   const category = await service.createCategory({ name: `Authorization category ${suffix}`, type: 'OTHER' }, context(adminId, 'ADMIN'));
   await assert.rejects(service.deleteCategory(category.id, context(adminId, 'ADMIN')), AuthorizationDeniedError);
@@ -178,6 +194,28 @@ test('category mutations revalidate current authorization and preserve tenant bo
   assert.equal(await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: category.id }, action: 'FINANCIAL_CATEGORY_UPDATED' } }), 0);
 });
 
+test('category mutation observes an authorization revocation committed ahead of its lock', async () => {
+  const category = await service.createCategory({ name: `Revocation category ${suffix}`, type: 'OTHER' }, context(adminId, 'ADMIN'));
+  let locked!: () => void;
+  let release!: () => void;
+  const lockAcquired = new Promise<void>((resolve) => { locked = resolve; });
+  const releaseRevocation = new Promise<void>((resolve) => { release = resolve; });
+  const revocation = prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT role FROM "CompanyMembership" WHERE "companyId"=${companyId} AND "userId"=${adminId} FOR UPDATE`;
+    locked();
+    await releaseRevocation;
+    await tx.companyMembership.delete({ where: { userId_companyId: { companyId, userId: adminId } } });
+  });
+  await lockAcquired;
+  const mutation = service.updateCategory(category.id, { name: 'Revoked update' }, context(adminId, 'ADMIN'));
+  release();
+  await revocation;
+  await assert.rejects(mutation, AuthorizationDeniedError);
+  assert.equal((await prisma.financialCategory.findUniqueOrThrow({ where: { id: category.id } })).name, `Revocation category ${suffix}`);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: category.id }, action: 'FINANCIAL_CATEGORY_UPDATED' } }), 0);
+  await prisma.companyMembership.create({ data: { companyId, userId: adminId, role: 'ADMIN' } });
+});
+
 test('category write rolls back when its audit cannot be persisted', async () => {
   const rejectedName = `Audit rollback ${suffix}`;
   const trigger = `reject_category_audit_${suffix.replaceAll('-', '_')}`;
@@ -191,6 +229,23 @@ test('category write rolls back when its audit cannot be persisted', async () =>
   }
   assert.equal(await prisma.financialCategory.count({ where: { operatingGroupId: groupId, name: rejectedName } }), 0);
   assert.equal(await prisma.financialAuditEvent.count({ where: { action: 'FINANCIAL_CATEGORY_CREATED', after: { path: ['name'], equals: rejectedName } } }), 0);
+});
+
+test('category update and delete roll back when their audits cannot be persisted', async () => {
+  const category = await service.createCategory({ name: `Audit rollback existing ${suffix}`, type: 'OTHER' }, context());
+  const trigger = `reject_category_change_audit_${suffix.replaceAll('-', '_')}`;
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION ${trigger}() RETURNS trigger AS $$ BEGIN IF NEW.action IN ('FINANCIAL_CATEGORY_UPDATED', 'FINANCIAL_CATEGORY_DELETED') AND COALESCE(NEW.metadata->>'categoryId', NEW.metadata->>'deletedCategoryId') = '${category.id}' THEN RAISE EXCEPTION 'forced category change audit rollback'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER ${trigger} BEFORE INSERT ON "FinancialAuditEvent" FOR EACH ROW EXECUTE FUNCTION ${trigger}()`);
+  try {
+    await assert.rejects(service.updateCategory(category.id, { name: `Should rollback ${suffix}` }, context()), /forced category change audit rollback/);
+    assert.equal((await prisma.financialCategory.findUniqueOrThrow({ where: { id: category.id } })).name, `Audit rollback existing ${suffix}`);
+    await assert.rejects(service.deleteCategory(category.id, context()), /forced category change audit rollback/);
+    assert.ok(await prisma.financialCategory.findUnique({ where: { id: category.id } }));
+  } finally {
+    await prisma.$executeRawUnsafe(`DROP TRIGGER ${trigger} ON "FinancialAuditEvent"`);
+    await prisma.$executeRawUnsafe(`DROP FUNCTION ${trigger}()`);
+  }
+  assert.equal(await prisma.financialAuditEvent.count({ where: { OR: [{ metadata: { path: ['categoryId'], equals: category.id } }, { metadata: { path: ['deletedCategoryId'], equals: category.id } }], action: { in: ['FINANCIAL_CATEGORY_UPDATED', 'FINANCIAL_CATEGORY_DELETED'] } } }), 0);
 });
 
 test('program is an independent allocation dimension and does not duplicate a transaction', async () => {

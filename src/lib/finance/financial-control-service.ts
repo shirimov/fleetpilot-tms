@@ -777,15 +777,15 @@ export class FinancialControlService {
     context: FinancialAuthorization,
     minimumRole: 'ADMIN' | 'OWNER',
   ) {
-    const [users, groupMemberships, activeGroup, companyMembership] = await Promise.all([
+    const [users, groupMemberships, activeGroups, companyMemberships] = await Promise.all([
       tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
       tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`,
-      tx.operatingGroupCompany.findUnique({ where: { companyId: context.activeCompanyId }, select: { operatingGroupId: true } }),
-      tx.companyMembership.findUnique({ where: { userId_companyId: { companyId: context.activeCompanyId, userId: context.userId } }, select: { role: true } }),
+      tx.$queryRaw<Array<{ operatingGroupId: string }>>`SELECT "operatingGroupId" FROM "OperatingGroupCompany" WHERE "companyId"=${context.activeCompanyId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "CompanyMembership" WHERE "companyId"=${context.activeCompanyId} AND "userId"=${context.userId} FOR UPDATE`,
     ]);
     const allowedRoles = minimumRole === 'OWNER' ? ['OWNER'] : ['OWNER', 'ADMIN'];
-    if (!users[0]?.isActive || activeGroup?.operatingGroupId !== context.operatingGroupId
-      || !allowedRoles.includes(groupMemberships[0]?.role ?? '') || !allowedRoles.includes(companyMembership?.role ?? '')) {
+    if (!users[0]?.isActive || activeGroups[0]?.operatingGroupId !== context.operatingGroupId
+      || !allowedRoles.includes(groupMemberships[0]?.role ?? '') || !allowedRoles.includes(companyMemberships[0]?.role ?? '')) {
       throw new AuthorizationDeniedError();
     }
   }
