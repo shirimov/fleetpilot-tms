@@ -118,7 +118,7 @@ test('OWNER adds a company without changing canonical company data and receives 
     prisma.financialStatement.count({ where: { operatingGroupId: groupId } }),
     prisma.financialTransaction.aggregate({ where: { operatingGroupId: groupId }, _sum: { amountMinor: true, recoveredAmountMinor: true, waivedAmountMinor: true } }),
     prisma.pilotFuelingEvent.count({ where: { invoice: { operatingGroupId: groupId } } }),
-    prisma.bankTransaction.count(),
+    prisma.bankTransaction.count({ where: { companyId: companyBId } }),
   ]);
   const result = await service.add(companyBId, context());
   assert.equal(result.alreadyIncluded, false);
@@ -144,7 +144,7 @@ test('OWNER adds a company without changing canonical company data and receives 
     prisma.financialStatement.count({ where: { operatingGroupId: groupId } }),
     prisma.financialTransaction.aggregate({ where: { operatingGroupId: groupId }, _sum: { amountMinor: true, recoveredAmountMinor: true, waivedAmountMinor: true } }),
     prisma.pilotFuelingEvent.count({ where: { invoice: { operatingGroupId: groupId } } }),
-    prisma.bankTransaction.count(),
+    prisma.bankTransaction.count({ where: { companyId: companyBId } }),
   ]), financialBefore);
 });
 

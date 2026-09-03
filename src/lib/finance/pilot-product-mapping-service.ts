@@ -52,7 +52,9 @@ export class PilotProductMappingService {
     if (!product) throw new FinancialValidationError('Select a supported Pilot product code.');
     if (!categoryId) throw new FinancialValidationError('Accounting category is required.');
 
-    return this.database.$transaction(async (tx) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.database.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`pilot-product-mapping:${context.operatingGroupId}:${productCode}`}, 0))::text AS lock_result`;
       await this.revalidateAuthority(tx, context);
       const category = await tx.financialCategory.findFirst({
@@ -95,7 +97,13 @@ export class PilotProductMappingService {
         },
       });
       return { changed: true, mappingId: mapping.id, productCode, productType: product.productType, category };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        const retryable = error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+        if (!retryable || attempt === 2) throw error;
+      }
+    }
+    throw new FinancialValidationError('Pilot product mapping could not be serialized safely.');
   }
 
   private async revalidateAuthority(tx: Prisma.TransactionClient, context: FinancialAuthorization) {

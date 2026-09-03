@@ -375,10 +375,20 @@ export class BankLedgerService {
         // adds its posted replacement. That historical identity is retained but
         // must not mark the newly-posted canonical row as removed.
         if (!identity?.isCurrent) continue;
+        const expectationMatchCount = await transaction.financialExpectationBankMatch.count({
+          where: { bankTransactionId: identity.bankTransactionId },
+        });
         await transaction.bankTransaction.update({
           where: { id: identity.bankTransactionId },
           data: { lifecycle: 'REMOVED', removedAt: new Date(), lastSeenAt: new Date() },
         });
+        if (expectationMatchCount > 0) {
+          await transaction.bankTransactionClassification.upsert({
+            where: { bankTransactionId: identity.bankTransactionId },
+            create: { bankTransactionId: identity.bankTransactionId, reviewStatus: 'NEEDS_REVIEW', reconciliationStatus: 'DISCREPANCY' },
+            update: { reviewStatus: 'NEEDS_REVIEW', reconciliationStatus: 'DISCREPANCY' },
+          });
+        }
         await transaction.financialAuditEvent.create({
           data: {
             operatingGroupId: context.operatingGroupId,
@@ -386,6 +396,7 @@ export class BankLedgerService {
             bankTransactionId: identity.bankTransactionId,
             actorUserId: context.userId,
             action: 'BANK_TRANSACTION_REMOVED_BY_PROVIDER',
+            metadata: expectationMatchCount > 0 ? { preservedExpectationMatches: expectationMatchCount, requiresReview: true } : undefined,
           },
         });
         removed += 1;
@@ -402,11 +413,18 @@ export class BankLedgerService {
     return this.database.$transaction(async (transaction) => {
       const bankTransaction = await transaction.bankTransaction.findFirst({
         where: { id: bankTransactionId, companyId: { in: context.companyIds } },
-        include: { classification: true, allocations: true },
+        include: { classification: true, allocations: true, expectationMatches: { select: { matchedAmountMinor: true } } },
       });
       if (!bankTransaction?.companyId || bankTransaction.amountMinor === null) {
         throw new BankLedgerNotFoundError();
       }
+      const expectationMatchedMinor = bankTransaction.expectationMatches.reduce((sum, match) => sum + match.matchedAmountMinor, BigInt(0));
+      if (expectationMatchedMinor > BigInt(0) && (input.categoryId || input.allocations.length || input.reviewStatus === 'REVIEWED')) {
+        throw new BankLedgerValidationError('A bank transaction used as settlement evidence cannot also be classified as independent economics.');
+      }
+      const protectedReconciliationStatus = expectationMatchedMinor === BigInt(0)
+        ? input.reconciliationStatus ?? 'UNMATCHED'
+        : expectationMatchedMinor === bankTransaction.amountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED';
       if (input.categoryId) {
         const category = await transaction.financialCategory.findFirst({
           where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true },
@@ -462,7 +480,7 @@ export class BankLedgerService {
           categoryId: input.categoryId,
           scope: input.scope,
           reviewStatus: input.reviewStatus,
-          reconciliationStatus: input.reconciliationStatus ?? 'UNMATCHED',
+          reconciliationStatus: protectedReconciliationStatus,
           notes: input.notes?.trim() || null,
           reviewedByUserId: reviewed ? context.userId : null,
           reviewedAt: reviewed ? new Date() : null,
@@ -471,7 +489,7 @@ export class BankLedgerService {
           categoryId: input.categoryId,
           scope: input.scope,
           reviewStatus: input.reviewStatus,
-          reconciliationStatus: input.reconciliationStatus ?? 'UNMATCHED',
+          reconciliationStatus: protectedReconciliationStatus,
           notes: input.notes?.trim() || null,
           reviewedByUserId: reviewed ? context.userId : null,
           reviewedAt: reviewed ? new Date() : null,
