@@ -375,10 +375,20 @@ export class BankLedgerService {
         // adds its posted replacement. That historical identity is retained but
         // must not mark the newly-posted canonical row as removed.
         if (!identity?.isCurrent) continue;
+        const expectationMatchCount = await transaction.financialExpectationBankMatch.count({
+          where: { bankTransactionId: identity.bankTransactionId },
+        });
         await transaction.bankTransaction.update({
           where: { id: identity.bankTransactionId },
           data: { lifecycle: 'REMOVED', removedAt: new Date(), lastSeenAt: new Date() },
         });
+        if (expectationMatchCount > 0) {
+          await transaction.bankTransactionClassification.upsert({
+            where: { bankTransactionId: identity.bankTransactionId },
+            create: { bankTransactionId: identity.bankTransactionId, reviewStatus: 'NEEDS_REVIEW', reconciliationStatus: 'DISCREPANCY' },
+            update: { reviewStatus: 'NEEDS_REVIEW', reconciliationStatus: 'DISCREPANCY' },
+          });
+        }
         await transaction.financialAuditEvent.create({
           data: {
             operatingGroupId: context.operatingGroupId,
@@ -386,6 +396,7 @@ export class BankLedgerService {
             bankTransactionId: identity.bankTransactionId,
             actorUserId: context.userId,
             action: 'BANK_TRANSACTION_REMOVED_BY_PROVIDER',
+            metadata: expectationMatchCount > 0 ? { preservedExpectationMatches: expectationMatchCount, requiresReview: true } : undefined,
           },
         });
         removed += 1;
