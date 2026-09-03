@@ -114,6 +114,7 @@ model Company {
   bankAccounts               BankAccount[]
   bankTransactions           BankTransaction[]
   bankTransactionAllocations BankTransactionAllocation[]
+  bankCategorizationRules    BankCategorizationRule[]
   taskProjects               TaskProject[]
   memberships                CompanyMembership[]
   activeUsers                User[]                      @relation("ActiveCompany")
@@ -157,45 +158,47 @@ model User {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  authAccounts                  AuthAccount[]
-  emailSignInTokens             EmailSignInToken[]
-  memberships                   CompanyMembership[]
-  taskComments                  TaskComment[]
-  taskActivities                TaskActivity[]
-  taskChecklistItems            TaskChecklistItem[]
-  taskAttachments               TaskAttachment[]
-  assignedTaskCards             TaskCard[]                      @relation("TaskCardAssignee")
-  createdTaskCards              TaskCard[]                      @relation("TaskCardCreator")
-  archivedTaskCards             TaskCard[]                      @relation("TaskCardArchiver")
-  taskMentions                  TaskMention[]                   @relation("MentionedTaskUser")
-  createdTaskMentions           TaskMention[]                   @relation("TaskMentionCreator")
-  loadActivities                LoadActivity[]
-  uploadedLoadDocuments         LoadDocument[]
-  uploadedTrailerDocuments      TrailerDocument[]
-  telegramUserLinks             TelegramUserLink[]
-  telegramLinkTokens            TelegramLinkToken[]
-  telegramDeliveries            TelegramDelivery[]
-  telegramPendingActions        TelegramPendingAction[]         @relation("TelegramPendingActionUser")
-  requestedTelegramUpdates      TelegramUpdateRequest[]         @relation("TelegramUpdateRequester")
-  assignedTelegramUpdates       TelegramUpdateRequest[]         @relation("TelegramUpdateAssignee")
-  employeeProfile               Employee?
-  operatingGroupMemberships     OperatingGroupMembership[]
-  importedFinancialStatements   FinancialStatement[]            @relation("FinancialStatementImporter")
-  createdFinancialTransactions  FinancialTransaction[]          @relation("FinancialTransactionCreator")
-  reviewedFinancialTransactions FinancialTransaction[]          @relation("FinancialTransactionReviewer")
-  waivedFinancialTransactions   FinancialTransaction[]          @relation("FinancialTransactionWaiver")
-  matchedFinancialEvidence      FinancialTransactionEvidence[]  @relation("FinancialEvidenceMatcher")
-  createdFinancialExpectations  FinancialExpectation[]          @relation("FinancialExpectationCreator")
-  financialAuditEvents          FinancialAuditEvent[]           @relation("FinancialAuditActor")
-  createdBankConnections        BankAccount[]                   @relation("BankConnectionCreator")
-  reviewedBankTransactions      BankTransactionClassification[] @relation("BankTransactionReviewer")
-  createdAdminFeeAgreements     AdminFeeAgreement[]             @relation("AdminFeeAgreementCreator")
-  uploadedPilotInvoices         PilotProviderInvoice[]          @relation("PilotInvoiceUploader")
-  postedPilotInvoices           PilotProviderInvoice[]          @relation("PilotInvoicePoster")
-  resolvedPilotIssues           PilotImportIssue[]              @relation("PilotIssueResolver")
-  approvedPilotProductMappings  PilotProductMapping[]           @relation("PilotProductMappingApprover")
-  truckImportBatches            TruckImportBatch[]              @relation("TruckImportActor")
-  truckLifecycleEvents          TruckLifecycleEvent[]           @relation("TruckLifecycleActor")
+  authAccounts                   AuthAccount[]
+  emailSignInTokens              EmailSignInToken[]
+  memberships                    CompanyMembership[]
+  taskComments                   TaskComment[]
+  taskActivities                 TaskActivity[]
+  taskChecklistItems             TaskChecklistItem[]
+  taskAttachments                TaskAttachment[]
+  assignedTaskCards              TaskCard[]                      @relation("TaskCardAssignee")
+  createdTaskCards               TaskCard[]                      @relation("TaskCardCreator")
+  archivedTaskCards              TaskCard[]                      @relation("TaskCardArchiver")
+  taskMentions                   TaskMention[]                   @relation("MentionedTaskUser")
+  createdTaskMentions            TaskMention[]                   @relation("TaskMentionCreator")
+  loadActivities                 LoadActivity[]
+  uploadedLoadDocuments          LoadDocument[]
+  uploadedTrailerDocuments       TrailerDocument[]
+  telegramUserLinks              TelegramUserLink[]
+  telegramLinkTokens             TelegramLinkToken[]
+  telegramDeliveries             TelegramDelivery[]
+  telegramPendingActions         TelegramPendingAction[]         @relation("TelegramPendingActionUser")
+  requestedTelegramUpdates       TelegramUpdateRequest[]         @relation("TelegramUpdateRequester")
+  assignedTelegramUpdates        TelegramUpdateRequest[]         @relation("TelegramUpdateAssignee")
+  employeeProfile                Employee?
+  operatingGroupMemberships      OperatingGroupMembership[]
+  importedFinancialStatements    FinancialStatement[]            @relation("FinancialStatementImporter")
+  createdFinancialTransactions   FinancialTransaction[]          @relation("FinancialTransactionCreator")
+  reviewedFinancialTransactions  FinancialTransaction[]          @relation("FinancialTransactionReviewer")
+  waivedFinancialTransactions    FinancialTransaction[]          @relation("FinancialTransactionWaiver")
+  matchedFinancialEvidence       FinancialTransactionEvidence[]  @relation("FinancialEvidenceMatcher")
+  createdFinancialExpectations   FinancialExpectation[]          @relation("FinancialExpectationCreator")
+  financialAuditEvents           FinancialAuditEvent[]           @relation("FinancialAuditActor")
+  createdBankConnections         BankAccount[]                   @relation("BankConnectionCreator")
+  reviewedBankTransactions       BankTransactionClassification[] @relation("BankTransactionReviewer")
+  createdBankCategorizationRules BankCategorizationRule[]        @relation("BankCategorizationRuleCreator")
+  updatedBankCategorizationRules BankCategorizationRule[]        @relation("BankCategorizationRuleUpdater")
+  createdAdminFeeAgreements      AdminFeeAgreement[]             @relation("AdminFeeAgreementCreator")
+  uploadedPilotInvoices          PilotProviderInvoice[]          @relation("PilotInvoiceUploader")
+  postedPilotInvoices            PilotProviderInvoice[]          @relation("PilotInvoicePoster")
+  resolvedPilotIssues            PilotImportIssue[]              @relation("PilotIssueResolver")
+  approvedPilotProductMappings   PilotProductMapping[]           @relation("PilotProductMappingApprover")
+  truckImportBatches             TruckImportBatch[]              @relation("TruckImportActor")
+  truckLifecycleEvents           TruckLifecycleEvent[]           @relation("TruckLifecycleActor")
 
   @@index([activeCompanyId])
 }
@@ -445,6 +448,7 @@ model Truck {
   adminFeeAgreements         AdminFeeAgreement[]
   pilotFuelingEvents         PilotFuelingEvent[]
   importRows                 TruckImportRow[]
+  bankCategorizationRules    BankCategorizationRule[]
 
   @@unique([companyId, unitNumberNormalized])
   @@index([companyId, status, unitNumber])
@@ -569,6 +573,7 @@ model Trailer {
   documents                  TrailerDocument[]
   financialAllocations       FinancialAllocation[]
   bankTransactionAllocations BankTransactionAllocation[]
+  bankCategorizationRules    BankCategorizationRule[]
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
 
@@ -596,6 +601,7 @@ model Driver {
   driverOrientations         DriverOrientation[]
   financialAllocations       FinancialAllocation[]
   bankTransactionAllocations BankTransactionAllocation[]
+  bankCategorizationRules    BankCategorizationRule[]
 
   @@index([companyId])
 }
@@ -838,6 +844,7 @@ model BankAccount {
   accounts               BankSubAccount[]
   transactions           BankTransaction[]
   transactionExternalIds BankTransactionExternalId[]
+  categorizationRules    BankCategorizationRule[]
   webhookEvents          BankProviderWebhookEvent[]
   createdAt              DateTime                    @default(now())
   updatedAt              DateTime                    @updatedAt
@@ -1000,6 +1007,51 @@ model BankTransactionAllocation {
   @@index([bankTransactionId])
   @@index([categoryId])
   @@index([companyId])
+  @@index([truckId])
+  @@index([trailerId])
+  @@index([driverId])
+  @@index([partyId])
+}
+
+model BankCategorizationRule {
+  id                            String                  @id @default(cuid())
+  operatingGroupId              String
+  companyId                     String
+  name                          String
+  isEnabled                     Boolean                 @default(true)
+  merchantNormalized            String?
+  descriptionContainsNormalized String?
+  direction                     FinancialDirection?
+  bankAccountId                 String?
+  minimumAmountMinor            BigInt?
+  maximumAmountMinor            BigInt?
+  categoryId                    String
+  scope                         BankClassificationScope @default(COMPANY_LEVEL)
+  truckId                       String?
+  trailerId                     String?
+  driverId                      String?
+  partyId                       String?
+  matchCount                    Int                     @default(0)
+  createdByUserId               String
+  updatedByUserId               String
+  createdAt                     DateTime                @default(now())
+  updatedAt                     DateTime                @updatedAt
+  operatingGroup                OperatingGroup          @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                       Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  bankAccount                   BankAccount?            @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  category                      FinancialCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  truck                         Truck?                  @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  trailer                       Trailer?                @relation(fields: [trailerId], references: [id], onDelete: Restrict)
+  driver                        Driver?                 @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  party                         FinancialParty?         @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  createdBy                     User                    @relation("BankCategorizationRuleCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  updatedBy                     User                    @relation("BankCategorizationRuleUpdater", fields: [updatedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, isEnabled, merchantNormalized])
+  @@index([companyId, isEnabled, direction])
+  @@index([operatingGroupId, updatedAt])
+  @@index([categoryId])
+  @@index([bankAccountId])
   @@index([truckId])
   @@index([trailerId])
   @@index([driverId])
@@ -1449,24 +1501,25 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
-  id                   String                     @id @default(cuid())
-  name                 String
-  currency             String                     @default("USD")
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  companies            OperatingGroupCompany[]
-  memberships          OperatingGroupMembership[]
-  sources              FinancialSource[]
-  statements           FinancialStatement[]
-  categories           FinancialCategory[]
-  programs             FinancialProgram[]
-  adminFeeAgreements   AdminFeeAgreement[]
-  parties              FinancialParty[]
-  transactions         FinancialTransaction[]
-  expectations         FinancialExpectation[]
-  auditEvents          FinancialAuditEvent[]
-  pilotInvoices        PilotProviderInvoice[]
-  pilotProductMappings PilotProductMapping[]
+  id                      String                     @id @default(cuid())
+  name                    String
+  currency                String                     @default("USD")
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  companies               OperatingGroupCompany[]
+  memberships             OperatingGroupMembership[]
+  sources                 FinancialSource[]
+  statements              FinancialStatement[]
+  categories              FinancialCategory[]
+  programs                FinancialProgram[]
+  adminFeeAgreements      AdminFeeAgreement[]
+  parties                 FinancialParty[]
+  transactions            FinancialTransaction[]
+  expectations            FinancialExpectation[]
+  auditEvents             FinancialAuditEvent[]
+  pilotInvoices           PilotProviderInvoice[]
+  pilotProductMappings    PilotProductMapping[]
+  bankCategorizationRules BankCategorizationRule[]
 }
 
 model OperatingGroupCompany {
@@ -1602,6 +1655,7 @@ model FinancialCategory {
   pilotAdjustments               PilotInvoiceAdjustment[]
   bankTransactionClassifications BankTransactionClassification[]
   bankTransactionAllocations     BankTransactionAllocation[]
+  bankCategorizationRules        BankCategorizationRule[]
 
   @@unique([operatingGroupId, name])
   @@index([operatingGroupId, type, isActive])
@@ -1643,6 +1697,7 @@ model FinancialParty {
   expectationParties         FinancialExpectation[]
   adminFeeAgreements         AdminFeeAgreement[]
   bankTransactionAllocations BankTransactionAllocation[]
+  bankCategorizationRules    BankCategorizationRule[]
 
   @@unique([operatingGroupId, type, name])
   @@index([companyId, type])

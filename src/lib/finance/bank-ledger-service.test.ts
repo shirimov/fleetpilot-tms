@@ -9,9 +9,11 @@ import { BankSyncService } from './bank-sync-service';
 import { encryptBankAccessToken } from './bank-token-crypto';
 import type { BankProviderAdapter, BankProviderTransaction } from './bank-ledger-types';
 import { PlaidConnectionService } from './plaid-connection-service';
+import { BankCategorizationService } from './bank-categorization';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const ledger = new BankLedgerService(prisma);
+const categorization = new BankCategorizationService(prisma);
 let companyId = '';
 let foreignCompanyId = '';
 let groupId = '';
@@ -96,6 +98,7 @@ after(async () => {
   await prisma.bankTransactionClassification.deleteMany({ where: { bankTransaction: { bankAccountId } } });
   await prisma.bankTransactionExternalId.deleteMany({ where: { bankAccountId } });
   await prisma.bankTransaction.deleteMany({ where: { bankAccountId } });
+  await prisma.bankCategorizationRule.deleteMany({ where: { operatingGroupId: groupId } });
   await prisma.bankSubAccount.deleteMany({ where: { bankAccountId } });
   await prisma.bankAccount.deleteMany({ where: { id: bankAccountId } });
   await prisma.financialParty.deleteMany({ where: { operatingGroupId: groupId } });
@@ -235,6 +238,62 @@ test('company-level classification is separate from immutable bank source data',
   assert.equal(after.classification?.categoryId, categoryId);
   assert.equal(after.classification?.reviewStatus, 'REVIEWED');
   assert.equal(await prisma.financialAuditEvent.count({ where: { bankTransactionId: transaction.id, action: 'BANK_TRANSACTION_CLASSIFICATION_CHANGED' } }), 1);
+});
+
+test('bulk review is explicit, audited, and does not create a rule', async () => {
+  const ids = [`bulk-a-${suffix}`, `bulk-b-${suffix}`];
+  await ledger.ingestTransactions(context(), bankAccountId, ids.map((externalId) => source({ externalId })));
+  const transactions = await prisma.bankTransaction.findMany({ where: { bankAccountId, providerTransactionId: { in: ids } } });
+  assert.deepEqual(await ledger.bulkReviewTransactions(context(), { transactionIds: transactions.map(({ id }) => id), categoryId }), { reviewed: 2 });
+  assert.equal(await prisma.bankTransactionClassification.count({ where: { bankTransactionId: { in: transactions.map(({ id }) => id) }, reviewStatus: 'REVIEWED', categoryId } }), 2);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { bankTransactionId: { in: transactions.map(({ id }) => id) }, action: 'BANK_TRANSACTION_BULK_REVIEWED' } }), 2);
+  assert.equal(await prisma.bankCategorizationRule.count({ where: { operatingGroupId: groupId } }), 0);
+});
+
+test('bulk review rejects cross-company and allocated selections atomically', async () => {
+  const own = await prisma.bankTransaction.findFirstOrThrow({ where: { bankAccountId, providerTransactionId: source().externalId } });
+  await assert.rejects(ledger.bulkReviewTransactions(context(), { transactionIds: [own.id, 'missing-or-foreign'], categoryId }), BankLedgerNotFoundError);
+});
+
+test('merchant-pattern review is exact, reviewable-only, and updates progress', async () => {
+  const ids = [`pattern-a-${suffix}`, `pattern-b-${suffix}`];
+  await ledger.ingestTransactions(context(), bankAccountId, ids.map((externalId) => source({ externalId, merchantName: 'Exact Pattern 001' })));
+  assert.deepEqual(await ledger.bulkReviewPattern(context(), { companyId, merchantNormalized: 'EXACT PATTERN 001', direction: 'OUTFLOW', categoryId }), { reviewed: 2 });
+  const progress = await categorization.progress(context(), companyId);
+  assert.equal(Number(progress.reviewed) >= 2, true);
+  assert.equal(Number(progress.categorized) >= 2, true);
+  await assert.rejects(ledger.bulkReviewPattern(context(), { companyId, merchantNormalized: 'EXACT PATTERN 001', direction: 'OUTFLOW', categoryId }), /No reviewable transactions/);
+});
+
+test('categorization rules are explicit, audited, and company scoped', async () => {
+  const created = await categorization.createRule(context(), companyId, { name: 'Pilot fuel', merchantNormalized: 'Pilot #123', direction: 'OUTFLOW', categoryId, scope: 'COMPANY_LEVEL' });
+  assert.equal(created.merchantNormalized, 'PILOT FLYING J');
+  assert.equal((await categorization.listRules(context(), companyId)).length, 1);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { operatingGroupId: groupId, action: 'BANK_CATEGORIZATION_RULE_CREATED' } }), 1);
+  assert.equal((await categorization.setRuleEnabled(context(), created.id, false)).isEnabled, false);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { operatingGroupId: groupId, action: 'BANK_CATEGORIZATION_RULE_DISABLED' } }), 1);
+  await assert.rejects(categorization.createRule(context(), foreignCompanyId, { name: 'Foreign', direction: 'OUTFLOW', categoryId, scope: 'COMPANY_LEVEL' }), BankLedgerNotFoundError);
+  await categorization.deleteRule(context(), created.id);
+  assert.equal(await prisma.bankCategorizationRule.count({ where: { id: created.id } }), 0);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { operatingGroupId: groupId, action: 'BANK_CATEGORIZATION_RULE_DELETED' } }), 1);
+});
+
+test('rule validation rejects unsafe ambiguity and invalid amount ranges', async () => {
+  await assert.rejects(categorization.createRule(context(), companyId, { name: 'No conditions', categoryId, scope: 'COMPANY_LEVEL' }), BankLedgerValidationError);
+  await assert.rejects(categorization.createRule(context(), companyId, { name: 'Bad range', direction: 'OUTFLOW', minimumAmountMinor: BigInt(200), maximumAmountMinor: BigInt(100), categoryId, scope: 'COMPANY_LEVEL' }), BankLedgerValidationError);
+});
+
+test('an approved rule creates only a reviewable suggestion on later ingestion', async () => {
+  const rule = await categorization.createRule(context(), companyId, { name: 'Future Pilot suggestion', merchantNormalized: 'Pilot Travel Center 123', direction: 'OUTFLOW', categoryId, scope: 'COMPANY_LEVEL' });
+  const externalId = `rule-suggestion-${suffix}`;
+  await ledger.ingestTransactions(context(), bankAccountId, [source({ externalId, merchantName: 'Pilot Travel Center #999' })]);
+  const stored = await prisma.bankTransaction.findFirstOrThrow({ where: { bankAccountId, providerTransactionId: externalId }, include: { classification: true, allocations: true } });
+  assert.equal(stored.classification?.reviewStatus, 'SUGGESTED');
+  assert.equal(stored.classification?.categoryId, categoryId);
+  assert.equal(stored.classification?.reviewedAt, null);
+  assert.equal(stored.allocations.length, 0);
+  assert.equal((await prisma.bankCategorizationRule.findUniqueOrThrow({ where: { id: rule.id } })).matchCount, 1);
+  await categorization.deleteRule(context(), rule.id);
 });
 
 test('entity allocations support truck, trailer, driver, and contractor dimensions with exact totals', async () => {
