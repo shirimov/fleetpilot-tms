@@ -38,7 +38,11 @@ export class PilotProductMappingService {
       },
     });
     const byCode = new Map(mappings.map((mapping) => [mapping.productCode, mapping]));
-    return PILOT_SUPPORTED_PRODUCTS.map((product) => ({ ...product, mapping: byCode.get(product.productCode) ?? null }));
+    return PILOT_SUPPORTED_PRODUCTS.map((product) => {
+      const mapping = byCode.get(product.productCode) ?? null;
+      const status = !mapping ? 'NOT_MAPPED' : mapping.isActive && mapping.category.isActive && mapping.category.type === 'DIRECT_EXPENSE' ? 'MAPPED' : 'INVALID';
+      return { ...product, status, mapping };
+    });
   }
 
   async save(productCodeInput: unknown, categoryIdInput: unknown, context: FinancialAuthorization) {

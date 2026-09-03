@@ -92,3 +92,12 @@ test('concurrent changes serialize to one unambiguous mapping', async () => {
   assert.equal(mappings.length, 1);
   assert.ok([fuelId, reeferId].includes(mappings[0].categoryId));
 });
+
+test('inactive mapped category is reported as invalid until explicitly remapped', async () => {
+  await service.save('020', reeferId, context());
+  await prisma.financialCategory.update({ where: { id: reeferId }, data: { isActive: false } });
+  const row = (await service.list(context())).find(({ productCode }) => productCode === '020');
+  assert.equal(row?.status, 'INVALID');
+  await prisma.financialCategory.update({ where: { id: reeferId }, data: { isActive: true } });
+  assert.equal((await service.list(context())).find(({ productCode }) => productCode === '020')?.status, 'MAPPED');
+});

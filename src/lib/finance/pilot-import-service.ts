@@ -478,7 +478,10 @@ export class PilotImportService {
         resolution.sourceUnitNumber = sourceEvent.sourceUnitNumber;
         resolution.affectedEventCount = String(eventIds.length);
       } else if (action === 'SET_CATEGORY' && typeof input.categoryId === 'string' && (issue.productLineId || issue.adjustmentId)) {
-        const category = await tx.financialCategory.findFirst({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
+        const category = await tx.financialCategory.findFirst({
+          where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true, ...(issue.productLineId ? { type: 'DIRECT_EXPENSE' } : {}) },
+          select: { id: true },
+        });
         if (!category) throw new FinancialValidationError('Category is outside this operating group.');
         if (issue.productLineId) {
           await tx.pilotFuelProductLine.update({ where: { id: issue.productLineId }, data: { categoryId: category.id } });
@@ -529,6 +532,7 @@ export class PilotImportService {
           operatingGroupId: context.operatingGroupId,
           provider: 'PILOT',
           providerAccountHash: { in: [PILOT_GROUP_MAPPING_ACCOUNT, invoice.providerAccountHash] },
+          productCode: { in: ['020', '033', '140'] },
           isActive: true,
           category: { isActive: true, type: 'DIRECT_EXPENSE' },
         },
@@ -574,7 +578,7 @@ export class PilotImportService {
         where: { id: invoice.documents[0].statementId },
         data: { importStatus: nextStatus === 'READY_TO_POST' ? 'IMPORTED' : 'NEEDS_REVIEW', unresolvedRowCount: openIssueCount },
       });
-      await tx.financialAuditEvent.create({
+      if (appliedLineCount > 0 || before.openIssueCount !== openIssueCount) await tx.financialAuditEvent.create({
         data: {
           operatingGroupId: context.operatingGroupId,
           companyId: context.activeCompanyId,
@@ -609,13 +613,15 @@ export class PilotImportService {
       if (!invoice) throw new FinancialNotFoundError();
       if (invoice.status === 'POSTED') return;
       if (invoice.differenceMinor !== BigInt(0) || invoice.issues.length || invoice.status !== 'READY_TO_POST') throw new FinancialConflictError('Resolve every Pilot import issue and reconcile the invoice total before posting.');
-      const categoryIds = [...new Set([
-        ...invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)),
-        ...invoice.adjustments.map((adjustment) => adjustment.categoryId),
-      ].filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const productCategoryIds = [...new Set(invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)).filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const adjustmentCategoryIds = [...new Set(invoice.adjustments.map((adjustment) => adjustment.categoryId).filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const categoryIds = [...new Set([...productCategoryIds, ...adjustmentCategoryIds])].sort();
       for (const categoryId of categoryIds) await this.lock(tx, `financial-category:${categoryId}`);
-      const validCategoryCount = await tx.financialCategory.count({ where: { id: { in: categoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } });
-      if (categoryIds.length === 0 || validCategoryCount !== categoryIds.length) throw new FinancialValidationError('Every Pilot category must be active and belong to this operating group at posting time.');
+      const [validProductCategoryCount, validAdjustmentCategoryCount] = await Promise.all([
+        tx.financialCategory.count({ where: { id: { in: productCategoryIds }, operatingGroupId: context.operatingGroupId, isActive: true, type: 'DIRECT_EXPENSE' } }),
+        tx.financialCategory.count({ where: { id: { in: adjustmentCategoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } }),
+      ]);
+      if (productCategoryIds.length === 0 || validProductCategoryCount !== productCategoryIds.length || validAdjustmentCategoryCount !== adjustmentCategoryIds.length) throw new FinancialValidationError('Every Pilot product category must be an active Direct Expense and every adjustment category must be active in this operating group at posting time.');
       const truckIds = [...new Set(invoice.events.map(({ truckId }) => truckId).filter((id): id is string => Boolean(id)))];
       const postingTrucks = await tx.truck.findMany({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' }, select: { id: true, companyId: true } });
       const postingCompanyIds = [...new Set(postingTrucks.map(({ companyId }) => companyId))];
