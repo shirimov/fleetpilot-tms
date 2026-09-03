@@ -40,6 +40,12 @@ function optionalText(value: unknown, max = 255) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
 }
 
+function optionalPositiveMinorUnits(value: unknown) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) throw new FinancialValidationError('Matched amount minor units are invalid.');
+  return BigInt(value);
+}
+
 export function financialDate(value: unknown, label: string) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new FinancialValidationError(`${label} is invalid.`);
   const [year, month, day] = value.split('-').map(Number);
@@ -553,8 +559,103 @@ export class FinancialControlService {
   }
 
   async listExpectations(context: FinancialAuthorization) {
-    const expectations = await this.database.financialExpectation.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: { expectedDateStart: 'desc' } });
-    return expectations.map((expectation) => ({ ...expectation, expectedAmountMinor: expectation.expectedAmountMinor.toString(), matchedAmountMinor: expectation.matchedAmountMinor.toString() }));
+    const expectations = await this.database.financialExpectation.findMany({
+      where: { operatingGroupId: context.operatingGroupId },
+      orderBy: { expectedDateStart: 'desc' },
+      include: { bankMatches: { select: { id: true, bankTransactionId: true, matchedAmountMinor: true, matchedAt: true, bankTransaction: { select: { name: true, merchantName: true, date: true } } } } },
+    });
+    return expectations.map((expectation) => ({ ...expectation, expectedAmountMinor: expectation.expectedAmountMinor.toString(), matchedAmountMinor: expectation.matchedAmountMinor.toString(), bankMatches: expectation.bankMatches.map((match) => ({ ...match, matchedAmountMinor: match.matchedAmountMinor.toString() })) }));
+  }
+
+  async listBankMatchCandidates(expectationId: string, context: FinancialAuthorization) {
+    const expectation = await this.database.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId } });
+    if (!expectation) throw new FinancialNotFoundError();
+    const start = new Date(expectation.expectedDateStart); start.setUTCDate(start.getUTCDate() - 30);
+    const end = new Date(expectation.expectedDateEnd); end.setUTCDate(end.getUTCDate() + 30);
+    const candidates = await this.database.bankTransaction.findMany({
+      where: {
+        companyId: { in: context.companyIds }, direction: expectation.direction, currency: expectation.currency,
+        pending: false, lifecycle: 'POSTED', removedAt: null, amountMinor: { not: null }, date: { gte: start, lte: end },
+      },
+      orderBy: [{ date: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true, companyId: true, amountMinor: true, currency: true, direction: true, date: true, postedDate: true,
+        name: true, merchantName: true, pending: true, lifecycle: true, removedAt: true,
+        classification: { select: { reviewStatus: true, reconciliationStatus: true, categoryId: true } },
+        allocations: { select: { id: true } }, expectationMatches: { select: { matchedAmountMinor: true } },
+      },
+    });
+    return candidates.map((candidate) => {
+      const matchedAmountMinor = candidate.expectationMatches.reduce((sum, match) => sum + match.matchedAmountMinor, BigInt(0));
+      const availableAmountMinor = (candidate.amountMinor ?? BigInt(0)) - matchedAmountMinor;
+      const independentlyClassified = candidate.classification?.reviewStatus === 'REVIEWED' && (candidate.classification.categoryId !== null || candidate.allocations.length > 0);
+      return {
+        id: candidate.id, companyId: candidate.companyId, amountMinor: candidate.amountMinor!.toString(), availableAmountMinor: availableAmountMinor.toString(),
+        currency: candidate.currency, direction: candidate.direction, date: candidate.date, postedDate: candidate.postedDate,
+        name: candidate.name, merchantName: candidate.merchantName, pending: candidate.pending, lifecycle: candidate.lifecycle,
+        reconciliationStatus: candidate.classification?.reconciliationStatus ?? 'UNMATCHED',
+        amountDifferenceMinor: (candidate.amountMinor! - (expectation.expectedAmountMinor - expectation.matchedAmountMinor)).toString(),
+        eligible: availableAmountMinor > BigInt(0) && !independentlyClassified,
+        ineligibleReason: independentlyClassified ? 'Bank transaction is already classified as independent economics.' : availableAmountMinor <= BigInt(0) ? 'Bank transaction is already fully matched.' : null,
+      };
+    });
+  }
+
+  async matchExpectationToBank(expectationId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    const bankTransactionId = text(input.bankTransactionId, 'Bank transaction ID');
+    const requestedAmountMinor = optionalPositiveMinorUnits(input.matchedAmountMinor);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.database.$transaction(async (tx) => {
+      await this.lockFinancialRows(tx, [`expectation:${expectationId}`, `bank-transaction:${bankTransactionId}`]);
+      const [expectation, bankTransaction] = await Promise.all([
+        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId } }),
+        tx.bankTransaction.findFirst({
+          where: { id: bankTransactionId, companyId: { in: context.companyIds }, company: { operatingGroupLink: { operatingGroupId: context.operatingGroupId } } },
+          include: { classification: true, allocations: { select: { id: true } } },
+        }),
+      ]);
+      if (!expectation || !bankTransaction) throw new FinancialNotFoundError();
+      await this.revalidateSettlementAuthority(tx, context, bankTransaction.companyId);
+      const existing = await tx.financialExpectationBankMatch.findUnique({ where: { expectationId_bankTransactionId: { expectationId, bankTransactionId } } });
+      if (existing) {
+        if (requestedAmountMinor !== null && requestedAmountMinor !== existing.matchedAmountMinor) throw new FinancialConflictError('This expectation and bank transaction are already matched with a different amount.');
+        return { ...existing, matchedAmountMinor: existing.matchedAmountMinor.toString(), idempotent: true };
+      }
+      if (!['OPEN', 'PARTIALLY_MATCHED'].includes(expectation.status)) throw new FinancialConflictError('This expectation is already settled or is not eligible for matching.');
+      if (bankTransaction.pending || bankTransaction.lifecycle !== 'POSTED' || bankTransaction.removedAt) throw new FinancialConflictError('Only a current posted bank transaction can settle expected money.');
+      if (!bankTransaction.amountMinor || !bankTransaction.direction) throw new FinancialConflictError('Bank transaction amount or direction is unavailable.');
+      if (expectation.direction !== bankTransaction.direction) throw new FinancialValidationError('Expected and bank directions must match.');
+      if (expectation.currency !== bankTransaction.currency) throw new FinancialValidationError('Expected and bank currencies must match.');
+      if (bankTransaction.classification?.reviewStatus === 'REVIEWED' && (bankTransaction.classification.categoryId || bankTransaction.allocations.length)) throw new FinancialConflictError('Bank transaction is already classified as independent economics and requires review before settlement matching.');
+      const bankMatched = await tx.financialExpectationBankMatch.aggregate({ where: { bankTransactionId }, _sum: { matchedAmountMinor: true } });
+      const expectationRemaining = expectation.expectedAmountMinor - expectation.matchedAmountMinor;
+      const bankRemaining = bankTransaction.amountMinor - (bankMatched._sum.matchedAmountMinor ?? BigInt(0));
+      const matchedAmountMinor = requestedAmountMinor ?? (expectationRemaining < bankRemaining ? expectationRemaining : bankRemaining);
+      if (matchedAmountMinor <= BigInt(0)) throw new FinancialConflictError('No unmatched amount remains.');
+      if (matchedAmountMinor > expectationRemaining) throw new FinancialValidationError('Match exceeds the expected amount.');
+      if (matchedAmountMinor > bankRemaining) throw new FinancialValidationError('Match exceeds the bank transaction amount.');
+      const match = await tx.financialExpectationBankMatch.create({ data: { operatingGroupId: context.operatingGroupId, expectationId, bankTransactionId, matchedAmountMinor, matchedByUserId: context.userId } });
+      const expectationMatched = expectation.matchedAmountMinor + matchedAmountMinor;
+      const bankMatchedTotal = (bankMatched._sum.matchedAmountMinor ?? BigInt(0)) + matchedAmountMinor;
+      await tx.financialExpectation.update({ where: { id: expectationId }, data: { matchedAmountMinor: expectationMatched, status: expectationMatched === expectation.expectedAmountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' } });
+      await tx.bankTransactionClassification.upsert({
+        where: { bankTransactionId },
+        create: { bankTransactionId, reconciliationStatus: bankMatchedTotal === bankTransaction.amountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' },
+        update: { reconciliationStatus: bankMatchedTotal === bankTransaction.amountMinor ? 'MATCHED' : 'PARTIALLY_MATCHED' },
+      });
+      await tx.financialAuditEvent.create({ data: {
+        operatingGroupId: context.operatingGroupId, companyId: bankTransaction.companyId, bankTransactionId, actorUserId: context.userId,
+        action: 'EXPECTATION_BANK_MATCHED', metadata: { expectationId, expectationReference: expectation.reference, bankTransactionId, matchedAmountMinor: matchedAmountMinor.toString() },
+      } });
+          return { ...match, matchedAmountMinor: match.matchedAmountMinor.toString(), idempotent: false };
+        }, { isolationLevel: 'Serializable' });
+      } catch (error) {
+        const retryable = error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+        if (!retryable || attempt === 2) throw error;
+      }
+    }
+    throw new FinancialConflictError('Bank reconciliation could not be serialized safely.');
   }
 
   async createExpectation(input: Record<string, unknown>, context: FinancialAuthorization) {
@@ -786,6 +887,24 @@ export class FinancialControlService {
     const allowedRoles = minimumRole === 'OWNER' ? ['OWNER'] : ['OWNER', 'ADMIN'];
     if (!users[0]?.isActive || activeGroups[0]?.operatingGroupId !== context.operatingGroupId
       || !allowedRoles.includes(groupMemberships[0]?.role ?? '') || !allowedRoles.includes(companyMemberships[0]?.role ?? '')) {
+      throw new AuthorizationDeniedError();
+    }
+  }
+
+  private async revalidateSettlementAuthority(
+    tx: Prisma.TransactionClient,
+    context: FinancialAuthorization,
+    bankCompanyId: string | null,
+  ) {
+    if (!bankCompanyId) throw new FinancialConflictError('Bank transaction has no authoritative company assignment.');
+    const [users, groupMemberships, companyGroups, companyMemberships] = await Promise.all([
+      tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ operatingGroupId: string }>>`SELECT "operatingGroupId" FROM "OperatingGroupCompany" WHERE "companyId"=${bankCompanyId} FOR UPDATE`,
+      tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "CompanyMembership" WHERE "companyId"=${bankCompanyId} AND "userId"=${context.userId} FOR UPDATE`,
+    ]);
+    if (!users[0]?.isActive || companyGroups[0]?.operatingGroupId !== context.operatingGroupId
+      || !['OWNER', 'ADMIN'].includes(groupMemberships[0]?.role ?? '') || !['OWNER', 'ADMIN'].includes(companyMemberships[0]?.role ?? '')) {
       throw new AuthorizationDeniedError();
     }
   }

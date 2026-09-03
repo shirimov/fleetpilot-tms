@@ -187,6 +187,7 @@ model User {
   matchedFinancialEvidence      FinancialTransactionEvidence[]  @relation("FinancialEvidenceMatcher")
   createdFinancialExpectations  FinancialExpectation[]          @relation("FinancialExpectationCreator")
   financialAuditEvents          FinancialAuditEvent[]           @relation("FinancialAuditActor")
+  matchedBankExpectations       FinancialExpectationBankMatch[] @relation("FinancialExpectationBankMatcher")
   createdBankConnections        BankAccount[]                   @relation("BankConnectionCreator")
   reviewedBankTransactions      BankTransactionClassification[] @relation("BankTransactionReviewer")
   createdAdminFeeAgreements     AdminFeeAgreement[]             @relation("AdminFeeAgreementCreator")
@@ -890,23 +891,23 @@ model BankSubAccount {
 }
 
 model BankTransaction {
-  id                           String                         @id @default(cuid())
+  id                           String                          @id @default(cuid())
   bankAccountId                String
-  bankAccount                  BankAccount                    @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  bankAccount                  BankAccount                     @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
   subAccountId                 String?
-  subAccount                   BankSubAccount?                @relation(fields: [subAccountId], references: [id], onDelete: Restrict)
+  subAccount                   BankSubAccount?                 @relation(fields: [subAccountId], references: [id], onDelete: Restrict)
   companyId                    String?
-  company                      Company?                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  plaidTransactionId           String?                        @unique
+  company                      Company?                        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  plaidTransactionId           String?                         @unique
   providerTransactionId        String?
   providerPendingTransactionId String?
   date                         DateTime
-  authorizedDate               DateTime?                      @db.Date
-  postedDate                   DateTime?                      @db.Date
+  authorizedDate               DateTime?                       @db.Date
+  postedDate                   DateTime?                       @db.Date
   amount                       Float
   amountMinor                  BigInt?
   providerAmountText           String?
-  currency                     String                         @default("USD")
+  currency                     String                          @default("USD")
   direction                    FinancialDirection?
   name                         String
   originalDescription          String?
@@ -914,23 +915,24 @@ model BankTransaction {
   category                     String?
   subCategory                  String?
   providerCategory             Json?
-  pending                      Boolean                        @default(false)
-  lifecycle                    BankTransactionLifecycle       @default(POSTED)
+  pending                      Boolean                         @default(false)
+  lifecycle                    BankTransactionLifecycle        @default(POSTED)
   checkNumber                  String?
   referenceNumber              String?
   location                     Json?
   sourceMetadata               Json?
   sourceHashSha256             String?
-  firstSeenAt                  DateTime                       @default(now())
-  lastSeenAt                   DateTime                       @default(now())
+  firstSeenAt                  DateTime                        @default(now())
+  lastSeenAt                   DateTime                        @default(now())
   removedAt                    DateTime?
   notes                        String?
   externalIds                  BankTransactionExternalId[]
   classification               BankTransactionClassification?
   allocations                  BankTransactionAllocation[]
   auditEvents                  FinancialAuditEvent[]
-  createdAt                    DateTime                       @default(now())
-  updatedAt                    DateTime                       @updatedAt
+  expectationMatches           FinancialExpectationBankMatch[]
+  createdAt                    DateTime                        @default(now())
+  updatedAt                    DateTime                        @updatedAt
 
   @@unique([bankAccountId, providerTransactionId])
   @@index([companyId, date, id])
@@ -1449,24 +1451,25 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
-  id                   String                     @id @default(cuid())
-  name                 String
-  currency             String                     @default("USD")
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  companies            OperatingGroupCompany[]
-  memberships          OperatingGroupMembership[]
-  sources              FinancialSource[]
-  statements           FinancialStatement[]
-  categories           FinancialCategory[]
-  programs             FinancialProgram[]
-  adminFeeAgreements   AdminFeeAgreement[]
-  parties              FinancialParty[]
-  transactions         FinancialTransaction[]
-  expectations         FinancialExpectation[]
-  auditEvents          FinancialAuditEvent[]
-  pilotInvoices        PilotProviderInvoice[]
-  pilotProductMappings PilotProductMapping[]
+  id                     String                          @id @default(cuid())
+  name                   String
+  currency               String                          @default("USD")
+  createdAt              DateTime                        @default(now())
+  updatedAt              DateTime                        @updatedAt
+  companies              OperatingGroupCompany[]
+  memberships            OperatingGroupMembership[]
+  sources                FinancialSource[]
+  statements             FinancialStatement[]
+  categories             FinancialCategory[]
+  programs               FinancialProgram[]
+  adminFeeAgreements     AdminFeeAgreement[]
+  parties                FinancialParty[]
+  transactions           FinancialTransaction[]
+  expectations           FinancialExpectation[]
+  bankExpectationMatches FinancialExpectationBankMatch[]
+  auditEvents            FinancialAuditEvent[]
+  pilotInvoices          PilotProviderInvoice[]
+  pilotProductMappings   PilotProductMapping[]
 }
 
 model OperatingGroupCompany {
@@ -1802,7 +1805,7 @@ model AdminFeeAgreement {
 }
 
 model FinancialExpectation {
-  id                   String                      @id @default(cuid())
+  id                   String                          @id @default(cuid())
   operatingGroupId     String
   companyId            String?
   sourceId             String?
@@ -1811,26 +1814,27 @@ model FinancialExpectation {
   loadId               String?
   truckId              String?
   expectedAmountMinor  BigInt
-  matchedAmountMinor   BigInt                      @default(0)
-  currency             String                      @default("USD")
+  matchedAmountMinor   BigInt                          @default(0)
+  currency             String                          @default("USD")
   direction            FinancialDirection
   description          String
   expectedDateStart    DateTime
   expectedDateEnd      DateTime
   reference            String?
-  status               FinancialExpectationStatus  @default(OPEN)
+  status               FinancialExpectationStatus      @default(OPEN)
   createdByUserId      String
-  createdAt            DateTime                    @default(now())
-  updatedAt            DateTime                    @updatedAt
-  operatingGroup       OperatingGroup              @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company              Company?                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source               FinancialSource?            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  customer             Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  party                FinancialParty?             @relation(fields: [partyId], references: [id], onDelete: Restrict)
-  load                 Load?                       @relation(fields: [loadId], references: [id], onDelete: Restrict)
-  truck                Truck?                      @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  createdBy            User                        @relation("FinancialExpectationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt            DateTime                        @default(now())
+  updatedAt            DateTime                        @updatedAt
+  operatingGroup       OperatingGroup                  @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company              Company?                        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source               FinancialSource?                @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  customer             Customer?                       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  party                FinancialParty?                 @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  load                 Load?                           @relation(fields: [loadId], references: [id], onDelete: Restrict)
+  truck                Truck?                          @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  createdBy            User                            @relation("FinancialExpectationCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   matches              FinancialExpectationMatch[]
+  bankMatches          FinancialExpectationBankMatch[]
   pilotProviderInvoice PilotProviderInvoice?
 
   @@index([operatingGroupId, status, expectedDateStart])
@@ -1851,6 +1855,25 @@ model FinancialExpectationMatch {
 
   @@unique([expectationId, transactionId])
   @@index([transactionId])
+}
+
+model FinancialExpectationBankMatch {
+  id                 String               @id @default(cuid())
+  operatingGroupId   String
+  expectationId      String
+  bankTransactionId  String
+  matchedAmountMinor BigInt
+  matchedByUserId    String
+  matchedAt          DateTime             @default(now())
+  operatingGroup     OperatingGroup       @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  expectation        FinancialExpectation @relation(fields: [expectationId], references: [id], onDelete: Restrict)
+  bankTransaction    BankTransaction      @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
+  matchedBy          User                 @relation("FinancialExpectationBankMatcher", fields: [matchedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([expectationId, bankTransactionId])
+  @@index([operatingGroupId, matchedAt, id])
+  @@index([bankTransactionId, matchedAt, id])
+  @@index([matchedByUserId, matchedAt, id])
 }
 
 model FinancialAuditEvent {
