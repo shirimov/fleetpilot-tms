@@ -8,12 +8,14 @@ import { FinancialControlService } from './financial-control-service';
 import { FinancialConflictError, FinancialValidationError } from './financial-control-errors';
 import { PilotImportService } from './pilot-import-service';
 import { OperatingGroupCompanyService } from './operating-group-company-service';
+import { PilotProductMappingService, PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
 import { pilotXlsFixture } from '../../../tests/fixtures/pilot-xls';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const control = new FinancialControlService(prisma);
 const importer = new PilotImportService(prisma);
+const productMappings = new PilotProductMappingService(prisma);
 const groupCompanies = new OperatingGroupCompanyService(prisma);
 class MemoryStatementStorage implements PrivateFileStorage {
   readonly files = new Map<string, Uint8Array>();
@@ -517,8 +519,11 @@ test('posting revalidates active same-group categories inside the authoritative 
   const inactive = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910006' }), metadata('pilot-910006'), sourceId, context());
   importedInvoiceIds.push(String(inactive.id));
   await control.updateCategory(fuelCategoryId, { isActive: false }, context());
-  await assert.rejects(() => importer.postInvoice(String(inactive.id), context()), /active and belong/);
-  await control.updateCategory(fuelCategoryId, { isActive: true }, context());
+  try {
+    await assert.rejects(() => importer.postInvoice(String(inactive.id), context()), /active Direct Expense/);
+  } finally {
+    await control.updateCategory(fuelCategoryId, { isActive: true }, context());
+  }
 
   const stale = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910007' }), metadata('pilot-910007'), sourceId, context());
   importedInvoiceIds.push(String(stale.id));
@@ -526,7 +531,7 @@ test('posting revalidates active same-group categories inside the authoritative 
   const foreignCategory = await prisma.financialCategory.create({ data: { operatingGroupId: foreignGroup.id, name: `Foreign fuel ${suffix}`, type: 'DIRECT_EXPENSE' } });
   try {
     await prisma.pilotFuelProductLine.updateMany({ where: { invoiceId: String(stale.id) }, data: { categoryId: foreignCategory.id } });
-    await assert.rejects(() => importer.postInvoice(String(stale.id), context()), /active and belong/);
+    await assert.rejects(() => importer.postInvoice(String(stale.id), context()), /active Direct Expense/);
   } finally {
     await prisma.pilotFuelProductLine.updateMany({ where: { invoiceId: String(stale.id) }, data: { categoryId: fuelCategoryId } });
     await prisma.financialCategory.delete({ where: { id: foreignCategory.id } });
@@ -567,4 +572,72 @@ test('manual truck resolution rejects cross-company canonical references', async
   await assert.rejects(() => importer.resolveIssue(String(invoice.id), issue.id, { action: 'MATCH_TRUCK', truckId: foreignTruckId }, context()), FinancialValidationError);
   const unchanged = await importer.getInvoice(String(invoice.id), context());
   assert.equal((unchanged.events as Array<{ truckId: string | null }>)[0].truckId, null);
+});
+
+test('group product mappings apply to future and existing unposted invoices without overwriting manual review', async () => {
+  const alternate = await prisma.financialCategory.create({ data: { operatingGroupId: groupId, name: `Reefer alternate ${suffix}`, type: 'DIRECT_EXPENSE' } });
+  await prisma.pilotProductMapping.deleteMany({ where: { operatingGroupId: groupId, providerAccountHash, productCode: '033' } });
+  const existing = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910098', productCode: '033' }), metadata('pilot-910098'), sourceId, context());
+  importedInvoiceIds.push(String(existing.id));
+  const missing = (existing.issues as Array<{ id: string; code: string }>).find(({ code }) => code === 'MISSING_CATEGORY');
+  assert.ok(missing);
+  await assert.rejects(() => importer.resolveIssue(String(existing.id), missing.id, { action: 'SET_CATEGORY', categoryId: adjustmentCategoryId }, context()), FinancialValidationError);
+  await importer.resolveIssue(String(existing.id), missing.id, { action: 'SET_CATEGORY', categoryId: alternate.id }, context());
+  await productMappings.save('033', fuelCategoryId, context());
+  const noOpAuditBefore = await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: String(existing.id), action: 'PILOT_PRODUCT_MAPPINGS_APPLIED' } });
+  const reapplied = await importer.applyProductMappings(String(existing.id), context());
+  const manuallyReviewedLine = (reapplied.events as Array<{ productLines: Array<{ categoryId: string }> }>)[0].productLines[0];
+  assert.equal(manuallyReviewedLine.categoryId, alternate.id);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: String(existing.id), action: 'PILOT_PRODUCT_MAPPINGS_APPLIED' } }), noOpAuditBefore);
+
+  const future = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910099', productCode: '033', additionalProductCode: '033', total: 121 }), metadata('pilot-910099'), sourceId, context());
+  importedInvoiceIds.push(String(future.id));
+  const lines = (future.events as Array<{ productLines: Array<{ categoryId: string; productType: string }> }>)[0].productLines;
+  assert.equal(lines.length, 2);
+  assert.ok(lines.every(({ categoryId, productType }) => categoryId === fuelCategoryId && productType === 'REEFER_FUEL'));
+  assert.equal((future.issues as Array<{ code: string }>).some(({ code }) => code === 'MISSING_CATEGORY'), false);
+  const totalsBefore = [future.invoiceTotalMinor, future.parsedTotalMinor, future.differenceMinor];
+  const applied = await importer.applyProductMappings(String(future.id), context());
+  assert.deepEqual([applied.invoiceTotalMinor, applied.parsedTotalMinor, applied.differenceMinor], totalsBefore);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: String(future.id), action: 'PILOT_PRODUCT_MAPPINGS_APPLIED' } }), 0);
+  await importer.postInvoice(String(future.id), context());
+  await assert.rejects(() => importer.applyProductMappings(String(future.id), context()), /cannot be reclassified/);
+  await productMappings.save('033', alternate.id, context());
+  const postedAllocations = await prisma.financialAllocation.findMany({ where: { transaction: { operatingGroupId: groupId, reference: '910099' } }, select: { categoryId: true } });
+  assert.ok(postedAllocations.length > 0 && postedAllocations.every(({ categoryId }) => categoryId === fuelCategoryId));
+  const later = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910097', productCode: '033' }), metadata('pilot-910097'), sourceId, context());
+  importedInvoiceIds.push(String(later.id));
+  assert.equal((later.events as Array<{ productLines: Array<{ categoryId: string }> }>)[0].productLines[0].categoryId, alternate.id);
+
+  await productMappings.save('020', alternate.id, context());
+  const exactWins = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910096', productCode: '020' }), metadata('pilot-910096'), sourceId, context());
+  importedInvoiceIds.push(String(exactWins.id));
+  assert.equal((exactWins.events as Array<{ productLines: Array<{ categoryId: string }> }>)[0].productLines[0].categoryId, fuelCategoryId);
+  assert.equal(await prisma.pilotProductMapping.count({ where: { operatingGroupId: groupId, providerAccountHash: PILOT_GROUP_MAPPING_ACCOUNT, productCode: '033' } }), 1);
+});
+
+test('174-line real-scale mapping refresh preserves exact invoice, source, truck, and economic invariants', async () => {
+  await prisma.pilotProductMapping.deleteMany({ where: { operatingGroupId: groupId, productCode: { in: ['020', '033', '140'] } } });
+  const detailRows = Array.from({ length: 173 }, (_, index) => {
+    const productCode = ['020', '033', '140'][index % 3];
+    return ['1111222233334444', '125', '0099', 'Dallas                  TX', `SCALE-${index}`, `AUTH-${index}`, 'Driver One', '08/18', 123456 + index, productCode, 1, 300, 300, 0, 0, 0, 0, 0, 300, 300];
+  });
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '788363802', amount: 7630.73, total: 59530.73, rowsBeforeTotal: detailRows }), metadata('pilot-real-scale'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  assert.equal(preview.invoiceTotalMinor, '5953073');
+  assert.equal(preview.parsedTotalMinor, '5953073');
+  assert.equal(preview.differenceMinor, '0');
+  assert.equal((preview.issues as Array<{ code: string }>).filter(({ code }) => code === 'MISSING_CATEGORY').length, 174);
+  const eventStateBefore = (preview.events as Array<{ id: string; truckId: string | null; truckMatchStatus: string }>).map(({ id, truckId, truckMatchStatus }) => ({ id, truckId, truckMatchStatus }));
+  const documentBefore = await prisma.pilotInvoiceDocument.findFirstOrThrow({ where: { invoiceId: String(preview.id) }, include: { statement: { select: { checksumSha256: true } } } });
+  const economicsBefore = await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '788363802' } });
+
+  await Promise.all([productMappings.save('020', fuelCategoryId, context()), productMappings.save('033', fuelCategoryId, context()), productMappings.save('140', fuelCategoryId, context())]);
+  const refreshed = await importer.applyProductMappings(String(preview.id), context());
+  assert.deepEqual([refreshed.invoiceTotalMinor, refreshed.parsedTotalMinor, refreshed.differenceMinor], ['5953073', '5953073', '0']);
+  assert.equal((refreshed.issues as Array<{ code: string; status: string }>).filter(({ code, status }) => code === 'MISSING_CATEGORY' && status === 'OPEN').length, 0);
+  assert.deepEqual((refreshed.events as Array<{ id: string; truckId: string | null; truckMatchStatus: string }>).map(({ id, truckId, truckMatchStatus }) => ({ id, truckId, truckMatchStatus })), eventStateBefore);
+  assert.equal((await prisma.pilotInvoiceDocument.findUniqueOrThrow({ where: { id: documentBefore.id }, include: { statement: { select: { checksumSha256: true } } } })).statement.checksumSha256, documentBefore.statement.checksumSha256);
+  assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '788363802' } }), economicsBefore);
+  assert.equal(await prisma.financialExpectation.count({ where: { operatingGroupId: groupId, reference: '788363802' } }), 0);
 });

@@ -7,6 +7,8 @@ import { financialStatementStorage } from './financial-statement-storage';
 import { PILOT_XLS_PARSER_VERSION, pilotXlsParser, type PilotParsedInvoice, type PilotParsedRow } from './pilot-xls-parser';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 import { normalizeTruckUnitNumber } from '@/lib/fleet/truck-normalization';
+import { PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 
 type DocumentMetadata = {
   originalFilename: string;
@@ -89,8 +91,32 @@ export class PilotImportService {
     context: FinancialAuthorization,
     overrides?: ReparseOverrides,
   ) {
-    const mappings = await tx.pilotProductMapping.findMany({ where: { operatingGroupId: context.operatingGroupId, provider: 'PILOT', providerAccountHash: parsed.providerAccountHash, isActive: true }, select: { productCode: true, categoryId: true, productType: true } });
-    const mappingByCode = new Map(mappings.map((item) => [item.productCode, item]));
+    const productMappings = await tx.pilotProductMapping.findMany({
+      where: {
+        operatingGroupId: context.operatingGroupId,
+        provider: 'PILOT',
+        providerAccountHash: { in: [PILOT_GROUP_MAPPING_ACCOUNT, parsed.providerAccountHash] },
+        productCode: { in: ['020', '033', '140'] },
+        isActive: true,
+        category: { isActive: true, type: 'DIRECT_EXPENSE' },
+      },
+      select: { productCode: true, categoryId: true, productType: true, providerAccountHash: true },
+    });
+    const adjustmentMappings = await tx.pilotProductMapping.findMany({
+      where: {
+        operatingGroupId: context.operatingGroupId,
+        provider: 'PILOT',
+        providerAccountHash: parsed.providerAccountHash,
+        productCode: { startsWith: 'ADJUSTMENT:' },
+        isActive: true,
+        category: { isActive: true },
+      },
+      select: { productCode: true, categoryId: true, productType: true, providerAccountHash: true },
+    });
+    const mappings = [...productMappings, ...adjustmentMappings];
+    const mappingByCode = new Map(mappings
+      .sort((left, right) => left.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? -1 : right.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? 1 : 0)
+      .map((item) => [item.productCode, item]));
     const units = [...new Set(parsed.rows.filter((row) => row.kind === 'PRODUCT').map((row) => normalizeTruckUnitNumber(row.sourceUnitNumber)).filter(Boolean))];
     const trucks = await tx.truck.findMany({ where: { companyId: { in: context.companyIds }, unitNumberNormalized: { in: units }, status: 'ACTIVE' }, select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true } });
     const trucksByUnit = new Map<string, typeof trucks>();
@@ -452,7 +478,10 @@ export class PilotImportService {
         resolution.sourceUnitNumber = sourceEvent.sourceUnitNumber;
         resolution.affectedEventCount = String(eventIds.length);
       } else if (action === 'SET_CATEGORY' && typeof input.categoryId === 'string' && (issue.productLineId || issue.adjustmentId)) {
-        const category = await tx.financialCategory.findFirst({ where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true }, select: { id: true } });
+        const category = await tx.financialCategory.findFirst({
+          where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true, ...(issue.productLineId ? { type: 'DIRECT_EXPENSE' } : {}) },
+          select: { id: true },
+        });
         if (!category) throw new FinancialValidationError('Category is outside this operating group.');
         if (issue.productLineId) {
           await tx.pilotFuelProductLine.update({ where: { id: issue.productLineId }, data: { categoryId: category.id } });
@@ -471,6 +500,98 @@ export class PilotImportService {
       await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoiceId, action: 'PILOT_IMPORT_ISSUE_RESOLVED', metadata: { issueId, action, ...resolution } } });
       return { resolved: true, openIssueCount: open };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }
+
+  async applyProductMappings(invoiceId: string, context: FinancialAuthorization) {
+    await this.database.$transaction(async (tx) => {
+      await this.lock(tx, `pilot-invoice:${invoiceId}`);
+      const [users, groupMemberships, groupCompany, companyMembership] = await Promise.all([
+        tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
+        tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`,
+        tx.operatingGroupCompany.findUnique({ where: { companyId: context.activeCompanyId }, select: { operatingGroupId: true } }),
+        tx.companyMembership.findUnique({ where: { userId_companyId: { companyId: context.activeCompanyId, userId: context.userId } }, select: { role: true } }),
+      ]);
+      if (!users[0]?.isActive || !groupMemberships[0] || !['OWNER', 'ADMIN'].includes(groupMemberships[0].role)
+        || groupCompany?.operatingGroupId !== context.operatingGroupId || !companyMembership || !['OWNER', 'ADMIN'].includes(companyMembership.role)) {
+        throw new AuthorizationDeniedError();
+      }
+      const invoice = await tx.pilotProviderInvoice.findFirst({
+        where: { id: invoiceId, operatingGroupId: context.operatingGroupId },
+        include: {
+          documents: { where: { role: 'STRUCTURED_SOURCE' }, select: { statementId: true } },
+          events: { select: { id: true, truckId: true, truckMatchStatus: true, productLines: { select: { id: true, sourceProductCode: true, productType: true, categoryId: true, amountMinor: true } } } },
+          adjustments: { select: { id: true, signedAmountMinor: true } },
+          issues: { select: { id: true, productLineId: true, code: true, status: true, resolutionMetadata: true } },
+        },
+      });
+      if (!invoice) throw new FinancialNotFoundError();
+      if (invoice.status === 'POSTED' || invoice.postedAt || invoice.postedByUserId) throw new FinancialConflictError('Posted Pilot invoices cannot be reclassified by product mappings.');
+
+      const mappings = await tx.pilotProductMapping.findMany({
+        where: {
+          operatingGroupId: context.operatingGroupId,
+          provider: 'PILOT',
+          providerAccountHash: { in: [PILOT_GROUP_MAPPING_ACCOUNT, invoice.providerAccountHash] },
+          productCode: { in: ['020', '033', '140'] },
+          isActive: true,
+          category: { isActive: true, type: 'DIRECT_EXPENSE' },
+        },
+        select: { id: true, productCode: true, productType: true, categoryId: true, providerAccountHash: true },
+      });
+      const mappingByCode = new Map(mappings
+        .sort((left, right) => left.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? -1 : right.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? 1 : 0)
+        .map((mapping) => [mapping.productCode, mapping]));
+      const manualLineIds = new Set(invoice.issues.filter((issue) => {
+        const metadata = issue.resolutionMetadata as { action?: unknown } | null;
+        return issue.productLineId && issue.status === 'RESOLVED' && metadata?.action === 'SET_CATEGORY';
+      }).map((issue) => issue.productLineId!));
+
+      const before = {
+        invoiceTotalMinor: invoice.invoiceTotalMinor.toString(),
+        parsedTotalMinor: invoice.parsedTotalMinor.toString(),
+        differenceMinor: invoice.differenceMinor.toString(),
+        eventCount: invoice.events.length,
+        productLineCount: invoice.events.reduce((count, event) => count + event.productLines.length, 0),
+        adjustmentCount: invoice.adjustments.length,
+        matchedTruckCount: invoice.events.filter((event) => event.truckId).length,
+        openIssueCount: invoice.issues.filter((issue) => issue.status === 'OPEN').length,
+      };
+      let appliedLineCount = 0;
+      for (const line of invoice.events.flatMap((event) => event.productLines)) {
+        if (manualLineIds.has(line.id) || line.productType === 'UNKNOWN_PRODUCT') continue;
+        const mapping = mappingByCode.get(line.sourceProductCode);
+        if (!mapping) continue;
+        if (line.categoryId !== mapping.categoryId || line.productType !== mapping.productType) {
+          await tx.pilotFuelProductLine.update({ where: { id: line.id }, data: { categoryId: mapping.categoryId, productType: mapping.productType } });
+        }
+        const resolved = await tx.pilotImportIssue.updateMany({
+          where: { invoiceId, productLineId: line.id, status: 'OPEN', code: 'MISSING_CATEGORY' },
+          data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action: 'APPLY_PRODUCT_MAPPING', mappingId: mapping.id, categoryId: mapping.categoryId, productCode: mapping.productCode } },
+        });
+        if (resolved.count > 0 || line.categoryId !== mapping.categoryId) appliedLineCount += 1;
+      }
+
+      const openIssueCount = await tx.pilotImportIssue.count({ where: { invoiceId, status: 'OPEN' } });
+      const nextStatus = openIssueCount === 0 && invoice.differenceMinor === BigInt(0) ? 'READY_TO_POST' : 'NEEDS_REVIEW';
+      await tx.pilotProviderInvoice.update({ where: { id: invoiceId }, data: { status: nextStatus } });
+      if (invoice.documents[0]) await tx.financialStatement.update({
+        where: { id: invoice.documents[0].statementId },
+        data: { importStatus: nextStatus === 'READY_TO_POST' ? 'IMPORTED' : 'NEEDS_REVIEW', unresolvedRowCount: openIssueCount },
+      });
+      if (appliedLineCount > 0 || before.openIssueCount !== openIssueCount) await tx.financialAuditEvent.create({
+        data: {
+          operatingGroupId: context.operatingGroupId,
+          companyId: context.activeCompanyId,
+          actorUserId: context.userId,
+          pilotProviderInvoiceId: invoiceId,
+          action: 'PILOT_PRODUCT_MAPPINGS_APPLIED',
+          before,
+          after: { ...before, openIssueCount },
+          metadata: { appliedLineCount, manualLineCountPreserved: manualLineIds.size, mappingCount: mappingByCode.size },
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    return this.getInvoice(invoiceId, context);
   }
 
   async postInvoice(invoiceId: string, context: FinancialAuthorization) {
@@ -492,13 +613,15 @@ export class PilotImportService {
       if (!invoice) throw new FinancialNotFoundError();
       if (invoice.status === 'POSTED') return;
       if (invoice.differenceMinor !== BigInt(0) || invoice.issues.length || invoice.status !== 'READY_TO_POST') throw new FinancialConflictError('Resolve every Pilot import issue and reconcile the invoice total before posting.');
-      const categoryIds = [...new Set([
-        ...invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)),
-        ...invoice.adjustments.map((adjustment) => adjustment.categoryId),
-      ].filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const productCategoryIds = [...new Set(invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)).filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const adjustmentCategoryIds = [...new Set(invoice.adjustments.map((adjustment) => adjustment.categoryId).filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();
+      const categoryIds = [...new Set([...productCategoryIds, ...adjustmentCategoryIds])].sort();
       for (const categoryId of categoryIds) await this.lock(tx, `financial-category:${categoryId}`);
-      const validCategoryCount = await tx.financialCategory.count({ where: { id: { in: categoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } });
-      if (categoryIds.length === 0 || validCategoryCount !== categoryIds.length) throw new FinancialValidationError('Every Pilot category must be active and belong to this operating group at posting time.');
+      const [validProductCategoryCount, validAdjustmentCategoryCount] = await Promise.all([
+        tx.financialCategory.count({ where: { id: { in: productCategoryIds }, operatingGroupId: context.operatingGroupId, isActive: true, type: 'DIRECT_EXPENSE' } }),
+        tx.financialCategory.count({ where: { id: { in: adjustmentCategoryIds }, operatingGroupId: context.operatingGroupId, isActive: true } }),
+      ]);
+      if (productCategoryIds.length === 0 || validProductCategoryCount !== productCategoryIds.length || validAdjustmentCategoryCount !== adjustmentCategoryIds.length) throw new FinancialValidationError('Every Pilot product category must be an active Direct Expense and every adjustment category must be active in this operating group at posting time.');
       const truckIds = [...new Set(invoice.events.map(({ truckId }) => truckId).filter((id): id is string => Boolean(id)))];
       const postingTrucks = await tx.truck.findMany({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' }, select: { id: true, companyId: true } });
       const postingCompanyIds = [...new Set(postingTrucks.map(({ companyId }) => companyId))];
