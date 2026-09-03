@@ -116,6 +116,83 @@ test('category parents cannot cross operating groups', async () => {
   await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
 });
 
+test('category lifecycle records truthful atomic audits and skips exact no-ops', async () => {
+  const parent = await service.createCategory({ name: `Audit parent ${suffix}`, type: 'OVERHEAD' }, context(adminId, 'ADMIN'));
+  const category = await service.createCategory({ name: `Audit child ${suffix}`, type: 'OTHER' }, context(adminId, 'ADMIN'));
+  const created = await prisma.financialAuditEvent.findFirstOrThrow({ where: { action: 'FINANCIAL_CATEGORY_CREATED', metadata: { path: ['categoryId'], equals: category.id } } });
+  assert.equal(created.actorUserId, adminId);
+  assert.deepEqual(created.before, null);
+  assert.equal((created.after as Record<string, unknown>).name, `Audit child ${suffix}`);
+
+  const auditCount = await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: category.id } } });
+  const unchanged = await service.updateCategory(category.id, { name: category.name, type: category.type, parentCategoryId: null, isActive: true }, context(adminId, 'ADMIN'));
+  assert.equal(unchanged.updatedAt.getTime(), category.updatedAt.getTime());
+  assert.equal(await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: category.id } } }), auditCount);
+
+  await service.updateCategory(category.id, { name: `Audited child ${suffix}`, type: 'DIRECT_EXPENSE' }, context(adminId, 'ADMIN'));
+  const updated = await prisma.financialAuditEvent.findFirstOrThrow({ where: { action: 'FINANCIAL_CATEGORY_UPDATED', metadata: { path: ['categoryId'], equals: category.id } }, orderBy: { occurredAt: 'desc' } });
+  assert.deepEqual((updated.metadata as Record<string, unknown>).changedFields, ['name', 'type']);
+  assert.equal((updated.before as Record<string, unknown>).name, `Audit child ${suffix}`);
+  assert.equal((updated.after as Record<string, unknown>).name, `Audited child ${suffix}`);
+
+  await service.updateCategory(category.id, { parentCategoryId: parent.id }, context(adminId, 'ADMIN'));
+  await service.updateCategory(category.id, { isActive: false }, context(adminId, 'ADMIN'));
+  await service.updateCategory(category.id, { isActive: true }, context(adminId, 'ADMIN'));
+  const actions = (await prisma.financialAuditEvent.findMany({ where: { metadata: { path: ['categoryId'], equals: category.id } }, orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }], select: { action: true } })).map(({ action }) => action);
+  assert.deepEqual(actions, ['FINANCIAL_CATEGORY_CREATED', 'FINANCIAL_CATEGORY_UPDATED', 'FINANCIAL_CATEGORY_REPARENTED', 'FINANCIAL_CATEGORY_DEACTIVATED', 'FINANCIAL_CATEGORY_ACTIVATED']);
+
+  await service.updateCategory(category.id, { parentCategoryId: null }, context(adminId, 'ADMIN'));
+  assert.deepEqual(await service.deleteCategory(category.id, context()), { deleted: true });
+  assert.equal(await prisma.financialCategory.findUnique({ where: { id: category.id } }), null);
+  const deleted = await prisma.financialAuditEvent.findFirstOrThrow({ where: { action: 'FINANCIAL_CATEGORY_DELETED', metadata: { path: ['deletedCategoryId'], equals: category.id } } });
+  assert.equal((deleted.before as Record<string, unknown>).categoryId, category.id);
+});
+
+test('category concurrent partial updates serialize without losing either change', async () => {
+  const parent = await service.createCategory({ name: `Concurrent parent ${suffix}`, type: 'OVERHEAD' }, context());
+  const category = await service.createCategory({ name: `Concurrent child ${suffix}`, type: 'OTHER' }, context());
+  await Promise.all([
+    service.updateCategory(category.id, { name: `Concurrent renamed ${suffix}` }, context()),
+    service.updateCategory(category.id, { parentCategoryId: parent.id }, context()),
+  ]);
+  const stored = await prisma.financialCategory.findUniqueOrThrow({ where: { id: category.id } });
+  assert.equal(stored.name, `Concurrent renamed ${suffix}`);
+  assert.equal(stored.parentCategoryId, parent.id);
+  const audits = await prisma.financialAuditEvent.findMany({ where: { metadata: { path: ['categoryId'], equals: category.id }, action: { in: ['FINANCIAL_CATEGORY_UPDATED', 'FINANCIAL_CATEGORY_REPARENTED'] } } });
+  assert.equal(audits.length, 2);
+  assert.ok(audits.some((later) => audits.some((earlier) => earlier.id !== later.id && JSON.stringify(earlier.after) === JSON.stringify(later.before))));
+});
+
+test('category mutations revalidate current authorization and preserve tenant boundaries', async () => {
+  const category = await service.createCategory({ name: `Authorization category ${suffix}`, type: 'OTHER' }, context(adminId, 'ADMIN'));
+  await assert.rejects(service.deleteCategory(category.id, context(adminId, 'ADMIN')), AuthorizationDeniedError);
+  await assert.rejects(service.updateCategory(category.id, { name: 'Forged member update' }, { ...context(adminId, 'ADMIN'), userId: memberId }), AuthorizationDeniedError);
+  await prisma.user.update({ where: { id: adminId }, data: { isActive: false } });
+  await assert.rejects(service.updateCategory(category.id, { name: 'Inactive update' }, context(adminId, 'ADMIN')), AuthorizationDeniedError);
+  await prisma.user.update({ where: { id: adminId }, data: { isActive: true } });
+  const foreignGroup = await prisma.operatingGroup.create({ data: { name: `Audit foreign ${suffix}` } });
+  const foreignCategory = await prisma.financialCategory.create({ data: { operatingGroupId: foreignGroup.id, name: `Foreign audit ${suffix}`, type: 'OTHER' } });
+  await assert.rejects(service.updateCategory(foreignCategory.id, { name: 'Cross-group update' }, context()), FinancialNotFoundError);
+  await prisma.financialCategory.delete({ where: { id: foreignCategory.id } });
+  await prisma.operatingGroup.delete({ where: { id: foreignGroup.id } });
+  assert.equal(await prisma.financialAuditEvent.count({ where: { metadata: { path: ['categoryId'], equals: category.id }, action: 'FINANCIAL_CATEGORY_UPDATED' } }), 0);
+});
+
+test('category write rolls back when its audit cannot be persisted', async () => {
+  const rejectedName = `Audit rollback ${suffix}`;
+  const trigger = `reject_category_audit_${suffix.replaceAll('-', '_')}`;
+  await prisma.$executeRawUnsafe(`CREATE FUNCTION ${trigger}() RETURNS trigger AS $$ BEGIN IF NEW.action = 'FINANCIAL_CATEGORY_CREATED' AND NEW.after->>'name' = '${rejectedName}' THEN RAISE EXCEPTION 'forced category audit rollback'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql`);
+  await prisma.$executeRawUnsafe(`CREATE TRIGGER ${trigger} BEFORE INSERT ON "FinancialAuditEvent" FOR EACH ROW EXECUTE FUNCTION ${trigger}()`);
+  try {
+    await assert.rejects(service.createCategory({ name: rejectedName, type: 'OTHER' }, context()), /forced category audit rollback/);
+  } finally {
+    await prisma.$executeRawUnsafe(`DROP TRIGGER ${trigger} ON "FinancialAuditEvent"`);
+    await prisma.$executeRawUnsafe(`DROP FUNCTION ${trigger}()`);
+  }
+  assert.equal(await prisma.financialCategory.count({ where: { operatingGroupId: groupId, name: rejectedName } }), 0);
+  assert.equal(await prisma.financialAuditEvent.count({ where: { action: 'FINANCIAL_CATEGORY_CREATED', after: { path: ['name'], equals: rejectedName } } }), 0);
+});
+
 test('program is an independent allocation dimension and does not duplicate a transaction', async () => {
   const program = await service.createProgram({ code: `ADMIN-${suffix}`, name: `Admin program ${suffix}`, type: 'ADMIN' }, context());
   const transaction = await service.createTransaction({ transactionDate: '2026-08-18', amount: '50.00', direction: 'OUTFLOW', description: 'MVR expense', categoryId, currency: 'USD' }, context());
