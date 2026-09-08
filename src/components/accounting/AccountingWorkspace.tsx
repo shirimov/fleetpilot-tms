@@ -8,7 +8,7 @@ import ExpectationBankReconciliation from './ExpectationBankReconciliation';
 
 type Tab = 'overview' | 'audit' | 'statements' | 'pilot-imports' | 'transactions' | 'sources' | 'categories' | 'programs' | 'admin-fees' | 'group';
 type Row = Record<string, unknown>;
-type Dimensions = { companies: Row[]; trucks: Row[]; trailers: Row[]; drivers: Row[]; employees: Row[]; loads: Row[]; customers: Row[]; parties: Row[]; programs: Row[] };
+type Dimensions = { companies: Row[]; trucks: Row[]; pilotTrucks: Row[]; trailers: Row[]; drivers: Row[]; employees: Row[]; loads: Row[]; customers: Row[]; parties: Row[]; programs: Row[] };
 type Overview = { inflowMinor: string; outflowMinor: string; operatingNetMinor: string; reconciledMinor: string; unresolvedMinor: string; reconciliationBasisPoints: number | null; completenessBasisPoints: number | null; unresolvedTransactionCount: number; statementsRegistered: number; statementsImportedSuccessfully: number; statementsImportFailed: number; statementsPending: number; rawRecordsImported: number; transactionsNeedingReview: number; fullyReconciledCount: number; transferCount: number; exceptions: Record<string, number> };
 const tabs: Array<[Tab, string]> = [['overview', 'Overview'], ['audit', 'Audit Center'], ['statements', 'Statements'], ['pilot-imports', 'Pilot Fuel Imports'], ['transactions', 'Transactions'], ['sources', 'Sources'], ['categories', 'Categories'], ['programs', 'Programs'], ['admin-fees', 'Admin Fees'], ['group', 'Operating Group']];
 const input = 'rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm';
@@ -49,7 +49,7 @@ export default function AccountingWorkspace() {
   const [transactions, setTransactions] = useState<Row[]>([]);
   const [records, setRecords] = useState<Row[]>([]);
   const [expectations, setExpectations] = useState<Row[]>([]);
-  const [dimensions, setDimensions] = useState<Dimensions>({ companies: [], trucks: [], trailers: [], drivers: [], employees: [], loads: [], customers: [], parties: [], programs: [] });
+  const [dimensions, setDimensions] = useState<Dimensions>({ companies: [], trucks: [], pilotTrucks: [], trailers: [], drivers: [], employees: [], loads: [], customers: [], parties: [], programs: [] });
   const [programs, setPrograms] = useState<Row[]>([]);
   const [adminFees, setAdminFees] = useState<Row[]>([]);
   const [role, setRole] = useState('ADMIN');
@@ -96,7 +96,7 @@ export default function AccountingWorkspace() {
     {tab === 'programs' && <ProgramView rows={programs} busy={busy} submit={submit} refresh={refresh} setError={setError} canDelete={role === 'OWNER'} />}
     {tab === 'admin-fees' && <AdminFeeView rows={adminFees} dimensions={dimensions} busy={busy} submit={submit} refresh={refresh} setError={setError} canDelete={role === 'OWNER'} />}
     {tab === 'statements' && <StatementView rows={statements} sources={sources} busy={busy} submit={submit} />}
-    {tab === 'pilot-imports' && <PilotImportWorkspace sources={sources} categories={categories} trucks={dimensions.trucks} />}
+    {tab === 'pilot-imports' && <PilotImportWorkspace sources={sources} categories={categories} trucks={dimensions.pilotTrucks} />}
     {tab === 'group' && <OperatingGroupCompanies groupName={String(group.name)} onChanged={refresh} />}
     {tab === 'transactions' && <TransactionView rows={transactions} records={records} categories={categories} sources={sources} dimensions={dimensions} busy={busy} submit={submit} refresh={refresh} setError={setError} exceptionFilter={exceptionFilter} canDelete={role === 'OWNER'} />}
   </main>;

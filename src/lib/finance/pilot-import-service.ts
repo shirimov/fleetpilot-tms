@@ -29,7 +29,18 @@ type IssueInput = {
 
 type ReparseOverrides = {
   categoryBySourceRow: Map<number, string>;
-  truckByEventKey: Map<string, string>;
+  truckByEventKey: Map<string, {
+    truckId: string;
+    historicalInactiveReviewedAt: Date | null;
+    historicalInactiveReviewedByUserId: string | null;
+    historicalInactiveReviewedCompanyId: string | null;
+    historicalInactiveReviewedTruckId: string | null;
+  }>;
+};
+
+type PilotTruckCandidate = {
+  id: string; unitNumber: string; unitNumberNormalized: string | null; companyId: string;
+  status: 'ACTIVE' | 'INACTIVE';
 };
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value, (_, item) => typeof item === 'bigint' ? item.toString() : item));
@@ -118,7 +129,7 @@ export class PilotImportService {
       .sort((left, right) => left.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? -1 : right.providerAccountHash === PILOT_GROUP_MAPPING_ACCOUNT ? 1 : 0)
       .map((item) => [item.productCode, item]));
     const units = [...new Set(parsed.rows.filter((row) => row.kind === 'PRODUCT').map((row) => normalizeTruckUnitNumber(row.sourceUnitNumber)).filter(Boolean))];
-    const trucks = await tx.truck.findMany({ where: { companyId: { in: context.companyIds }, unitNumberNormalized: { in: units }, status: 'ACTIVE' }, select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true } });
+    const trucks = await tx.truck.findMany({ where: { companyId: { in: context.companyIds }, unitNumberNormalized: { in: units }, status: { in: ['ACTIVE', 'INACTIVE'] } }, select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true, status: true } }) as PilotTruckCandidate[];
     const trucksByUnit = new Map<string, typeof trucks>();
     for (const truck of trucks) {
       const unit = truck.unitNumberNormalized ?? normalizeTruckUnitNumber(truck.unitNumber);
@@ -152,19 +163,27 @@ export class PilotImportService {
       let eventId = eventIds.get(stableEventKey);
       if (!eventId) {
         const candidates = trucksByUnit.get(normalizeTruckUnitNumber(row.sourceUnitNumber)) ?? [];
-        const preservedTruckId = row.eventKeyHash ? overrides?.truckByEventKey.get(row.eventKeyHash) : undefined;
-        const matchStatus = preservedTruckId ? 'MANUALLY_MATCHED' : candidates.length === 1 ? 'MATCHED' : candidates.length > 1 ? 'AMBIGUOUS' : 'UNMATCHED';
+        const preservedTruck = row.eventKeyHash ? overrides?.truckByEventKey.get(row.eventKeyHash) : undefined;
+        const preservedTruckId = preservedTruck?.truckId;
+        const activeCandidates = candidates.filter(({ status }) => status === 'ACTIVE');
+        const matchStatus = preservedTruckId ? 'MANUALLY_MATCHED' : candidates.length === 1 && activeCandidates.length === 1 ? 'MATCHED' : candidates.length > 1 ? 'AMBIGUOUS' : 'UNMATCHED';
         const event = await tx.pilotFuelingEvent.create({ data: {
           invoiceId, eventKeyHash: stableEventKey, ticketHash: hash([row.ticketReference]), authorizationHash: hash([row.authorizationReference]), cardLastFour: lastFour(row.cardReference),
           sourceUnitNumber: row.sourceUnitNumber, locationNumber: row.locationNumber || null, city: row.city || null, state: row.state || null,
           purchaseOrderContext: row.purchaseOrderContext || null, sourceDriverName: row.sourceDriverName, transactionDate: row.transactionDate ?? parsed.billingDate,
-          odometer: row.odometer, truckId: preservedTruckId ?? (candidates.length === 1 ? candidates[0].id : null), truckMatchStatus: matchStatus,
+          odometer: row.odometer, truckId: preservedTruckId ?? (matchStatus === 'MATCHED' ? activeCandidates[0].id : null), truckMatchStatus: matchStatus,
+          historicalInactiveReviewedAt: preservedTruck?.historicalInactiveReviewedAt,
+          historicalInactiveReviewedByUserId: preservedTruck?.historicalInactiveReviewedByUserId,
+          historicalInactiveReviewedCompanyId: preservedTruck?.historicalInactiveReviewedCompanyId,
+          historicalInactiveReviewedTruckId: preservedTruck?.historicalInactiveReviewedTruckId,
         } });
         eventId = event.id; eventIds.set(stableEventKey, event.id);
         if (!row.eventKeyHash) issues.push({ code: 'INVALID_STRUCTURE', message: `Row ${row.sourceRowIndex} lacks a stable ticket/authorization identity.`, eventId: event.id });
         if (seenEvents.has(stableEventKey)) issues.push({ code: 'DUPLICATE_EVENT', message: `Row ${row.sourceRowIndex} duplicates a fueling event.`, eventId: event.id });
         seenEvents.add(stableEventKey);
-        if (matchStatus === 'UNMATCHED') issues.push({ code: 'UNMATCHED_TRUCK', message: `Unit ${row.sourceUnitNumber || '(blank)'} did not match a truck.`, eventId: event.id });
+        if (matchStatus === 'UNMATCHED') issues.push({ code: 'UNMATCHED_TRUCK', message: candidates.length === 1 && candidates[0].status === 'INACTIVE'
+          ? `Unit ${row.sourceUnitNumber} has one authorized inactive Truck candidate and requires explicit historical attribution review.`
+          : `Unit ${row.sourceUnitNumber || '(blank)'} did not match a truck.`, eventId: event.id });
         if (matchStatus === 'AMBIGUOUS') issues.push({ code: 'AMBIGUOUS_TRUCK', message: `Unit ${row.sourceUnitNumber} matched more than one truck.`, eventId: event.id });
         if (!row.transactionDate) issues.push({ code: 'INVALID_DATE', message: `Row ${row.sourceRowIndex} has an invalid transaction date.`, eventId: event.id });
         if (row.outsidePeriod) issues.push({ code: 'OUTSIDE_PERIOD', message: `Row ${row.sourceRowIndex} falls outside the derived invoice period.`, eventId: event.id });
@@ -208,7 +227,7 @@ export class PilotImportService {
   async getInvoice(invoiceId: string, context: FinancialAuthorization) {
     const invoice = await this.database.pilotProviderInvoice.findFirst({ where: { id: invoiceId, operatingGroupId: context.operatingGroupId }, include: {
       source: { select: { id: true, name: true } }, documents: { include: { statement: { select: { id: true, originalFilename: true } } } },
-      events: { orderBy: [{ transactionDate: 'asc' }, { id: 'asc' }], include: { truck: { select: { id: true, unitNumber: true, companyId: true, company: { select: { name: true } } } }, productLines: { include: { category: { select: { id: true, name: true } } } } } },
+      events: { orderBy: [{ transactionDate: 'asc' }, { id: 'asc' }], include: { truck: { select: { id: true, unitNumber: true, companyId: true, status: true, company: { select: { name: true } } } }, productLines: { include: { category: { select: { id: true, name: true } } } } } },
       adjustments: { include: { category: { select: { id: true, name: true } } } }, issues: { orderBy: [{ status: 'asc' }, { createdAt: 'asc' }] },
     } });
     if (!invoice) throw new FinancialNotFoundError();
@@ -217,10 +236,14 @@ export class PilotImportService {
       canReparse: invoice.status === 'NEEDS_REVIEW' && invoice.parseVersion !== PILOT_XLS_PARSER_VERSION,
       canRematchTrucks: invoice.status !== 'POSTED' && invoice.issues.some((issue) => issue.status === 'OPEN' && ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'].includes(issue.code)),
     });
-    serialized.events = serialized.events.map((event: { truck: { companyId: string } | null }) => ({
-      ...event,
-      truck: event.truck && context.companyIds.includes(event.truck.companyId) ? event.truck : null,
-    }));
+    serialized.events = serialized.events.map((event: Record<string, unknown> & { truck: { companyId: string } | null }) => {
+      const safeEvent = { ...event };
+      delete safeEvent.historicalInactiveReviewedAt;
+      delete safeEvent.historicalInactiveReviewedByUserId;
+      delete safeEvent.historicalInactiveReviewedCompanyId;
+      delete safeEvent.historicalInactiveReviewedTruckId;
+      return { ...safeEvent, truck: event.truck && context.companyIds.includes(event.truck.companyId) ? event.truck : null };
+    });
     return serialized;
   }
 
@@ -291,13 +314,27 @@ export class PilotImportService {
         .filter((event) => event.truckMatchStatus === 'MANUALLY_MATCHED' && event.truckId)
         .map((event) => event.truckId!))];
       const validManualTrucks = await tx.truck.findMany({
-        where: { id: { in: manualTruckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' },
-        select: { id: true },
+        where: { id: { in: manualTruckIds }, companyId: { in: context.companyIds }, status: { in: ['ACTIVE', 'INACTIVE'] } },
+        select: { id: true, status: true, companyId: true },
       });
       if (validManualTrucks.length !== manualTruckIds.length) throw new FinancialConflictError('A preserved manual truck match is no longer valid for this operating group.');
+      const validManualTruckById = new Map(validManualTrucks.map((truck) => [truck.id, truck]));
+      const invalidInactiveReview = invoice.events.some((event) => {
+        if (!event.truckId || validManualTruckById.get(event.truckId)?.status !== 'INACTIVE') return false;
+        return !event.historicalInactiveReviewedAt || !event.historicalInactiveReviewedByUserId
+          || event.historicalInactiveReviewedCompanyId !== validManualTruckById.get(event.truckId)?.companyId
+          || event.historicalInactiveReviewedTruckId !== event.truckId;
+      });
+      if (invalidInactiveReview) throw new FinancialConflictError('A preserved inactive Truck attribution lacks explicit historical review provenance.');
       const truckByEventKey = new Map(invoice.events
         .filter((event) => event.truckMatchStatus === 'MANUALLY_MATCHED' && event.truckId)
-        .map((event) => [event.eventKeyHash, event.truckId!]));
+        .map((event) => [event.eventKeyHash, {
+          truckId: event.truckId!,
+          historicalInactiveReviewedAt: event.historicalInactiveReviewedAt,
+          historicalInactiveReviewedByUserId: event.historicalInactiveReviewedByUserId,
+          historicalInactiveReviewedCompanyId: event.historicalInactiveReviewedCompanyId,
+          historicalInactiveReviewedTruckId: event.historicalInactiveReviewedTruckId,
+        }]));
 
       const categoryRows = [
         ...invoice.events.flatMap((event) => event.productLines.map((line) => ({ sourceRowIndex: line.importRecord.sourceRowIndex, categoryId: line.categoryId }))),
@@ -407,9 +444,9 @@ export class PilotImportService {
       });
       const units = [...new Set(events.map(({ sourceUnitNumber }) => normalizeTruckUnitNumber(sourceUnitNumber)).filter(Boolean))];
       const trucks = await tx.truck.findMany({
-        where: { companyId: { in: context.companyIds }, unitNumberNormalized: { in: units }, status: 'ACTIVE' },
-        select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true },
-      });
+        where: { companyId: { in: context.companyIds }, unitNumberNormalized: { in: units }, status: { in: ['ACTIVE', 'INACTIVE'] } },
+        select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true, status: true },
+      }) as PilotTruckCandidate[];
       const trucksByUnit = new Map<string, typeof trucks>();
       for (const truck of trucks) {
         const unit = truck.unitNumberNormalized ?? normalizeTruckUnitNumber(truck.unitNumber);
@@ -420,15 +457,16 @@ export class PilotImportService {
       const matchedTrucks: Array<{ sourceUnitNumber: string; truckId: string; companyId: string; occurrenceCount: number }> = [];
       for (const event of events) {
         const candidates = trucksByUnit.get(normalizeTruckUnitNumber(event.sourceUnitNumber)) ?? [];
-        if (candidates.length === 1) {
-          await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: candidates[0].id, truckMatchStatus: 'MATCHED' } });
+        const activeCandidates = candidates.filter(({ status }) => status === 'ACTIVE');
+        if (candidates.length === 1 && activeCandidates.length === 1) {
+          await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: activeCandidates[0].id, truckMatchStatus: 'MATCHED' } });
           await tx.pilotImportIssue.updateMany({
             where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } },
-            data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action: 'AUTOMATIC_REMATCH', truckId: candidates[0].id } },
+            data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action: 'AUTOMATIC_REMATCH', truckId: activeCandidates[0].id } },
           });
-          const prior = matchedTrucks.find((item) => item.sourceUnitNumber === event.sourceUnitNumber && item.truckId === candidates[0].id);
+          const prior = matchedTrucks.find((item) => item.sourceUnitNumber === event.sourceUnitNumber && item.truckId === activeCandidates[0].id);
           if (prior) prior.occurrenceCount += 1;
-          else matchedTrucks.push({ sourceUnitNumber: event.sourceUnitNumber, truckId: candidates[0].id, companyId: candidates[0].companyId, occurrenceCount: 1 });
+          else matchedTrucks.push({ sourceUnitNumber: event.sourceUnitNumber, truckId: activeCandidates[0].id, companyId: activeCandidates[0].companyId, occurrenceCount: 1 });
           matched += 1;
         } else if (candidates.length > 1) {
           await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: null, truckMatchStatus: 'AMBIGUOUS' } });
@@ -438,7 +476,9 @@ export class PilotImportService {
           ambiguous += 1;
         } else {
           await tx.pilotFuelingEvent.update({ where: { id: event.id }, data: { truckId: null, truckMatchStatus: 'UNMATCHED' } });
-          const message = `Unit ${event.sourceUnitNumber || '(blank)'} did not match an authorized truck.`;
+          const message = candidates.length === 1 && candidates[0].status === 'INACTIVE'
+            ? `Unit ${event.sourceUnitNumber} has one authorized inactive Truck candidate and requires explicit historical attribution review.`
+            : `Unit ${event.sourceUnitNumber || '(blank)'} did not match an authorized truck.`;
           const updated = await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: event.id, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { code: 'UNMATCHED_TRUCK', message } });
           if (updated.count === 0) await tx.pilotImportIssue.create({ data: { invoiceId, eventId: event.id, code: 'UNMATCHED_TRUCK', message } });
           unmatched += 1;
@@ -456,27 +496,70 @@ export class PilotImportService {
   }
 
   async resolveIssue(invoiceId: string, issueId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.resolveIssueTransaction(invoiceId, issueId, input, context);
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'P2034' || attempt === 2) throw error;
+      }
+    }
+    throw new FinancialConflictError('Pilot issue resolution could not be serialized safely.');
+  }
+
+  private async resolveIssueTransaction(invoiceId: string, issueId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
     return this.database.$transaction(async (tx) => {
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
-      const issue = await tx.pilotImportIssue.findFirst({ where: { id: issueId, invoiceId, invoice: { operatingGroupId: context.operatingGroupId }, status: 'OPEN' }, include: { invoice: { select: { status: true } } } });
+      const issue = await tx.pilotImportIssue.findFirst({ where: { id: issueId, invoiceId, invoice: { operatingGroupId: context.operatingGroupId } }, include: { invoice: { select: { status: true } } } });
       if (!issue) throw new FinancialNotFoundError();
       if (issue.invoice.status === 'POSTED') throw new FinancialConflictError('Posted Pilot invoices cannot be edited.');
       const action = input.action;
+      if (issue.status === 'RESOLVED') {
+        const metadata = issue.resolutionMetadata as Record<string, unknown> | null;
+        if (action === 'MATCH_TRUCK' && metadata?.action === action && metadata.truckId === input.truckId
+          && metadata.historicalInactiveAttribution === (input.historicalInactiveAttribution === true)) {
+          return { resolved: true, openIssueCount: await tx.pilotImportIssue.count({ where: { invoiceId, status: 'OPEN' } }) };
+        }
+        throw new FinancialConflictError('This Pilot issue was already resolved with a different decision.');
+      }
       const resolution: Record<string, string> = {};
       if (action === 'MATCH_TRUCK' && issue.eventId && typeof input.truckId === 'string') {
-        const truck = await tx.truck.findFirst({ where: { id: input.truckId, companyId: { in: context.companyIds }, status: 'ACTIVE' }, select: { id: true, unitNumber: true, companyId: true } });
+        const truck = await tx.truck.findFirst({ where: { id: input.truckId, status: { in: ['ACTIVE', 'INACTIVE'] } }, select: { id: true, unitNumber: true, unitNumberNormalized: true, companyId: true, status: true } });
         if (!truck) throw new FinancialValidationError('Truck is outside your authorized Accounting company scope.');
+        const [users, groupMemberships, groupCompany, companyMembership] = await Promise.all([
+          tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
+          tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`,
+          tx.operatingGroupCompany.findUnique({ where: { companyId: truck.companyId }, select: { operatingGroupId: true } }),
+          tx.companyMembership.findUnique({ where: { userId_companyId: { companyId: truck.companyId, userId: context.userId } }, select: { role: true } }),
+        ]);
+        if (!users[0]?.isActive || !groupMemberships[0] || !['OWNER', 'ADMIN'].includes(groupMemberships[0].role)
+          || groupCompany?.operatingGroupId !== context.operatingGroupId || !companyMembership || !['OWNER', 'ADMIN'].includes(companyMembership.role)) {
+          throw new AuthorizationDeniedError();
+        }
         const sourceEvent = await tx.pilotFuelingEvent.findUniqueOrThrow({ where: { id: issue.eventId }, select: { sourceUnitNumber: true } });
+        const sourceUnitNumberNormalized = normalizeTruckUnitNumber(sourceEvent.sourceUnitNumber);
+        if ((truck.unitNumberNormalized ?? normalizeTruckUnitNumber(truck.unitNumber)) !== sourceUnitNumberNormalized) throw new FinancialValidationError('Selected Truck unit must exactly match the Pilot source unit.');
+        const historicalInactiveAttribution = truck.status === 'INACTIVE';
+        if (historicalInactiveAttribution && input.historicalInactiveAttribution !== true) throw new FinancialValidationError('Explicit confirmation is required to attribute historical Pilot activity to an inactive Truck.');
         const sameUnitEvents = await tx.pilotFuelingEvent.findMany({
           where: { invoiceId, truckMatchStatus: { in: ['UNMATCHED', 'AMBIGUOUS'] } }, select: { id: true, sourceUnitNumber: true },
         });
         const eventIds = sameUnitEvents.filter((event) => normalizeTruckUnitNumber(event.sourceUnitNumber) === normalizeTruckUnitNumber(sourceEvent.sourceUnitNumber)).map(({ id }) => id);
-        await tx.pilotFuelingEvent.updateMany({ where: { id: { in: eventIds } }, data: { truckId: truck.id, truckMatchStatus: 'MANUALLY_MATCHED' } });
-        await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: { in: eventIds }, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action, truckId: truck.id, sourceUnitNumber: sourceEvent.sourceUnitNumber } } });
+        const reviewedAt = new Date();
+        await tx.pilotFuelingEvent.updateMany({ where: { id: { in: eventIds } }, data: {
+          truckId: truck.id,
+          truckMatchStatus: 'MANUALLY_MATCHED',
+          historicalInactiveReviewedAt: historicalInactiveAttribution ? reviewedAt : null,
+          historicalInactiveReviewedByUserId: historicalInactiveAttribution ? context.userId : null,
+          historicalInactiveReviewedCompanyId: historicalInactiveAttribution ? truck.companyId : null,
+          historicalInactiveReviewedTruckId: historicalInactiveAttribution ? truck.id : null,
+        } });
+        await tx.pilotImportIssue.updateMany({ where: { invoiceId, eventId: { in: eventIds }, status: 'OPEN', code: { in: ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'] } }, data: { status: 'RESOLVED', resolvedByUserId: context.userId, resolvedAt: new Date(), resolutionMetadata: { action, truckId: truck.id, sourceUnitNumber: sourceEvent.sourceUnitNumber, sourceUnitNumberNormalized, truckStatus: truck.status, historicalInactiveAttribution } } });
         resolution.truckId = truck.id;
         resolution.companyId = truck.companyId;
         resolution.sourceUnitNumber = sourceEvent.sourceUnitNumber;
         resolution.affectedEventCount = String(eventIds.length);
+        resolution.sourceUnitNumberNormalized = sourceUnitNumberNormalized;
+        resolution.truckStatus = truck.status;
       } else if (action === 'SET_CATEGORY' && typeof input.categoryId === 'string' && (issue.productLineId || issue.adjustmentId)) {
         const category = await tx.financialCategory.findFirst({
           where: { id: input.categoryId, operatingGroupId: context.operatingGroupId, isActive: true, ...(issue.productLineId ? { type: 'DIRECT_EXPENSE' } : {}) },
@@ -497,7 +580,7 @@ export class PilotImportService {
       const open = await tx.pilotImportIssue.count({ where: { invoiceId, status: 'OPEN' } });
       const invoice = await tx.pilotProviderInvoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { differenceMinor: true } });
       await tx.pilotProviderInvoice.update({ where: { id: invoiceId }, data: { status: open === 0 && invoice.differenceMinor === BigInt(0) ? 'READY_TO_POST' : 'NEEDS_REVIEW' } });
-      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoiceId, action: 'PILOT_IMPORT_ISSUE_RESOLVED', metadata: { issueId, action, ...resolution } } });
+      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoiceId, action: 'PILOT_IMPORT_ISSUE_RESOLVED', metadata: { issueId, action, ...resolution, ...(action === 'MATCH_TRUCK' ? { historicalInactiveAttribution: resolution.truckStatus === 'INACTIVE' } : {}) } } });
       return { resolved: true, openIssueCount: open };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
@@ -623,17 +706,34 @@ export class PilotImportService {
       ]);
       if (productCategoryIds.length === 0 || validProductCategoryCount !== productCategoryIds.length || validAdjustmentCategoryCount !== adjustmentCategoryIds.length) throw new FinancialValidationError('Every Pilot product category must be an active Direct Expense and every adjustment category must be active in this operating group at posting time.');
       const truckIds = [...new Set(invoice.events.map(({ truckId }) => truckId).filter((id): id is string => Boolean(id)))];
-      const postingTrucks = await tx.truck.findMany({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: 'ACTIVE' }, select: { id: true, companyId: true } });
+      const postingTrucks = await tx.truck.findMany({ where: { id: { in: truckIds }, companyId: { in: context.companyIds }, status: { in: ['ACTIVE', 'INACTIVE'] } }, select: { id: true, companyId: true, unitNumber: true, unitNumberNormalized: true, status: true } });
       const postingCompanyIds = [...new Set(postingTrucks.map(({ companyId }) => companyId))];
-      const [currentGroupMembership, currentCompanyMembershipCount, currentGroupCompanyCount] = await Promise.all([
+      const [currentUser, currentGroupMembership, currentCompanyMembershipCount, currentGroupCompanyCount] = await Promise.all([
+        tx.user.findUnique({ where: { id: context.userId }, select: { isActive: true } }),
         tx.operatingGroupMembership.findUnique({ where: { operatingGroupId_userId: { operatingGroupId: context.operatingGroupId, userId: context.userId } }, select: { role: true } }),
         tx.companyMembership.count({ where: { userId: context.userId, companyId: { in: postingCompanyIds }, role: { in: ['ADMIN', 'OWNER'] } } }),
         tx.operatingGroupCompany.count({ where: { operatingGroupId: context.operatingGroupId, companyId: { in: postingCompanyIds } } }),
       ]);
       if (invoice.events.some(({ truckId }) => !truckId) || postingTrucks.length !== truckIds.length
-        || !currentGroupMembership || !['ADMIN', 'OWNER'].includes(currentGroupMembership.role)
+        || !currentUser?.isActive || !currentGroupMembership || !['ADMIN', 'OWNER'].includes(currentGroupMembership.role)
         || currentCompanyMembershipCount !== postingCompanyIds.length || currentGroupCompanyCount !== postingCompanyIds.length) {
-        throw new FinancialValidationError('Every fueling event must have an active truck in your current authorized Accounting company scope at posting time.');
+        throw new FinancialValidationError('Every fueling event must have an eligible Truck in your current authorized Accounting company scope at posting time.');
+      }
+      const postingTruckById = new Map(postingTrucks.map((truck) => [truck.id, truck]));
+      for (const event of invoice.events) {
+        const truck = event.truckId ? postingTruckById.get(event.truckId) : undefined;
+        if (!truck || (truck.unitNumberNormalized ?? normalizeTruckUnitNumber(truck.unitNumber)) !== normalizeTruckUnitNumber(event.sourceUnitNumber)) {
+          throw new FinancialValidationError('Every Pilot Truck attribution must still exactly match its source unit at posting time.');
+        }
+        if (truck.status === 'INACTIVE') {
+          if (event.truckMatchStatus !== 'MANUALLY_MATCHED' || !event.historicalInactiveReviewedAt
+            || !event.historicalInactiveReviewedByUserId || event.historicalInactiveReviewedTruckId !== truck.id
+            || event.historicalInactiveReviewedCompanyId !== truck.companyId) {
+            throw new FinancialValidationError('Inactive Trucks require explicit reviewed historical attribution before posting.');
+          }
+          const identityCount = await tx.truck.count({ where: { companyId: { in: context.companyIds }, unitNumberNormalized: normalizeTruckUnitNumber(event.sourceUnitNumber), status: { in: ['ACTIVE', 'INACTIVE'] } } });
+          if (identityCount !== 1) throw new FinancialValidationError('Inactive Truck attribution became ambiguous and must be reviewed again before posting.');
+        }
       }
       let postedSignedTotal = BigInt(0);
       for (const event of invoice.events) {

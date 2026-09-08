@@ -11,6 +11,7 @@ import { OperatingGroupCompanyService } from './operating-group-company-service'
 import { PilotProductMappingService, PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
 import { pilotXlsFixture } from '../../../tests/fixtures/pilot-xls';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const control = new FinancialControlService(prisma);
@@ -141,6 +142,146 @@ test('Pilot mismatch and unknown data remain blocked for explicit review', async
   assert.equal(await prisma.financialTransaction.count({ where: { operatingGroupId: groupId, reference: '910002' } }), 0);
 });
 
+test('inactive Truck requires explicit historical review, preserves provenance, and can post safely', async () => {
+  const inactive = await prisma.truck.create({ data: { companyId: relatedCompanyId, unitNumber: '8558', unitNumberNormalized: '8558', status: 'INACTIVE' } });
+  extraTruckIds.push(inactive.id);
+  const authorizedContext = { ...context(), companyIds: [companyId, relatedCompanyId] };
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910018', unitNumber: '8558' }), metadata('pilot-910018'), sourceId, authorizedContext);
+  importedInvoiceIds.push(String(preview.id));
+  const event = (preview.events as Array<{ truckId: string | null; truckMatchStatus: string }>)[0];
+  const issue = (preview.issues as Array<{ id: string; code: string; message: string }>).find(({ code }) => code === 'UNMATCHED_TRUCK');
+  assert.deepEqual([event.truckId, event.truckMatchStatus], [null, 'UNMATCHED']);
+  assert.match(issue?.message ?? '', /inactive Truck candidate.*explicit historical attribution review/);
+  await assert.rejects(
+    () => importer.resolveIssue(String(preview.id), issue!.id, { action: 'MATCH_TRUCK', truckId: inactive.id }, authorizedContext),
+    /Explicit confirmation is required/,
+  );
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910018' } }), 0);
+  await importer.resolveIssue(String(preview.id), issue!.id, { action: 'MATCH_TRUCK', truckId: inactive.id, historicalInactiveAttribution: true }, authorizedContext);
+  const reviewed = await importer.getInvoice(String(preview.id), authorizedContext);
+  assert.equal(reviewed.status, 'READY_TO_POST');
+  assert.deepEqual((reviewed.events as Array<{ truckId: string; truckMatchStatus: string }>).map(({ truckId, truckMatchStatus }) => ({ truckId, truckMatchStatus })), [{ truckId: inactive.id, truckMatchStatus: 'MANUALLY_MATCHED' }]);
+  const audit = await prisma.financialAuditEvent.findFirstOrThrow({ where: { pilotProviderInvoiceId: String(preview.id), action: 'PILOT_IMPORT_ISSUE_RESOLVED' } });
+  assert.equal((audit.metadata as Record<string, unknown>).historicalInactiveAttribution, true);
+  assert.equal((audit.metadata as Record<string, unknown>).sourceUnitNumberNormalized, '8558');
+  await importer.postInvoice(String(preview.id), authorizedContext);
+  const allocation = await prisma.financialAllocation.findFirstOrThrow({ where: { transaction: { reference: '910018' } } });
+  assert.equal(allocation.truckId, inactive.id);
+  assert.equal((await prisma.truck.findUniqueOrThrow({ where: { id: inactive.id } })).status, 'INACTIVE');
+});
+
+test('inactive Truck posting fails closed without durable reviewed provenance', async () => {
+  const inactive = await prisma.truck.create({ data: { companyId, unitNumber: '8559', unitNumberNormalized: '8559', status: 'INACTIVE' } });
+  extraTruckIds.push(inactive.id);
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910019', unitNumber: '8559' }), metadata('pilot-910019'), sourceId, context());
+  importedInvoiceIds.push(String(preview.id));
+  await prisma.$transaction([
+    prisma.pilotFuelingEvent.updateMany({ where: { invoiceId: String(preview.id) }, data: { truckId: inactive.id, truckMatchStatus: 'MANUALLY_MATCHED' } }),
+    prisma.pilotImportIssue.updateMany({ where: { invoiceId: String(preview.id) }, data: { status: 'RESOLVED', resolvedByUserId: userId, resolvedAt: new Date() } }),
+    prisma.pilotProviderInvoice.update({ where: { id: String(preview.id) }, data: { status: 'READY_TO_POST' } }),
+  ]);
+  await assert.rejects(() => importer.postInvoice(String(preview.id), context()), /explicit reviewed historical attribution/);
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910019' } }), 0);
+  assert.equal(await prisma.financialExpectation.count({ where: { reference: '910019' } }), 0);
+});
+
+test('reviewed inactive attribution revalidates status, company, ambiguity, deletion, and current authorization', async () => {
+  const authorizedContext = { ...context(), companyIds: [companyId, relatedCompanyId] };
+  const makeReviewed = async (invoiceNumber: string, unitNumber: string) => {
+    const inactive = await prisma.truck.create({ data: { companyId: relatedCompanyId, unitNumber, unitNumberNormalized: unitNumber, status: 'INACTIVE' } });
+    extraTruckIds.push(inactive.id);
+    const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber, unitNumber }), metadata(`pilot-${invoiceNumber}`), sourceId, authorizedContext);
+    importedInvoiceIds.push(String(preview.id));
+    const issue = (preview.issues as Array<{ id: string; code: string }>).find(({ code }) => code === 'UNMATCHED_TRUCK')!;
+    await importer.resolveIssue(String(preview.id), issue.id, { action: 'MATCH_TRUCK', truckId: inactive.id, historicalInactiveAttribution: true }, authorizedContext);
+    return { invoiceId: String(preview.id), truck: inactive };
+  };
+
+  const activated = await makeReviewed('910119', '8561');
+  await prisma.truck.update({ where: { id: activated.truck.id }, data: { status: 'ACTIVE' } });
+  await importer.postInvoice(activated.invoiceId, authorizedContext);
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910119' } }), 1);
+
+  const unsupported = await makeReviewed('910120', '8562');
+  await prisma.truck.update({ where: { id: unsupported.truck.id }, data: { status: 'MAINTENANCE' } });
+  await assert.rejects(() => importer.postInvoice(unsupported.invoiceId, authorizedContext), /eligible Truck/);
+
+  const moved = await makeReviewed('910121', '8563');
+  await prisma.truck.update({ where: { id: moved.truck.id }, data: { companyId } });
+  await assert.rejects(() => importer.postInvoice(moved.invoiceId, authorizedContext), /explicit reviewed historical attribution/);
+
+  const ambiguous = await makeReviewed('910122', '8564');
+  const duplicate = await prisma.truck.create({ data: { companyId, unitNumber: '8564', unitNumberNormalized: '8564', status: 'ACTIVE' } });
+  extraTruckIds.push(duplicate.id);
+  await assert.rejects(() => importer.postInvoice(ambiguous.invoiceId, authorizedContext), /became ambiguous/);
+  await assert.rejects(() => prisma.truck.delete({ where: { id: ambiguous.truck.id } }));
+
+  const revoked = await makeReviewed('910123', '8565');
+  await prisma.companyMembership.delete({ where: { userId_companyId: { userId, companyId: relatedCompanyId } } });
+  await assert.rejects(() => importer.postInvoice(revoked.invoiceId, authorizedContext), /authorized Accounting company scope/);
+  await prisma.companyMembership.create({ data: { userId, companyId: relatedCompanyId, role: 'OWNER' } });
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: { in: ['910120', '910121', '910122', '910123'] } } }), 0);
+});
+
+test('historical confirmation re-reads current user and membership authority', async () => {
+  const inactive = await prisma.truck.create({ data: { companyId: relatedCompanyId, unitNumber: '8566', unitNumberNormalized: '8566', status: 'INACTIVE' } });
+  extraTruckIds.push(inactive.id);
+  const authorizedContext = { ...context(), companyIds: [companyId, relatedCompanyId] };
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910124', unitNumber: '8566' }), metadata('pilot-910124'), sourceId, authorizedContext);
+  importedInvoiceIds.push(String(preview.id));
+  const issue = (preview.issues as Array<{ id: string; code: string }>).find(({ code }) => code === 'UNMATCHED_TRUCK')!;
+  await prisma.companyMembership.delete({ where: { userId_companyId: { userId, companyId: relatedCompanyId } } });
+  await assert.rejects(() => importer.resolveIssue(String(preview.id), issue.id, { action: 'MATCH_TRUCK', truckId: inactive.id, historicalInactiveAttribution: true }, authorizedContext), AuthorizationDeniedError);
+  await prisma.companyMembership.create({ data: { userId, companyId: relatedCompanyId, role: 'OWNER' } });
+  assert.equal((await prisma.pilotFuelingEvent.findFirstOrThrow({ where: { invoiceId: String(preview.id) } })).truckId, null);
+});
+
+test('real-scale review changes only one inactive Truck attribution and creates no economics', async () => {
+  const inactive = await prisma.truck.create({ data: { companyId: relatedCompanyId, unitNumber: '8560', unitNumberNormalized: '8560', status: 'INACTIVE' } });
+  extraTruckIds.push(inactive.id);
+  const detailRows = Array.from({ length: 258 }, (_, index) => {
+    const eventIndex = index < 169 ? index : index - 169;
+    return [
+    '1111222233334444', '125', '0099', 'Dallas                  TX',
+    `HIST-${eventIndex}`, `HIST-AUTH-${eventIndex}`, 'Driver One', '08/18', 123456 + eventIndex, index < 169 ? '020' : '033', 1, 395, index === 257 ? 433.55 : 395, 0, 0, 0, 0, 0, index === 257 ? 433.55 : 395, index === 257 ? 433.55 : 395,
+    ];
+  });
+  const authorizedContext = { ...context(), companyIds: [companyId, relatedCompanyId] };
+  const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910118', unitNumber: '8560', quantity: 162.49, unitPrice: 5.102, amount: 829.15, total: 102777.70, rowsBeforeTotal: detailRows }), metadata('pilot-910118'), sourceId, authorizedContext);
+  importedInvoiceIds.push(String(preview.id));
+  assert.deepEqual([preview.invoiceTotalMinor, preview.parsedTotalMinor, preview.differenceMinor], ['10277770', '10277770', '0']);
+  assert.equal((preview.events as unknown[]).length, 170);
+  assert.equal((preview.events as Array<{ productLines: unknown[] }>).reduce((count, event) => count + event.productLines.length, 0), 259);
+  const issue = (preview.issues as Array<{ id: string; code: string }>).find(({ code }) => code === 'UNMATCHED_TRUCK');
+  assert.ok(issue);
+  const before = (preview.events as Array<{ id: string; truckId: string | null; truckMatchStatus: string }>).map(({ id, truckId, truckMatchStatus }) => ({ id, truckId, truckMatchStatus }));
+  await importer.resolveIssue(String(preview.id), issue.id, { action: 'MATCH_TRUCK', truckId: inactive.id, historicalInactiveAttribution: true }, authorizedContext);
+  const reviewed = await importer.getInvoice(String(preview.id), authorizedContext);
+  const after = reviewed.events as Array<{ id: string; truckId: string | null; truckMatchStatus: string }>;
+  assert.equal(after.filter(({ truckMatchStatus }) => truckMatchStatus === 'MANUALLY_MATCHED').length, 1);
+  assert.equal(after.filter(({ truckMatchStatus }) => truckMatchStatus === 'MATCHED').length, 169);
+  assert.equal(before.filter(({ truckId }) => truckId === null).length, 1);
+  assert.equal(await prisma.financialTransaction.count({ where: { reference: '910118' } }), 0);
+  assert.equal(await prisma.financialExpectation.count({ where: { reference: '910118' } }), 0);
+});
+
+test('active and inactive exact-unit candidates remain ambiguous and unauthorized inactive candidates do not leak', async () => {
+  const activeDuplicate = await prisma.truck.create({ data: { companyId, unitNumber: '8557', unitNumberNormalized: '8557', status: 'ACTIVE' } });
+  const inactiveDuplicate = await prisma.truck.create({ data: { companyId: relatedCompanyId, unitNumber: '8557', unitNumberNormalized: '8557', status: 'INACTIVE' } });
+  const foreignInactive = await prisma.truck.create({ data: { companyId: foreignCompanyId, unitNumber: '8556', unitNumberNormalized: '8556', status: 'INACTIVE' } });
+  extraTruckIds.push(activeDuplicate.id, inactiveDuplicate.id, foreignInactive.id);
+  const ambiguous = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910116', unitNumber: '8557' }), metadata('pilot-910116'), sourceId, { ...context(), companyIds: [companyId, relatedCompanyId] });
+  importedInvoiceIds.push(String(ambiguous.id));
+  assert.equal((ambiguous.events as Array<{ truckMatchStatus: string }>)[0].truckMatchStatus, 'AMBIGUOUS');
+  await prisma.truck.update({ where: { id: activeDuplicate.id }, data: { status: 'INACTIVE' } });
+  const twoInactive = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910115', unitNumber: '8557' }), metadata('pilot-910115'), sourceId, { ...context(), companyIds: [companyId, relatedCompanyId] });
+  importedInvoiceIds.push(String(twoInactive.id));
+  assert.equal((twoInactive.events as Array<{ truckMatchStatus: string }>)[0].truckMatchStatus, 'AMBIGUOUS');
+  const hidden = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910117', unitNumber: '8556' }), metadata('pilot-910117'), sourceId, context());
+  importedInvoiceIds.push(String(hidden.id));
+  assert.match((hidden.issues as Array<{ message: string }>).find(() => true)?.message ?? '', /did not match/);
+});
+
 test('Pilot matching spans authorized companies, preserves leading zeros, and posts to the truck company', async () => {
   const authorizedContext = { ...context(), companyIds: [companyId, relatedCompanyId] };
   const preview = await importer.createImport(pilotXlsFixture({ invoiceNumber: '910020', unitNumber: ' 777 ' }), metadata('pilot-910020'), sourceId, authorizedContext);
@@ -183,15 +324,15 @@ test('duplicate authorized units remain ambiguous until explicit company-aware s
       importer.resolveIssue(String(preview.id), issue.id, { action: 'MATCH_TRUCK', truckId: relatedTruckId }, authorizedContext),
       importer.resolveIssue(String(preview.id), issue.id, { action: 'MATCH_TRUCK', truckId: relatedTruckId }, authorizedContext),
     ]);
-    assert.equal(concurrentResolution.filter(({ status }) => status === 'fulfilled').length, 1);
-    assert.equal(concurrentResolution.filter(({ status }) => status === 'rejected').length, 1);
+    assert.equal(concurrentResolution.filter(({ status }) => status === 'fulfilled').length, 2);
+    assert.equal(concurrentResolution.filter(({ status }) => status === 'rejected').length, 0);
     const resolved = await importer.getInvoice(String(preview.id), authorizedContext);
     const sameUnitEvents = resolved.events as Array<{ truckId: string; truckMatchStatus: string }>;
     assert.equal(sameUnitEvents.length, 2);
     assert.ok(sameUnitEvents.every((event) => event.truckId === relatedTruckId && event.truckMatchStatus === 'MANUALLY_MATCHED'));
     assert.equal((resolved.issues as Array<{ code: string; status: string }>).filter(({ code, status }) => code === 'AMBIGUOUS_TRUCK' && status === 'OPEN').length, 0);
     const manualAudit = await prisma.financialAuditEvent.findFirstOrThrow({ where: { pilotProviderInvoiceId: String(preview.id), action: 'PILOT_IMPORT_ISSUE_RESOLVED' }, orderBy: { occurredAt: 'desc' } });
-    assert.deepEqual(manualAudit.metadata, { issueId: issue.id, action: 'MATCH_TRUCK', truckId: relatedTruckId, companyId: relatedCompanyId, sourceUnitNumber: '777', affectedEventCount: '2' });
+    assert.deepEqual(manualAudit.metadata, { issueId: issue.id, action: 'MATCH_TRUCK', truckId: relatedTruckId, companyId: relatedCompanyId, sourceUnitNumber: '777', affectedEventCount: '2', sourceUnitNumberNormalized: '777', truckStatus: 'ACTIVE', historicalInactiveAttribution: false });
     const afterRematch = await importer.rematchTrucks(String(preview.id), authorizedContext);
     assert.ok((afterRematch.events as Array<{ truckId: string; truckMatchStatus: string }>).every((event) => event.truckId === relatedTruckId && event.truckMatchStatus === 'MANUALLY_MATCHED'));
   } finally {
@@ -305,7 +446,7 @@ test('posting re-reads membership, Truck status, and canonical company inside th
   await prisma.companyMembership.create({ data: { userId, companyId: relatedCompanyId, role: 'OWNER' } });
 
   await prisma.truck.update({ where: { id: relatedTruckId }, data: { status: 'INACTIVE' } });
-  await assert.rejects(() => importer.postInvoice(String(preview.id), authorizedContext), /current authorized Accounting company scope/);
+  await assert.rejects(() => importer.postInvoice(String(preview.id), authorizedContext), /explicit reviewed historical attribution/);
   await prisma.truck.update({ where: { id: relatedTruckId }, data: { status: 'ACTIVE' } });
 
   await prisma.truck.update({ where: { id: foreignTruckId }, data: { unitNumber: `foreign-${suffix}`, unitNumberNormalized: `FOREIGN-${suffix}`.toUpperCase() } });
@@ -376,11 +517,13 @@ test('reparse preserves valid manual truck and category resolutions', async () =
   const preview = await reparseImporter.createImport(bytes, await storedMetadata('pilot-910012', bytes), sourceId, context());
   const invoiceId = String(preview.id); importedInvoiceIds.push(invoiceId);
   const issues = preview.issues as Array<{ id: string; code: string }>;
-  await reparseImporter.resolveIssue(invoiceId, issues.find(({ code }) => code === 'UNMATCHED_TRUCK')!.id, { action: 'MATCH_TRUCK', truckId }, context());
+  const exactTruck = await prisma.truck.create({ data: { companyId, unitNumber: 'missing', unitNumberNormalized: 'MISSING' } });
+  extraTruckIds.push(exactTruck.id);
+  await reparseImporter.resolveIssue(invoiceId, issues.find(({ code }) => code === 'UNMATCHED_TRUCK')!.id, { action: 'MATCH_TRUCK', truckId: exactTruck.id }, context());
   await reparseImporter.resolveIssue(invoiceId, issues.find(({ code }) => code === 'MISSING_CATEGORY')!.id, { action: 'SET_CATEGORY', categoryId: fuelCategoryId }, context());
   await markAsFaultyV1(invoiceId, BigInt(20200));
   const reparsed = await reparseImporter.reparseInvoice(invoiceId, context());
-  assert.equal((reparsed.events as Array<{ truckId: string; truckMatchStatus: string }>)[0].truckId, truckId);
+  assert.equal((reparsed.events as Array<{ truckId: string; truckMatchStatus: string }>)[0].truckId, exactTruck.id);
   assert.equal((reparsed.events as Array<{ truckId: string; truckMatchStatus: string }>)[0].truckMatchStatus, 'MANUALLY_MATCHED');
   assert.equal((reparsed.events as Array<{ productLines: Array<{ category: { id: string } }> }>)[0].productLines[0].category.id, fuelCategoryId);
   const remainingCodes = (reparsed.issues as Array<{ code: string }>).map(({ code }) => code);
@@ -569,7 +712,7 @@ test('manual truck resolution rejects cross-company canonical references', async
   const invoice = await importer.getInvoice(importedInvoiceIds[1], context());
   const issue = (invoice.issues as Array<{ id: string; code: string }>).find((row) => row.code === 'UNMATCHED_TRUCK');
   assert.ok(issue);
-  await assert.rejects(() => importer.resolveIssue(String(invoice.id), issue.id, { action: 'MATCH_TRUCK', truckId: foreignTruckId }, context()), FinancialValidationError);
+  await assert.rejects(() => importer.resolveIssue(String(invoice.id), issue.id, { action: 'MATCH_TRUCK', truckId: foreignTruckId }, context()), AuthorizationDeniedError);
   const unchanged = await importer.getInvoice(String(invoice.id), context());
   assert.equal((unchanged.events as Array<{ truckId: string | null }>)[0].truckId, null);
 });

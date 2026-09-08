@@ -29,6 +29,7 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     { companyId: relatedCompany.id, unitNumber: '777', unitNumberNormalized: '777' },
     { companyId: company.id, unitNumber: '888', unitNumberNormalized: '888' },
     { companyId: relatedCompany.id, unitNumber: '888', unitNumberNormalized: '888' },
+    { companyId: relatedCompany.id, unitNumber: '8558', unitNumberNormalized: '8558', status: 'INACTIVE' },
     { companyId: unauthorizedCompany.id, unitNumber: '999', unitNumberNormalized: '999' },
   ] });
   try {
@@ -92,6 +93,21 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await page.getByLabel('Search trucks for AMBIGUOUS_TRUCK').fill('Related');
     await expect(truckSelect).toContainText(`Truck 888 — Pilot UI Related ${suffix}`);
     await expect(truckSelect).not.toContainText(`Truck 888 — Pilot UI ${suffix}`);
+    await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
+    await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920003.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920003', unitNumber: '8558' })) });
+    await page.getByRole('button', { name: 'Parse statement' }).click();
+    await expect(page.getByText(/one authorized inactive Truck candidate/)).toBeVisible();
+    const inactiveSelect = page.getByLabel('Resolve UNMATCHED_TRUCK');
+    await expect(inactiveSelect).toContainText(`Truck 8558 — Pilot UI Related ${suffix} — INACTIVE`);
+    await inactiveSelect.selectOption({ label: `Truck 8558 — Pilot UI Related ${suffix} — INACTIVE` });
+    await expect(page.getByText('Inactive Truck — historical attribution review required')).toBeVisible();
+    await expect(page.getByText(/does not reactivate the Truck/)).toBeVisible();
+    await page.getByRole('button', { name: 'Confirm historical attribution' }).click();
+    await expect(page.getByText('No issues in this view.')).toBeVisible();
+    const historical = await prisma.pilotProviderInvoice.findFirstOrThrow({ where: { operatingGroupId: group.id, invoiceNumber: '920003' }, include: { events: true } });
+    expect(historical.events[0].truckMatchStatus).toBe('MANUALLY_MATCHED');
+    expect((await prisma.truck.findFirstOrThrow({ where: { companyId: relatedCompany.id, unitNumber: '8558' } })).status).toBe('INACTIVE');
+    expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id, reference: '920003' } })).toBe(0);
     expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.id } })).activeCompanyId).toBe(company.id);
     expect(await prisma.financialTransaction.count({ where: { operatingGroupId: group.id } })).toBe(0);
   } finally {
