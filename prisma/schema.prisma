@@ -1958,35 +1958,40 @@ model PilotInvoiceDocument {
 }
 
 model PilotFuelingEvent {
-  id                   String                 @id @default(cuid())
-  invoiceId            String
-  eventKeyHash         String
-  ticketHash           String
-  authorizationHash    String
-  cardLastFour         String?
-  sourceUnitNumber     String
-  locationNumber       String?
-  city                 String?
-  state                String?
-  purchaseOrderContext String?
-  sourceDriverName     String?
-  transactionDate      DateTime               @db.Date
-  odometer             Decimal?               @db.Decimal(18, 2)
-  truckId              String?
-  truckMatchStatus     PilotTruckMatchStatus
-  transactionId        String?                @unique
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  invoice              PilotProviderInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  truck                Truck?                 @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  transaction          FinancialTransaction?  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
-  productLines         PilotFuelProductLine[]
-  issues               PilotImportIssue[]
+  id                                  String                 @id @default(cuid())
+  invoiceId                           String
+  eventKeyHash                        String
+  ticketHash                          String
+  authorizationHash                   String
+  cardLastFour                        String?
+  sourceUnitNumber                    String
+  locationNumber                      String?
+  city                                String?
+  state                               String?
+  purchaseOrderContext                String?
+  sourceDriverName                    String?
+  transactionDate                     DateTime               @db.Date
+  odometer                            Decimal?               @db.Decimal(18, 2)
+  truckId                             String?
+  truckMatchStatus                    PilotTruckMatchStatus
+  historicalInactiveReviewedAt        DateTime?
+  historicalInactiveReviewedByUserId  String?
+  historicalInactiveReviewedCompanyId String?
+  historicalInactiveReviewedTruckId   String?
+  transactionId                       String?                @unique
+  createdAt                           DateTime               @default(now())
+  updatedAt                           DateTime               @updatedAt
+  invoice                             PilotProviderInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  truck                               Truck?                 @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  transaction                         FinancialTransaction?  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  productLines                        PilotFuelProductLine[]
+  issues                              PilotImportIssue[]
 
   @@unique([invoiceId, eventKeyHash])
   @@index([invoiceId, transactionDate])
   @@index([truckId, transactionDate])
   @@index([invoiceId, truckMatchStatus])
+  @@index([historicalInactiveReviewedTruckId])
 }
 
 model PilotFuelProductLine {

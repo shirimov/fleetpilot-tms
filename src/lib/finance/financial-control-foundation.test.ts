@@ -273,6 +273,7 @@ test('dimension discovery reuses canonical equipment classification data', async
   const trailer = await prisma.trailer.create({ data: { companyId, unitNumber: `dimension-${suffix}`, equipmentType: 'REEFER' } });
   const dimensions = await service.listDimensions(context());
   assert.deepEqual(dimensions.trucks.find((truck) => truck.id === truckId), { id: truckId, unitNumber: `financial-${suffix}`, year: 2027, make: 'Volvo', model: 'VNL', isOwnerOp: true, companyId, company: { name: `Financial ${suffix}` } });
+  assert.equal(dimensions.pilotTrucks.find((truck) => truck.id === truckId)?.status, 'ACTIVE');
   assert.equal(dimensions.trailers.find((item) => item.id === trailer.id)?.equipmentType, 'REEFER');
   assert.equal(await prisma.truck.count({ where: { id: truckId } }), 1);
   await prisma.trailer.delete({ where: { id: trailer.id } });
