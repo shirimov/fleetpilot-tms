@@ -68,8 +68,8 @@ export async function postedAccountingFixture() {
     await prisma.financialStatement.deleteMany({where:{operatingGroupId:group.id}});
     await prisma.pilotProductMapping.deleteMany({where:{operatingGroupId:group.id}});
     await prisma.financialSource.deleteMany({where:{operatingGroupId:group.id}});
-    await prisma.financialCategory.deleteMany({where:{operatingGroupId:group.id}});
     await prisma.bankTransactionClassification.deleteMany({where:{bankTransaction:{bankAccountId:bankAccount.id}}});
+    await prisma.financialCategory.deleteMany({where:{operatingGroupId:group.id}});
     await prisma.bankTransaction.deleteMany({where:{bankAccountId:bankAccount.id}});
     await prisma.bankAccount.delete({where:{id:bankAccount.id}});
     await prisma.operatingGroupMembership.deleteMany({where:{operatingGroupId:group.id}});

@@ -492,7 +492,7 @@ export class FinancialControlService {
 
   async listTransactions(context: FinancialAuthorization, ids?: string[]) {
     const [transactions, categories] = await Promise.all([this.database.financialTransaction.findMany({
-      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, ...(ids ? { id: { in: ids } } : {}) }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
+      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, ...(ids ? { id: { in: ids } } : {}) }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
       include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, company: { select: { name: true } }, pilotFuelingEvent: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, pilotInvoiceAdjustment: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, allocations: { include: { category: true, truck: { select: { unitNumber: true } }, company: { select: { name: true } } } }, evidence: { include: { importRecord: { select: { sourceRowIndex: true, statement: { select: { id: true, originalFilename: true } } } } } } },
     }), this.listCategories(context)]);
     const categoryPaths = new Map(categories.map((category) => [category.id, category.path]));

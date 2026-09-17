@@ -180,8 +180,10 @@ export class BankLedgerService {
               ],
             }
           : {}),
-        ...(filters.reviewStatus ? { classification: { reviewStatus: filters.reviewStatus } } : {}),
-        ...(filters.categoryId ? { classification: { categoryId: filters.categoryId } } : {}),
+        ...(filters.reviewStatus || filters.categoryId ? { classification: {
+          ...(filters.reviewStatus ? { reviewStatus: filters.reviewStatus } : {}),
+          ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
+        } } : {}),
         ...(filters.truckId ? { allocations: { some: { truckId: filters.truckId } } } : {}),
         ...(filters.trailerId ? { allocations: { some: { trailerId: filters.trailerId } } } : {}),
         ...(filters.driverId ? { allocations: { some: { driverId: filters.driverId } } } : {}),

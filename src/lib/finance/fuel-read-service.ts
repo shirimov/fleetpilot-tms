@@ -37,7 +37,7 @@ export class FuelReadService {
         }
       }
     }
-    const rows = [...trucks.values()].sort((a, b) => a.company.localeCompare(b.company) || a.unitNumber.localeCompare(b.unitNumber, undefined, { numeric: true }));
+    const rows = [...trucks.values()].sort((a, b) => a.company.localeCompare(b.company) || a.unitNumber.localeCompare(b.unitNumber, undefined, { numeric: true }) || a.id.localeCompare(b.id));
     const page = Math.min(pageNumber(requestedPage), Math.max(1, Math.ceil(rows.length / 25)));
     const serializeProducts = (items: typeof products) => Object.fromEntries(Object.entries(items).map(([key, value]) => [key, { amountMinor: value.amountMinor.toString(), quantity: value.quantity.toFixed(2) }]));
     return { invoices: invoices.length, settled: invoices.filter(row => row.expectation?.status === 'MATCHED').length, events, trucks: rows.length, netExpenseMinor: invoices.reduce((sum, row) => sum + row.invoiceTotalMinor, BigInt(0)).toString(), adjustmentsMinor: adjustments.toString(), products: serializeProducts(products),

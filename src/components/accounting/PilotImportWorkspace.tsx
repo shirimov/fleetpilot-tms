@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { formatMinorUnitsDecimal } from '@/lib/finance/money';
 
 type Row = Record<string, unknown>;
@@ -19,6 +19,7 @@ const money = (value: unknown) => `$${formatMinorUnitsDecimal(BigInt(String(valu
 export default function PilotImportWorkspace({ sources, categories, trucks, mode = 'imports', selectedId }: Props) {
   const [invoices, setInvoices] = useState<Row[]>([]);
   const [invoice, setInvoice] = useState<Row | null>(null);
+  const selectedInvoiceId = useRef('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [issueFilter, setIssueFilter] = useState('OPEN');
@@ -34,9 +35,13 @@ export default function PilotImportWorkspace({ sources, categories, trucks, mode
   const refresh = useCallback(async (selectedId?: string) => {
     const rows = await request<Row[]>('/api/finance/imports/pilot');
     setInvoices(rows);
-    const id = selectedId ?? String(invoice?.id ?? '');
-    if (id) setInvoice(await request<Row>(`/api/finance/imports/pilot/${id}`));
-  }, [invoice?.id]);
+    const id = selectedId ?? selectedInvoiceId.current;
+    if (id) {
+      selectedInvoiceId.current = id;
+      const detail = await request<Row>(`/api/finance/imports/pilot/${id}`);
+      if (selectedInvoiceId.current === id) setInvoice(detail);
+    }
+  }, []);
   useEffect(() => {
     Promise.all([mode !== 'rules' ? refresh(selectedId) : Promise.resolve(), mode === 'rules' ? refreshMappings() : Promise.resolve()]).catch((caught) => setError(caught.message));
   }, [refresh, refreshMappings, mode, selectedId]);

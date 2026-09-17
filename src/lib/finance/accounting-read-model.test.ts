@@ -37,3 +37,31 @@ test('waived recovery, voided and non-economic entries never enter review queues
   assert.deepEqual(entryQueues(entry({ status: 'VOIDED', allocations: [] })), []);
   assert.deepEqual(entryQueues(entry({ role: 'SETTLEMENT', allocations: [] })), []);
 });
+test('ordinary income, expense, credit and draft/posted policy conserve exact minor units', () => {
+  for (const status of ['DRAFT', 'POSTED']) {
+    const rows = [
+      entry({status, direction:'INFLOW',amountMinor:BigInt(200001),category:income,allocations:[]}),
+      entry({status, amountMinor:BigInt(100001),category:expense,allocations:[]}),
+      entry({status, direction:'INFLOW',amountMinor:BigInt(1),category:expense,allocations:[]}),
+      entry({status:'VOIDED',category:expense}),
+      entry({role:'SETTLEMENT',category:expense}),
+      entry({direction:'TRANSFER',category:expense}),
+    ];
+    assert.deepEqual(summarizeAccounting(rows), {incomeMinor:'200001',grossExpensesMinor:'100001',expenseCreditsMinor:'-1',netExpensesMinor:'100000',otherNetMinor:'0',recordedNetMinor:'100001'});
+  }
+});
+test('multiple allocations and header residuals classify each minor unit once', () => {
+  for (const category of [null,expense,income]) {
+    const complete = entry({category,allocations:[{amountMinor:BigInt(60001),category:expense},{amountMinor:BigInt(39999),category:expense}]});
+    assert.equal(categoryAttribution(complete).uncategorizedMinor,BigInt(0));
+    assert.equal(summarizeAccounting([complete]).grossExpensesMinor,'100000');
+  }
+  const partial = entry({category:income,allocations:[{amountMinor:BigInt(60001),category:expense}]});
+  const result = summarizeAccounting([partial]);
+  assert.equal(result.incomeMinor,'-39999'); assert.equal(result.grossExpensesMinor,'60001');
+  assert.equal(result.recordedNetMinor,'-100000');
+  const invalid = entry({category:expense,allocations:[{amountMinor:BigInt(100001),category:expense}]});
+  assert.ok(entryQueues(invalid).includes('uncategorizedExpenses'));
+  assert.equal(summarizeAccounting([invalid]).recordedNetMinor,'-100000');
+  assert.equal(summarizeAccounting([invalid]).otherNetMinor,'-100000');
+});

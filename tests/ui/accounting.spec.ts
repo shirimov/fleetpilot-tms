@@ -177,8 +177,10 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await expect.poll(() => new URL(page.url()).pathname).toBe('/login');
     await page.goto(`/login/email/verify#token=${await issueToken(member.id, member.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
-    const denied = await page.request.get('/api/finance/overview');
-    expect(denied.status()).toBe(403);
+    for (const route of ['overview','transactions?page=1','fuel','bank/transactions?page=1','group/companies','categories','sources','programs','pilot-product-mappings','admin-fee-agreements']) {
+      const denied = await page.request.get(`/api/finance/${route}`);
+      expect(denied.status(),route).toBe(403);
+    }
     await page.goto('/accounting');
     await expect(page).toHaveURL('/accounting');
     await expect(page.getByText('Access denied', { exact: true })).toBeVisible();

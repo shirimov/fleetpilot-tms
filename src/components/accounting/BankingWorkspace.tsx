@@ -1,7 +1,7 @@
 'use client';
 
 import { formatMinorUnitsDecimal } from '@/lib/finance/money';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { BankTransactionPeriod } from '@/lib/finance/bank-transaction-period';
 import PlaidLinkButton from './PlaidLinkButton';
@@ -145,7 +145,12 @@ export default function BankingWorkspace() {
     setCompanyId(targetCompanyId ?? next.activeCompanyId);
   }, []);
 
+  const loadController = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    const signal = controller.signal;
     if (!companyId) return;
     const params = new URLSearchParams({ companyId, inbox: String(inbox), page: String(page) });
     if (query) params.set('q', query);
@@ -161,10 +166,11 @@ export default function BankingWorkspace() {
     if (minimumAmount) params.set('minimumAmount', minimumAmount);
     if (maximumAmount) params.set('maximumAmount', maximumAmount);
     const [nextConnections, nextTransactions, status] = await Promise.all([
-      api<Connection[]>(`/api/finance/bank/connections?companyId=${encodeURIComponent(companyId)}`),
-      api<{ rows: BankTransaction[]; total: number }>(`/api/finance/bank/transactions?${params}`),
-      api<{ liveProviderAvailable: boolean; environment: string; webhookConfigured: boolean }>('/api/finance/bank/status'),
+      api<Connection[]>(`/api/finance/bank/connections?companyId=${encodeURIComponent(companyId)}`, { signal }),
+      api<{ rows: BankTransaction[]; total: number }>(`/api/finance/bank/transactions?${params}`, { signal }),
+      api<{ liveProviderAvailable: boolean; environment: string; webhookConfigured: boolean }>('/api/finance/bank/status', { signal }),
     ]);
+    if (signal.aborted) return;
     setConnections(nextConnections);
     setTransactions(nextTransactions.rows); setTotal(nextTransactions.total);
     setProviderAvailable(status.liveProviderAvailable);
@@ -177,7 +183,8 @@ export default function BankingWorkspace() {
     loadOptions().catch((caught: Error) => setError(caught.message));
   }, [loadOptions]);
   useEffect(() => {
-    load().catch((caught: Error) => setError(caught.message));
+    load().catch((caught: Error) => { if (caught.name !== 'AbortError') setError(caught.message); });
+    return () => loadController.current?.abort();
   }, [load]);
 
   async function changeCompany(nextCompanyId: string) {
