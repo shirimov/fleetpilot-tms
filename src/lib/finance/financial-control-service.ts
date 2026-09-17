@@ -1,3 +1,4 @@
+import { categoryAttribution, entryQueues, isReviewQueue, pageNumber, summarizeAccounting, reviewQueues } from './accounting-read-model';
 import { createHash } from 'node:crypto';
 import {
   Prisma,
@@ -489,10 +490,10 @@ export class FinancialControlService {
     });
   }
 
-  async listTransactions(context: FinancialAuthorization) {
+  async listTransactions(context: FinancialAuthorization, ids?: string[]) {
     const [transactions, categories] = await Promise.all([this.database.financialTransaction.findMany({
-      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' } }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
-      include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, allocations: { select: { amountMinor: true } }, evidence: { select: { matchedAmountMinor: true, role: true } } },
+      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, ...(ids ? { id: { in: ids } } : {}) }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
+      include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, company: { select: { name: true } }, pilotFuelingEvent: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, pilotInvoiceAdjustment: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, allocations: { include: { category: true, truck: { select: { unitNumber: true } }, company: { select: { name: true } } } }, evidence: { include: { importRecord: { select: { sourceRowIndex: true, statement: { select: { id: true, originalFilename: true } } } } } } },
     }), this.listCategories(context)]);
     const categoryPaths = new Map(categories.map((category) => [category.id, category.path]));
     return transactions.map((transaction) => ({ ...transaction,
@@ -500,7 +501,8 @@ export class FinancialControlService {
       amountMinor: transaction.amountMinor.toString(), expectedRecoveryMinor: transaction.expectedRecoveryMinor.toString(), recoveredAmountMinor: transaction.recoveredAmountMinor.toString(), waivedAmountMinor: transaction.waivedAmountMinor.toString(),
       allocatedMinor: transaction.allocations.reduce((sum, item) => sum + item.amountMinor, BigInt(0)).toString(),
       evidenceMatchedMinor: transaction.evidence.filter((item) => item.role === 'PRIMARY').reduce((sum, item) => sum + item.matchedAmountMinor, BigInt(0)).toString(),
-      allocations: undefined, evidence: undefined,
+      sourceOwned: !!(transaction.pilotFuelingEvent || transaction.pilotInvoiceAdjustment),
+      allocations: transaction.allocations.map(row => ({ ...row, amountMinor: row.amountMinor.toString() })), evidence: transaction.evidence.map(row => ({ ...row, matchedAmountMinor: row.matchedAmountMinor.toString() })),
     }));
   }
 
@@ -762,9 +764,28 @@ export class FinancialControlService {
     });
   }
 
+  private async accountingEntries(context: FinancialAuthorization) {
+    return this.database.financialTransaction.findMany({
+      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, role: 'ECONOMIC' },
+      select: { id: true, transactionDate: true, createdAt: true, operatingGroupId: true, role: true, status: true, amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, currency: true, category: { select: { type: true, isActive: true, operatingGroupId: true } }, allocations: { select: { amountMinor: true, category: { select: { type: true, isActive: true, operatingGroupId: true } } } }, recoverableFromOwner: true, recoveryStatus: true },
+      orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+    });
+  }
+
+  async transactionPage(context: FinancialAuthorization, queue = '', requestedPage: unknown = 1) {
+    if (queue && !isReviewQueue(queue)) throw new FinancialValidationError('Unknown review queue.');
+    const entries = await this.accountingEntries(context);
+    const matches = entries.filter(entry => !queue || entryQueues(entry).includes(queue as keyof typeof reviewQueues));
+    const page = Math.min(pageNumber(requestedPage), Math.max(1, Math.ceil(matches.length / 25)));
+    const selected = matches.slice((page - 1) * 25, page * 25);
+    const rows = await this.listTransactions(context, selected.map(row => row.id));
+    return { rows: rows.map(row => ({ ...row, uncategorizedMinor: categoryAttribution(selected.find(entry => entry.id === row.id)!).uncategorizedMinor.toString() })), total: matches.length, page, pageSize: 25 };
+  }
+
   async overview(context: FinancialAuthorization) {
+    const group = await this.database.operatingGroup.findUniqueOrThrow({ where: { id: context.operatingGroupId }, select: { currency: true } });
     const [transactions, statementStatuses, rawRecordsImported, missingExpectations] = await Promise.all([
-      this.database.financialTransaction.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, role: 'ECONOMIC' }, select: { amountMinor: true, direction: true, reconciliationStatus: true, categoryId: true, allocations: { select: { id: true } }, recoverableFromOwner: true, recoveryStatus: true } }),
+      this.accountingEntries(context),
       this.database.financialStatement.groupBy({ by: ['importStatus'], where: { operatingGroupId: context.operatingGroupId }, _count: { _all: true } }),
       this.database.financialImportRecord.count({ where: { statement: { operatingGroupId: context.operatingGroupId } } }),
       this.database.financialExpectation.count({ where: { operatingGroupId: context.operatingGroupId, status: { in: ['OPEN', 'PARTIALLY_MATCHED', 'MISSING'] } } }),
@@ -775,20 +796,15 @@ export class FinancialControlService {
     const operatingTransactions = transactions.filter((item) => item.direction !== 'TRANSFER');
     const totalMinor = inflowMinor + outflowMinor;
     const unresolvedMinor = totalMinor - reconciledMinor;
-    const exceptions = {
-      unmatchedInflows: transactions.filter((item) => item.direction === 'INFLOW' && ['UNREVIEWED', 'UNMATCHED', 'NEEDS_REVIEW'].includes(item.reconciliationStatus)).length,
-      unmatchedOutflows: transactions.filter((item) => item.direction === 'OUTFLOW' && ['UNREVIEWED', 'UNMATCHED', 'NEEDS_REVIEW'].includes(item.reconciliationStatus)).length,
-      partialMatches: transactions.filter((item) => item.reconciliationStatus === 'PARTIALLY_MATCHED').length,
-      possibleDuplicates: transactions.filter((item) => item.reconciliationStatus === 'DUPLICATE_SUSPECTED').length,
-      uncategorizedExpenses: transactions.filter((item) => item.direction === 'OUTFLOW' && !item.categoryId).length,
-      missingAssignments: transactions.filter((item) => item.direction === 'OUTFLOW' && item.allocations.length === 0).length,
-      ownerRecovery: transactions.filter((item) => item.recoverableFromOwner && !['RECOVERED', 'WAIVED'].includes(item.recoveryStatus)).length,
-      missingExpected: missingExpectations,
-    };
+    const exceptions = { ...Object.fromEntries(Object.keys(reviewQueues).map(key => [key, transactions.filter(entry => entryQueues(entry).includes(key as keyof typeof reviewQueues)).length])), missingExpected: missingExpectations } as Record<keyof typeof reviewQueues | 'missingExpected', number>;
+    const payments = await this.database.financialExpectation.findMany({ where: { operatingGroupId: context.operatingGroupId, status: { not: 'CANCELLED' } }, select: { status: true, currency: true, expectedAmountMinor: true, matchedAmountMinor: true } });
+    const bankMatched = await this.database.financialExpectationBankMatch.aggregate({ where: { operatingGroupId: context.operatingGroupId, expectation: { currency: group.currency } }, _sum: { matchedAmountMinor: true } });
     const countStatus = (statuses: string[]) => statementStatuses.filter((row) => statuses.includes(row.importStatus)).reduce((sum, row) => sum + row._count._all, 0);
     const fullyReconciledCount = operatingTransactions.filter((item) => item.reconciliationStatus === 'RECONCILED').length;
     const completenessBasisPoints = operatingTransactions.length === 0 ? null : Math.min(10000, Math.max(0, Math.floor((fullyReconciledCount * 10000) / operatingTransactions.length)));
     return {
+      business: summarizeAccounting(transactions.filter(row => row.currency === group.currency)), currency: group.currency, otherCurrencyCount: transactions.filter(row => row.currency !== group.currency).length,
+      payments: { total: payments.length, settled: payments.filter(row => row.status === 'MATCHED').length, open: missingExpectations, remainingMinor: payments.filter(row => row.currency === group.currency).reduce((sum, row) => sum + row.expectedAmountMinor - row.matchedAmountMinor, BigInt(0)).toString(), bankMatchedMinor: (bankMatched._sum.matchedAmountMinor ?? BigInt(0)).toString() },
       inflowMinor: inflowMinor.toString(), outflowMinor: outflowMinor.toString(), operatingNetMinor: (inflowMinor - outflowMinor).toString(), reconciledMinor: reconciledMinor.toString(), unresolvedMinor: unresolvedMinor.toString(),
       reconciliationBasisPoints: totalMinor === BigInt(0) ? null : Number((reconciledMinor * BigInt(10000)) / totalMinor), completenessBasisPoints,
       unresolvedTransactionCount: operatingTransactions.filter((item) => item.reconciliationStatus !== 'RECONCILED').length,
@@ -796,7 +812,7 @@ export class FinancialControlService {
       statementsImportedSuccessfully: countStatus(['IMPORTED']), statementsImportFailed: countStatus(['FAILED']), statementsPending: countStatus(['UPLOADED', 'IMPORTING', 'NEEDS_REVIEW']), rawRecordsImported,
       transactionsNeedingReview: operatingTransactions.filter((item) => item.reconciliationStatus !== 'RECONCILED').length,
       fullyReconciledCount, transferCount: transactions.filter((item) => item.direction === 'TRANSFER').length,
-      exceptions: { ...exceptions, duplicateCandidates: exceptions.possibleDuplicates, uncategorizedTransactions: operatingTransactions.filter((item) => !item.categoryId).length, unassignedOperationalDimensions: operatingTransactions.filter((item) => item.allocations.length === 0).length, outstandingOwnerRecoveries: exceptions.ownerRecovery, partialReconciliations: exceptions.partialMatches },
+      exceptions: { ...exceptions, duplicateCandidates: exceptions.possibleDuplicates, uncategorizedTransactions: operatingTransactions.filter((item) => categoryAttribution(item).uncategorizedMinor > BigInt(0)).length, unassignedOperationalDimensions: operatingTransactions.filter((item) => item.allocations.length === 0).length, outstandingOwnerRecoveries: exceptions.ownerRecovery, partialReconciliations: exceptions.partialMatches },
     };
   }
 
