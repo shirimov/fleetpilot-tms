@@ -1,3 +1,4 @@
+import { pageNumber } from '@/lib/finance/accounting-read-model';
 import type {
   BankTransactionReviewStatus,
   FinancialDirection,
@@ -30,8 +31,9 @@ export async function GET(request: Request) {
       from: params.get('from'),
       to: params.get('to'),
     });
-    return NextResponse.json(
-      await bankLedgerService.listTransactions(context, {
+    const page = pageNumber(params.get('page'));
+    const rows = await bankLedgerService.listTransactions(context, {
+        page: params.has('page') ? page : undefined, inbox: params.get('inbox') === 'true',
         companyId: params.get('companyId') ?? undefined,
         bankAccountId: params.get('bankAccountId') ?? undefined,
         subAccountId: params.get('subAccountId') ?? undefined,
@@ -47,9 +49,8 @@ export async function GET(request: Request) {
         minimumAmountMinor: amount(params.get('minimumAmount')),
         maximumAmountMinor: amount(params.get('maximumAmount')),
         query: params.get('q')?.trim().slice(0, 200) || undefined,
-      }),
-      { headers: PRIVATE_NO_STORE_HEADERS },
-    );
+      });
+    return NextResponse.json(params.has('page') ? { rows, total: rows.total, page, pageSize: 50 } : rows, { headers: PRIVATE_NO_STORE_HEADERS });
   } catch (error) {
     return bankLedgerRouteError(error);
   }

@@ -42,6 +42,8 @@ type TransactionFilters = {
   minimumAmountMinor?: bigint;
   maximumAmountMinor?: bigint;
   query?: string;
+  inbox?: boolean;
+  page?: number;
 };
 
 function jsonValue(value: unknown): Prisma.InputJsonValue | undefined {
@@ -152,9 +154,9 @@ export class BankLedgerService {
   async listTransactions(context: FinancialAuthorization, filters: TransactionFilters = {}) {
     const companyId = filters.companyId ?? context.activeCompanyId;
     this.requireAllowedCompany(context, companyId);
-    const rows = await this.database.bankTransaction.findMany({
-      where: {
+    const where: Prisma.BankTransactionWhereInput = {
         companyId,
+        ...(filters.inbox ? { AND: [{ OR: [{ classification: null }, { classification: { reviewStatus: { in: ['UNREVIEWED', 'SUGGESTED', 'NEEDS_REVIEW'] } } }] }], NOT: { lifecycle: 'POSTED', pending: false, removedAt: null, classification: { reconciliationStatus: 'MATCHED' }, expectationMatches: { some: {} } } } : {}),
         ...(filters.bankAccountId ? { bankAccountId: filters.bankAccountId } : {}),
         ...(filters.subAccountId ? { subAccountId: filters.subAccountId } : {}),
         ...(filters.direction ? { direction: filters.direction } : {}),
@@ -178,14 +180,19 @@ export class BankLedgerService {
               ],
             }
           : {}),
-        ...(filters.reviewStatus ? { classification: { reviewStatus: filters.reviewStatus } } : {}),
-        ...(filters.categoryId ? { classification: { categoryId: filters.categoryId } } : {}),
+        ...(filters.reviewStatus || filters.categoryId ? { classification: {
+          ...(filters.reviewStatus ? { reviewStatus: filters.reviewStatus } : {}),
+          ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
+        } } : {}),
         ...(filters.truckId ? { allocations: { some: { truckId: filters.truckId } } } : {}),
         ...(filters.trailerId ? { allocations: { some: { trailerId: filters.trailerId } } } : {}),
         ...(filters.driverId ? { allocations: { some: { driverId: filters.driverId } } } : {}),
         ...(filters.partyId ? { allocations: { some: { partyId: filters.partyId } } } : {}),
-      },
+      };
+    const rows = await this.database.bankTransaction.findMany({
+      where,
       include: {
+        expectationMatches: { include: { expectation: { select: { id: true, reference: true, description: true, pilotProviderInvoice: { select: { id: true, invoiceNumber: true } } } } } },
         bankAccount: { select: { institutionName: true, provider: true } },
         subAccount: { select: { name: true, mask: true, type: true, subtype: true } },
         classification: { include: { category: { select: { id: true, name: true } } } },
@@ -201,16 +208,21 @@ export class BankLedgerService {
         },
       },
       orderBy: [{ date: 'desc' }, { id: 'desc' }],
-      take: 500,
+      take: filters.page ? 50 : 500,
+      skip: filters.page ? (filters.page - 1) * 50 : 0,
     });
-    return rows.map((row) => ({
+    const serialized = rows.map((row) => ({
       ...row,
+      expectationMatches: row.expectationMatches.map(match => ({ ...match, matchedAmountMinor: match.matchedAmountMinor.toString() })),
       amountMinor: row.amountMinor?.toString() ?? null,
       allocations: row.allocations.map((allocation) => ({
         ...allocation,
         amountMinor: allocation.amountMinor.toString(),
       })),
     }));
+    // A separate count over exactly the same predicate; never count the limited page.
+    const total = filters.page ? await this.database.bankTransaction.count({ where }) : serialized.length;
+    return Object.assign(serialized, { total });
   }
 
   async getClassificationOptions(context: FinancialAuthorization, companyId = context.activeCompanyId) {

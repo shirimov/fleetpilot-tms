@@ -1,10 +1,10 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { formatMinorUnitsDecimal } from '@/lib/finance/money';
 
 type Row = Record<string, unknown>;
-type Props = { sources: Row[]; categories: Row[]; trucks: Row[] };
+type Props = { sources: Row[]; categories: Row[]; trucks: Row[]; mode?: 'invoices' | 'imports' | 'rules'; selectedId?: string };
 const field = 'rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm';
 const card = 'rounded-xl border border-white/10 bg-slate-900/70 p-4';
 
@@ -16,9 +16,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 const money = (value: unknown) => `$${formatMinorUnitsDecimal(BigInt(String(value ?? 0)))}`;
 
-export default function PilotImportWorkspace({ sources, categories, trucks }: Props) {
+export default function PilotImportWorkspace({ sources, categories, trucks, mode = 'imports', selectedId }: Props) {
   const [invoices, setInvoices] = useState<Row[]>([]);
   const [invoice, setInvoice] = useState<Row | null>(null);
+  const selectedInvoiceId = useRef('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [issueFilter, setIssueFilter] = useState('OPEN');
@@ -34,12 +35,16 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
   const refresh = useCallback(async (selectedId?: string) => {
     const rows = await request<Row[]>('/api/finance/imports/pilot');
     setInvoices(rows);
-    const id = selectedId ?? String(invoice?.id ?? '');
-    if (id) setInvoice(await request<Row>(`/api/finance/imports/pilot/${id}`));
-  }, [invoice?.id]);
+    const id = selectedId ?? selectedInvoiceId.current;
+    if (id) {
+      selectedInvoiceId.current = id;
+      const detail = await request<Row>(`/api/finance/imports/pilot/${id}`);
+      if (selectedInvoiceId.current === id) setInvoice(detail);
+    }
+  }, []);
   useEffect(() => {
-    Promise.all([refresh(), refreshMappings()]).catch((caught) => setError(caught.message));
-  }, [refresh, refreshMappings]);
+    Promise.all([mode !== 'rules' ? refresh(selectedId) : Promise.resolve(), mode === 'rules' ? refreshMappings() : Promise.resolve()]).catch((caught) => setError(caught.message));
+  }, [refresh, refreshMappings, mode, selectedId]);
 
   async function saveProductMapping(productCode: string, categoryId: string) {
     if (!categoryId) return;
@@ -106,7 +111,7 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
 
   return <div className="space-y-4">
     {error && <p role="alert" className="rounded-lg bg-red-950/60 p-3 text-red-200">{error}</p>}
-    <section className={card}>
+    {mode === 'rules' && <section className={card}>
       <div className="mb-3"><p className="text-xs uppercase text-emerald-400">Reusable accounting rules</p><h2 className="font-semibold">Pilot Product Mappings</h2><p className="text-xs text-slate-400">Map each known Pilot product code to one active Direct Expense category for this operating group. Future imports apply the rule automatically.</p></div>
       <div className="grid gap-3 lg:grid-cols-3">{productMappings.map((product) => {
         const mapping = product.mapping as Row | null;
@@ -116,23 +121,23 @@ export default function PilotImportWorkspace({ sources, categories, trucks }: Pr
         return <label key={String(product.productCode)} className="grid gap-1 rounded-lg bg-slate-950/60 p-3 text-sm"><span><strong>{String(product.productCode)}</strong> · {String(product.label)}</span><span className={mappingValid ? 'text-xs text-emerald-300' : 'text-xs text-amber-200'}>{statusText}</span><select aria-label={`Pilot product ${String(product.productCode)} category`} className={field} value={mappingValid ? String(mappedCategory?.id ?? '') : ''} disabled={busy} onChange={(event) => saveProductMapping(String(product.productCode), event.target.value)}><option value="">Select Direct Expense category…</option>{directExpenseCategories.map((category) => <option key={String(category.id)} value={String(category.id)}>{String(category.path ?? category.name)}</option>)}</select></label>;
       })}</div>
       {productMappings.length === 0 && <p className="text-sm text-slate-400">Loading Pilot product mappings…</p>}
-    </section>
-    <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
-      <form className={`${card} grid gap-3`} onSubmit={upload}>
+    </section>}
+    {mode !== 'rules' && <div className="grid gap-4 lg:grid-cols-[1fr_2fr]">
+      {mode === 'imports' && <form className={`${card} grid gap-3`} onSubmit={upload}>
         <h2 className="font-semibold">Upload Pilot legacy XLS</h2>
         <select aria-label="Pilot fuel-card source" className={field} name="sourceId" required><option value="">Select Pilot fuel-card source</option>{fuelSources.map((source) => <option key={String(source.id)} value={String(source.id)}>{String(source.name)}</option>)}</select>
         <input aria-label="Pilot XLS file" className={field} type="file" name="file" accept=".xls,application/vnd.ms-excel" required />
         <p className="text-xs text-slate-400">Legacy OLE/BIFF .xls only · 5 MB / 5,000-row limit · parsed server-side · no formulas, macros, or external links.</p>
         <button className="btn" disabled={busy || fuelSources.length === 0}>Parse statement</button>
         {fuelSources.length === 0 && <p className="text-xs text-amber-200">Create an active FUEL_CARD source before importing.</p>}
-      </form>
+      </form>}
       <section className={card}><h2 className="mb-3 font-semibold">Pilot invoices</h2><div className="space-y-2">{invoices.map((row) => <button type="button" key={String(row.id)} onClick={() => refresh(String(row.id)).catch((caught) => setError(caught.message))} className="flex w-full justify-between rounded-lg bg-slate-950/60 p-3 text-left"><span><strong>Invoice {String(row.invoiceNumber)}</strong><small className="block text-slate-400">{String(row.billingDate).slice(0, 10)} · {String(row.status)}</small></span><span>{money(row.invoiceTotalMinor)}</span></button>)}{invoices.length === 0 && <p className="text-sm text-slate-400">No Pilot invoices imported.</p>}</div></section>
-    </div>
-    {invoice && <>
+    </div>}
+    {mode !== 'rules' && invoice && <>
       <section className={card}>
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase text-emerald-400">Pilot invoice</p><h2 className="text-xl font-semibold">{String(invoice.invoiceNumber)}</h2><p className="text-xs text-slate-400">Period {String(invoice.periodStart).slice(0, 10)} – {String(invoice.periodEnd).slice(0, 10)} · Due {invoice.dueDate ? String(invoice.dueDate).slice(0, 10) : 'not provided'} · Parser {String(invoice.parseVersion)}</p></div><div className="flex flex-wrap gap-2">{invoice.status !== 'POSTED' && <button className="btn" disabled={busy} onClick={applyProductMappings}>Apply product mappings</button>}{invoice.canRematchTrucks === true && <button className="btn" disabled={busy} onClick={rematchTrucks}>Re-run truck matching</button>}{invoice.canReparse === true && <button className="btn" disabled={busy} onClick={reparse}>Reparse invoice</button>}<button className="btn" disabled={busy || invoice.status !== 'READY_TO_POST'} onClick={post}>Post reconciled invoice</button></div></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase text-emerald-400">Pilot invoice</p><h2 className="text-xl font-semibold">{String(invoice.invoiceNumber)}</h2><p className="text-xs text-slate-400">Period {String(invoice.periodStart).slice(0, 10)} – {String(invoice.periodEnd).slice(0, 10)} · Due {invoice.dueDate ? String(invoice.dueDate).slice(0, 10) : 'not provided'}</p></div><div className="flex flex-wrap gap-2">{invoice.status !== 'POSTED' && <button className="btn" disabled={busy} onClick={applyProductMappings}>Apply product mappings</button>}{invoice.canRematchTrucks === true && <button className="btn" disabled={busy} onClick={rematchTrucks}>Re-run truck matching</button>}{invoice.canReparse === true && <button className="btn" disabled={busy} onClick={reparse}>Reparse invoice</button>}<button className="btn" disabled={busy || invoice.status !== 'READY_TO_POST'} onClick={post}>Post invoice</button></div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-4"><Metric label="Invoice total" value={money(invoice.invoiceTotalMinor)} /><Metric label="Parsed total" value={money(invoice.parsedTotalMinor)} /><Metric label="Difference" value={money(invoice.differenceMinor)} warn={String(invoice.differenceMinor) !== '0'} /><Metric label="Open issues" value={String(openIssues)} warn={openIssues > 0} /></div>
-        <p className="mt-3 text-xs text-slate-400">Reparse reads the immutable stored XLS, replaces only an eligible unposted review preview, and retains before/after audit provenance. It never posts automatically. Posting creates one economic transaction per fueling event plus explicit adjustment transactions.</p>
+        <details className="mt-3 text-xs text-slate-400"><summary>Details / Audit</summary><p>Parser {String(invoice.parseVersion)}</p><p>Reparse reads the immutable stored XLS, replaces only an eligible unposted review preview, and retains before/after audit provenance. It never posts automatically. Posting creates one economic transaction per fueling event plus explicit adjustment transactions.</p></details><a className="mt-3 block text-sm text-emerald-300" href={`/accounting?view=audit&queue=payments&expectation=${String(invoice.expectationId ?? '')}`}>View payment settlement</a>
       </section>
       <section className={card}><div className="mb-3 flex justify-between"><h3 className="font-semibold">Review issues</h3><select aria-label="Issue status filter" className={field} value={issueFilter} onChange={(event) => setIssueFilter(event.target.value)}><option>OPEN</option><option>RESOLVED</option><option>ALL</option></select></div><div className="space-y-2">{shownIssues.map((issue) => <Issue key={String(issue.id)} issue={issue} busy={busy} trucks={trucks} categories={activeCategories} resolve={resolve} />)}{shownIssues.length === 0 && <p className="text-sm text-emerald-300">No issues in this view.</p>}</div></section>
       <section className={card}><h3 className="mb-3 font-semibold">Fueling events and product lines</h3><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="text-xs text-slate-400"><tr><th className="p-2">Date</th><th>Unit / truck</th><th>Location</th><th>Product</th><th>Quantity</th><th>Category</th><th className="text-right">Amount</th></tr></thead><tbody>{events.flatMap((event) => ((event.productLines as Row[]) ?? []).map((line) => { const truck = event.truck as Row | undefined; return <tr key={String(line.id)} className="border-t border-white/10"><td className="p-2">{String(event.transactionDate).slice(0, 10)}</td><td>{String(event.sourceUnitNumber)} · {truck ? `${String(truck.unitNumber)} — ${String((truck.company as Row)?.name ?? '')}` : String(event.truckMatchStatus)}</td><td>{String(event.city ?? '')}, {String(event.state ?? '')}</td><td>{String(line.sourceProductCode)} · {String(line.productType).replaceAll('_', ' ')}</td><td>{String(line.quantity)}</td><td>{String((line.category as Row)?.name ?? 'Needs review')}</td><td className="text-right">{money(line.amountMinor)}</td></tr>; }))}</tbody></table></div></section>

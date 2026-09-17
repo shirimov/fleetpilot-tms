@@ -21,7 +21,7 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
     await page.goto('/accounting');
-    await expect(page.getByRole('heading', { name: 'Financial Control & Reconciliation' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Accounting' })).toBeVisible();
     await page.getByPlaceholder('Marybeg Group').fill(`Accounting Group ${suffix}`);
     await page.getByRole('button', { name: 'Create operating group' }).click();
     await expect(page.getByRole('button', { name: 'Overview' })).toBeVisible();
@@ -31,7 +31,8 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
       prisma.financialParty.create({ data: { operatingGroupId: operatingGroup.operatingGroupId, companyId: company.id, type: 'OWNER_OPERATOR', name: `Owner B ${suffix}` } }),
     ]);
 
-    await page.getByRole('button', { name: 'Categories' }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Categories', exact: true }).click();
     const categoryForm = page.getByRole('heading', { name: 'Add category' }).locator('xpath=ancestor::form');
     await categoryForm.getByPlaceholder('Operational category').fill(`Company Expenses ${suffix}`);
     await categoryForm.getByRole('button', { name: 'Add category' }).click();
@@ -52,21 +53,21 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await disposableCategory.getByRole('button', { name: 'Delete' }).click();
     await expect(page.locator('strong').filter({ hasText: `Disposable category ${suffix}` })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Programs' }).click();
+    await page.getByRole('button', { name: 'Cost centers' }).click();
     await page.getByPlaceholder('ADMIN', { exact: true }).fill(`ADMIN-${suffix}`);
     await page.getByPlaceholder('Administration', { exact: true }).fill(`Administration ${suffix}`);
-    await page.getByRole('button', { name: 'Add program' }).click();
+    await page.getByRole('button', { name: 'Add cost center' }).click();
     await expect(page.getByText(`${`ADMIN-${suffix}`.toUpperCase()} · Administration ${suffix}`, { exact: true })).toBeVisible();
     await page.getByPlaceholder('ADMIN', { exact: true }).fill(`DELETE-${suffix}`);
     await page.getByPlaceholder('Administration', { exact: true }).fill(`Disposable program ${suffix}`);
-    await page.getByRole('button', { name: 'Add program' }).click();
+    await page.getByRole('button', { name: 'Add cost center' }).click();
     const disposableProgram = page.getByText(`${`DELETE-${suffix}`.toUpperCase()} · Disposable program ${suffix}`, { exact: true }).locator('xpath=ancestor::article');
     page.once('dialog', (dialog) => dialog.accept());
     await disposableProgram.getByRole('button', { name: 'Delete' }).click();
     await expect(page.getByText(`Disposable program ${suffix}`, { exact: false })).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Admin Fees' }).click();
-    const feeForm = page.getByRole('heading', { name: 'Add Admin Fee agreement' }).locator('xpath=ancestor::form');
+    await page.getByRole('button', { name: 'Settlement rules' }).click();
+    const feeForm = page.getByRole('heading', { name: 'Add admin fee agreement' }).locator('xpath=ancestor::form');
     await feeForm.getByLabel('Owner').selectOption(feeOwnerA.id);
     await feeForm.getByPlaceholder('90.00').fill('90.00');
     await feeForm.getByLabel('Effective from').fill('2026-01-01');
@@ -148,7 +149,7 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await expect(page.locator('p[role="alert"]')).toContainText('financial history');
     await expect(transaction).toBeVisible();
 
-    const transactionForm = page.getByRole('heading', { name: 'Add normalized transaction' }).locator('xpath=ancestor::form');
+    const transactionForm = page.getByRole('heading', { name: 'Add accounting transaction' }).locator('xpath=ancestor::form');
     await transactionForm.locator('input[name="transactionDate"]').fill('2026-08-03');
     await transactionForm.getByPlaceholder('Description').fill('Move operating cash');
     await transactionForm.getByPlaceholder('48320.00').fill('1000.00');
@@ -159,13 +160,15 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await expect(page.getByText('Move operating cash', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Overview' }).click();
-    await expect(page.getByText('Transfers').locator('xpath=..').getByText('1', { exact: true })).toBeVisible();
+    await page.getByText('Details / Import diagnostics', { exact: true }).click();
+    await expect(page.getByText(/1 transfers/)).toBeVisible();
 
     await page.getByRole('button', { name: 'Audit Center' }).click();
-    await expect(page.getByText('Possible duplicates')).toBeVisible();
+    await page.getByText('Completed checks', { exact: true }).click();
+    await expect(page.getByText(/Possible duplicates/)).toBeVisible();
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole('button', { name: 'Transactions' }).click();
+    await page.getByLabel('Accounting section', { exact: true }).selectOption('transactions');
     await page.getByLabel('Transaction date').focus();
     await expect(page.getByLabel('Transaction date')).toBeFocused();
 
@@ -174,8 +177,10 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await expect.poll(() => new URL(page.url()).pathname).toBe('/login');
     await page.goto(`/login/email/verify#token=${await issueToken(member.id, member.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
-    const denied = await page.request.get('/api/finance/overview');
-    expect(denied.status()).toBe(403);
+    for (const route of ['overview','transactions?page=1','fuel','bank/transactions?page=1','group/companies','categories','sources','programs','pilot-product-mappings','admin-fee-agreements']) {
+      const denied = await page.request.get(`/api/finance/${route}`);
+      expect(denied.status(),route).toBe(403);
+    }
     await page.goto('/accounting');
     await expect(page).toHaveURL('/accounting');
     await expect(page.getByText('Access denied', { exact: true })).toBeVisible();
@@ -236,8 +241,8 @@ test('OWNER explicitly adds an authorized company to the Accounting operating gr
     await expect(page.getByRole('button', { name: 'Overview' })).toBeVisible();
     groupId = (await prisma.operatingGroupCompany.findUniqueOrThrow({ where: { companyId: companyA.id } })).operatingGroupId;
 
-    await page.getByRole('button', { name: 'Operating Group' }).click();
-    const included = page.getByRole('heading', { name: 'Included companies' }).locator('xpath=ancestor::section');
+    await page.goto('/accounting?view=settings&section=companies');
+    const included = page.getByRole('heading', { name: 'Included companies' }).locator('xpath=ancestor::section[1]');
     await expect(included).toBeVisible();
     await expect(included.getByText(companyA.name, { exact: true })).toBeVisible();
     await expect(page.getByLabel('Company to add').locator(`option:has-text("${companyD.name}")`)).toHaveCount(0);
@@ -257,7 +262,7 @@ test('OWNER explicitly adds an authorized company to the Accounting operating gr
     await page.goto(`/login/email/verify#token=${await issueToken(admin.id, admin.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
     await page.goto('/accounting');
-    await page.getByRole('button', { name: 'Operating Group' }).click();
+    await page.goto('/accounting?view=settings&section=companies');
     await expect(page.getByText('Your access is view-only.')).toBeVisible();
     await expect(page.getByLabel('Company to add')).toHaveCount(0);
     const denied = await page.request.post('/api/finance/group/companies', { data: { companyId: companyB.id } });

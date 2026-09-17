@@ -36,12 +36,13 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
     await page.goto('/accounting');
-    await page.getByRole('button', { name: 'Pilot Fuel Imports' }).click();
+    await page.goto('/accounting?view=settings&section=fuel-rules');
     await expect(page.getByRole('heading', { name: 'Pilot Product Mappings' })).toBeVisible();
     await expect(page.getByLabel('Pilot product 020 category')).toBeVisible();
     await expect(page.getByLabel('Pilot product 033 category')).toBeVisible();
     await expect(page.getByLabel('Pilot product 140 category')).toBeVisible();
     await expect(page.getByText('Not mapped')).toHaveCount(3);
+    await page.goto('/accounting?view=fuel&section=imports');
     await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
     await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920001.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({
       invoiceNumber: '920001', total: 151,
@@ -54,9 +55,12 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await expect(page.getByText('MISSING CATEGORY').first()).toBeVisible();
     await expect(page.getByText('Invoice total').locator('..')).toContainText('$151.00');
     await expect(page.getByText('Difference').locator('..')).toContainText('$0.00');
+    await page.goto('/accounting?view=settings&section=fuel-rules');
     await page.getByLabel('Pilot product 020 category').selectOption(category.id);
     await expect(page.getByText('Mapped to Fuel')).toBeVisible();
     expect(await prisma.pilotProductMapping.count({ where: { operatingGroupId: group.id, providerAccountHash: '*', productCode: '020' } })).toBe(1);
+    await page.goto('/accounting?view=fuel&section=imports');
+    await page.getByRole('button', { name: /Invoice 920001/ }).click();
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Apply product mappings' }).click();
     await expect(page.getByText('No issues in this view.')).toBeVisible();
@@ -69,11 +73,12 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
       prisma.financialAuditEvent.updateMany({ where: { pilotProviderInvoiceId: imported.id, action: 'PILOT_INVOICE_PARSED' }, data: { metadata: { parseVersion: 'pilot-biff-v1' } } }),
     ]);
     await page.reload();
-    await page.getByRole('button', { name: 'Pilot Fuel Imports' }).click();
+    await page.goto('/accounting?view=fuel&section=imports');
     await page.getByRole('button', { name: /Invoice 920001 .* NEEDS_REVIEW/ }).click();
     await expect(page.getByRole('button', { name: 'Reparse invoice' })).toBeVisible();
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Reparse invoice' }).click();
+    await page.getByText('Details / Audit', { exact: true }).click();
     await expect(page.getByText('Parser pilot-biff-v2')).toBeVisible();
     await expect(page.getByRole('button', { name: /Invoice 920001 .* READY_TO_POST/ })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reparse invoice' })).toHaveCount(0);
@@ -82,6 +87,7 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     expect(await prisma.financialExpectation.count({ where: { operatingGroupId: group.id, reference: '920001' } })).toBe(0);
     expect(await prisma.financialAuditEvent.count({ where: { pilotProviderInvoiceId: imported.id, action: 'PILOT_INVOICE_REPARSED' } })).toBe(1);
 
+    await page.goto('/accounting?view=fuel&section=imports');
     await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
     await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920002.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920002', unitNumber: '888' })) });
     await page.getByRole('button', { name: 'Parse statement' }).click();
@@ -93,6 +99,7 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
     await page.getByLabel('Search trucks for AMBIGUOUS_TRUCK').fill('Related');
     await expect(truckSelect).toContainText(`Truck 888 — Pilot UI Related ${suffix}`);
     await expect(truckSelect).not.toContainText(`Truck 888 — Pilot UI ${suffix}`);
+    await page.goto('/accounting?view=fuel&section=imports');
     await page.getByLabel('Pilot fuel-card source').selectOption(source.id);
     await page.getByLabel('Pilot XLS file').setInputFiles({ name: 'pilot-920003.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920003', unitNumber: '8558' })) });
     await page.getByRole('button', { name: 'Parse statement' }).click();
