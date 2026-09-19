@@ -265,6 +265,17 @@ test("expired leases resume safely; concurrent workers do not duplicate capture"
       leaseExpiresAt: new Date(0),
     },
   });
+  const expiredJob = await prisma.archiveCaptureJob.findUniqueOrThrow({
+    where: { itemId: item.id },
+  });
+  await assert.rejects(
+    () =>
+      service.capture(bindingId, f.bundle, ctx, undefined, {
+        id: expiredJob.id,
+        token: "expired",
+      }),
+    /CAPTURE_LEASE_LOST/,
+  );
   await Promise.all([
     service.run(i.id, [item.id], provider, ctx),
     service.run(i.id, [item.id], provider, ctx),

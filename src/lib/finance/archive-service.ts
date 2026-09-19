@@ -319,6 +319,10 @@ export class ArchiveService {
       return await this.db.$transaction(
         async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`archive:${c.operatingGroupId}`},0))`;
+          // Keep the claimed job locked until evidence and completion commit together.
+          // A replacement worker must not change the lease after this validation.
+          if (lease)
+            await tx.$queryRaw`SELECT id FROM "ArchiveCaptureJob" WHERE id=${lease.id} FOR UPDATE`;
           if (
             lease &&
             !(await tx.archiveCaptureJob.findFirst({
