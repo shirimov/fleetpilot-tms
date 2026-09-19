@@ -300,6 +300,8 @@ export class ArchiveService {
         pid,
         count: result.items.length,
         fingerprint,
+        acquisition: result.metadata.acquisition ?? "SERVER_PROVIDER",
+        completenessBasis: "CAPTURED_INVENTORY_SNAPSHOT",
       });
       return snapshot;
     });
@@ -540,6 +542,7 @@ export class ArchiveService {
                 statementId: statement.id,
                 providerVersion: n.providerVersion,
                 bundleChecksum,
+                acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
               },
             );
             if (lease)
@@ -600,7 +603,15 @@ export class ArchiveService {
             data: {
               ...common,
               ...n.header,
-              header: json(n.header.header),
+              header: json({
+                ...n.header.header,
+                archiveProvenance: {
+                  acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
+                  assurance: bundle.acquisition
+                    ? "USER_ATTESTED_CHECKSUM_SEALED"
+                    : "SERVER_RETRIEVED",
+                },
+              }),
               issues: json(n.issues),
               lines: {
                 create: n.lines.map((x) => ({

@@ -197,3 +197,72 @@ test("browser-side guard prevents credential-bearing or malformed exports from b
   e.detailBase64 = Buffer.from(JSON.stringify(raw)).toString("base64");
   assert.throws(() => browserEvidenceGuard(e));
 });
+test("inventory dates and all normalized money reject malformed or overflowing input", () => {
+  for (const amount of [
+    "NaN",
+    "Infinity",
+    "1e3",
+    "1,000.00",
+    "92233720368547758.08",
+    "-92233720368547758.09",
+  ]) {
+    const f = statementFixture();
+    const e = inventoryEvidence(companyId, [f]);
+    e.items[0].gross = amount;
+    assert.throws(() => validateInventory(e));
+    const raw = JSON.parse(f.bundle.detail.toString());
+    raw.data.header.ytd_info = { gross: amount };
+    f.bundle.detail = Buffer.from(JSON.stringify(raw));
+    assert.throws(() => validateBundle(bundleEvidence(companyId, f)));
+  }
+  for (const date of ["bad", "2026-02-30", "2027-01-01"]) {
+    const e = inventoryEvidence(companyId, [statementFixture()]);
+    e.items[0].start_date = date;
+    assert.throws(() => validateInventory(e));
+  }
+  for (const [amount, expected] of [
+    ["0", "0"],
+    ["12.34", "1234"],
+    ["-12.34", "-1234"],
+    ["92233720368547758.07", "9223372036854775807"],
+    ["1.234", null],
+  ] as const) {
+    const f = statementFixture();
+    const raw = JSON.parse(f.bundle.detail.toString());
+    raw.data.header.net_pay_info.gross = amount;
+    f.bundle.detail = Buffer.from(JSON.stringify(raw));
+    const n = validateBundle(bundleEvidence(companyId, f)).normalized;
+    assert.equal(n.header.grossMinor?.toString() ?? null, expected);
+    if (expected === null) assert.ok(n.issues.length);
+  }
+});
+test("business-only uploads reject credentials, URL variants, excess count and depth", () => {
+  for (const key of [
+    "password",
+    "sessionToken",
+    "Authorization",
+    "csrf",
+    "localStorage",
+    "signed_url",
+  ]) {
+    assert.throws(() => businessOnly({ nested: { [key]: "synthetic" } }));
+  }
+  for (const url of [
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://10.0.0.1",
+    "http://169.254.169.254/latest/meta-data",
+    "https://example.test/redirect",
+  ]) {
+    assert.throws(() => businessOnly({ note: url }));
+  }
+  const e = inventoryEvidence(companyId, [statementFixture()]);
+  e.items = Array.from({ length: 2001 }, () => e.items[0]);
+  assert.throws(() => validateInventory(e));
+  let nested: unknown = "value";
+  for (let i = 0; i < 32; i++) nested = { nested };
+  assert.throws(() => businessOnly(nested));
+  assert.throws(() =>
+    validateBundle([bundleEvidence(companyId, statementFixture())]),
+  );
+});

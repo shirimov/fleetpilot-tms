@@ -524,7 +524,7 @@ export default function BrowserStatementCapture() {
               }
               await loadCoverage(snapshot);
               setNotice(
-                `Verified ${chosen.length} submissions; ${duplicates} unchanged duplicates.`,
+                `Processed ${chosen.length} submissions; ${duplicates} unchanged duplicates.`,
               );
             })
           }

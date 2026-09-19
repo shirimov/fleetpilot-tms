@@ -50,7 +50,7 @@ type Version = {
   trucks: Truck[];
   lines: Line[];
   issues: string[];
-  header: unknown;
+  header: { archiveProvenance?: { acquisition?: string; assurance?: string } };
   _count: { lines: number };
 };
 type Statement = {
@@ -298,7 +298,10 @@ export default function StatementArchiveWorkspace({
       <h2 className="text-xl font-semibold">Statement archive</h2>
       <p>
         Historical settlement evidence. Capturing statements does not post
-        income, expenses, or bank matches.
+        income, expenses, or bank matches. Completeness means complete against
+        the captured inventory snapshot, not independently verified provider
+        history. Browser submissions are user-attested and checksum sealed;
+        QuickManage has not cryptographically authenticated them to FleetPilot.
       </p>
       <nav
         aria-label="Statement archive views"
@@ -329,7 +332,7 @@ export default function StatementArchiveWorkspace({
             ["Archived statements", overview.statementCount],
             ["Mapped companies", overview.bindings.length],
             ["Company/PID groups", overview.groups],
-            ["Complete groups", overview.complete],
+            ["Complete inventory snapshots", overview.complete],
             [
               "Incomplete groups",
               Number(overview.groups) - Number(overview.complete),
@@ -599,6 +602,14 @@ export default function StatementArchiveWorkspace({
               Archive: {data.status}. Latest version{" "}
               {data.latestProviderVersion}; accepted version{" "}
               {data.acceptedProviderVersion}.
+            </p>
+            <p>
+              Provenance:{" "}
+              {data.version.header.archiveProvenance?.acquisition ===
+              "BROWSER_EVIDENCE_V1"
+                ? "Browser-submitted evidence · user attested · checksum sealed · provider UUID/version recorded"
+                : "Server acquisition / legacy archive · checksum sealed"}
+              .
             </p>
             {data.version.trucks.map((t) => (
               <p key={t.id}>

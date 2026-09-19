@@ -2,6 +2,7 @@ import { businessOnly } from "./archive-browser-evidence";
 export { businessOnly } from "./archive-browser-evidence";
 import { FinancialValidationError } from "./financial-control-errors";
 import {
+  dateOnly,
   hash,
   integer,
   minor,
@@ -129,7 +130,11 @@ function money(v: unknown) {
     fail("Invalid money.");
   // Source fractional cents remain explicit parser issues; malformed/overflow amounts cannot enter the archive.
   const integerPart = (v as string).split(".")[0];
-  if (minor(integerPart) === null) fail("Money exceeds supported range.");
+  if (
+    minor(integerPart) === null ||
+    (/^-?\d+(?:\.\d{1,2})?$/.test(v as string) && minor(v) === null)
+  )
+    fail("Money exceeds supported range.");
 }
 export function validateInventory(value: unknown) {
   const e = envelope(value, "inventory", [
@@ -181,6 +186,8 @@ export function validateInventory(value: unknown) {
         !Number.isFinite(Date.parse(x.updated_date))
       )
         fail("Source timestamp required.");
+      if (dateOnly(x.end_date) < dateOnly(x.start_date))
+        fail("Invalid inventory period.");
       return clean;
     })
     .sort((a, b) =>
@@ -201,6 +208,8 @@ export function validateInventory(value: unknown) {
     metadata: {
       verifiedTwice: true,
       acquisition: "BROWSER_EVIDENCE_V1",
+      completenessBasis: "CAPTURED_INVENTORY_SNAPSHOT",
+      assurance: "USER_ATTESTED_CHECKSUM_SEALED",
       companyId,
       pid,
     },
@@ -266,6 +275,18 @@ export function validateBundle(value: unknown) {
     "reimbursement",
   ])
     if (pay[k] != null) money(pay[k]);
+  if (h.ytd_info != null) {
+    const ytd = record(h.ytd_info);
+    for (const key of ["gross", "net_pay", "payout"])
+      if (ytd[key] != null) money(ytd[key]);
+  }
+  for (const key of ["created_date", "updated_date"])
+    if (
+      d[key] != null &&
+      (typeof d[key] !== "string" ||
+        !Number.isFinite(Date.parse(d[key] as string)))
+    )
+      fail("Invalid source timestamp.");
   for (const [key, field] of [
     ["trips", "net_amount"],
     ["earnings", "amount"],

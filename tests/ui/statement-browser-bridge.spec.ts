@@ -60,15 +60,16 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     page.getByRole("heading", { name: "Browser-assisted capture" }),
   ).toBeVisible();
   await expect(
+    page.getByText(/Completeness means complete against the/),
+  ).toBeVisible();
+  await expect(
     page.getByLabel("Inventory evidence", { exact: true }),
   ).toBeEnabled();
-  await page
-    .getByLabel("Inventory evidence", { exact: true })
-    .setInputFiles(
-      upload("accidental-browser-export.json", {
-        cookies: [{ name: "fake-session", value: "synthetic-do-not-upload" }],
-      }),
-    );
+  await page.getByLabel("Inventory evidence", { exact: true }).setInputFiles(
+    upload("accidental-browser-export.json", {
+      cookies: [{ name: "fake-session", value: "synthetic-do-not-upload" }],
+    }),
+  );
   await expect(
     page.getByRole("alert").filter({ hasText: "Credentials" }),
   ).toBeVisible();
@@ -124,7 +125,7 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     .getByRole("button", { name: "Capture selected statements" })
     .click();
   await expect(
-    page.getByText("Verified 1 submissions; 1 unchanged duplicates."),
+    page.getByText("Processed 1 submissions; 1 unchanged duplicates."),
   ).toBeVisible();
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });

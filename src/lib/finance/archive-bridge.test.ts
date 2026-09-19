@@ -114,7 +114,7 @@ test("explicit verified binding creates immutable scoped grant/audit, catalog re
     },
   });
   assert.equal(audit.length, 1);
-  assert.equal((await bridge.review(c)).rows[0].status, "VERIFIED");
+  assert.equal((await bridge.review(c)).rows[0].status, "OWNER_CONFIRMED");
   await assert.rejects(() =>
     prisma.archiveCompany.update({
       where: { id: b.id },
@@ -339,6 +339,176 @@ test("historical grant is explicit, does not join Accounting; membership and gro
     }),
   );
   assert.ok(b.id);
+});
+test("binding rejects conflicting provenance, inactive/revoked owners and foreign groups", async () => {
+  const historic = await prisma.company.create({
+    data: {
+      name: "Ambiguous synthetic",
+      memberships: { create: { userId: c.userId, role: "OWNER" } },
+    },
+  });
+  const provider = randomUUID();
+  const cat = await bridge.catalog(catalogEvidence(provider), c);
+  const input = {
+    ...confirm(),
+    catalogId: cat.id,
+    providerCompanyId: provider,
+    companyId: historic.id,
+    historical: true,
+  };
+  await prisma.truckLifecycleEvent.create({
+    data: {
+      companyId: historic.id,
+      actorUserId: c.userId,
+      truckReference: "synthetic",
+      unitNumber: "synthetic",
+      action: "IMPORT",
+      metadata: { sourceCompanyId: randomUUID() },
+    },
+  });
+  await assert.rejects(() => bridge.bind(input, c), /provenance/);
+  assert.equal(
+    await prisma.archiveScopeGrant.count({ where: { companyId: historic.id } }),
+    0,
+  );
+  const foreign = await prisma.operatingGroup.create({
+    data: {
+      name: "Foreign binding",
+      companies: { create: { companyId: historic.id } },
+    },
+  });
+  assert.ok(foreign.id);
+  await assert.rejects(() => bridge.bind(input, c));
+  await prisma.user.update({
+    where: { id: c.userId },
+    data: { isActive: false },
+  });
+  try {
+    await assert.rejects(() => bridge.bind(confirm(), c));
+  } finally {
+    await prisma.user.update({
+      where: { id: c.userId },
+      data: { isActive: true },
+    });
+  }
+  await prisma.operatingGroupMembership.update({
+    where: {
+      operatingGroupId_userId: {
+        operatingGroupId: c.operatingGroupId,
+        userId: c.userId,
+      },
+    },
+    data: { role: "ADMIN" },
+  });
+  try {
+    await assert.rejects(() => bridge.bind(confirm(), c));
+  } finally {
+    await prisma.operatingGroupMembership.update({
+      where: {
+        operatingGroupId_userId: {
+          operatingGroupId: c.operatingGroupId,
+          userId: c.userId,
+        },
+      },
+      data: { role: "OWNER" },
+    });
+  }
+  const target = await prisma.company.create({
+    data: {
+      name: "Other owned Company",
+      memberships: { create: { userId: c.userId, role: "OWNER" } },
+    },
+  });
+  await assert.rejects(
+    () =>
+      bridge.bind({ ...confirm(), companyId: target.id, historical: true }, c),
+    /already bound/,
+  );
+});
+test("ten-item resume and smaller fabricated manifests retain honest snapshot semantics", async () => {
+  const fs = Array.from({ length: 10 }, () =>
+    statementFixture({ pid: "2023-03" }),
+  );
+  const e = inventoryEvidence(companyId, fs);
+  const inv = await bridge.inventory(e, c);
+  for (const f of fs.slice(0, 4))
+    await bridge.capture(inv.id, bundleEvidence(companyId, f), c);
+  assert.equal((await bridge.inventory(e, c)).id, inv.id);
+  const reopened = await new ArchiveReadService().inventory(inv.id, c, 0);
+  assert.equal(reopened.coverage.missing, BigInt("6"));
+  assert.equal(reopened.items.filter((x) => !x.captured).length, 6);
+  const smaller = await bridge.inventory(
+    inventoryEvidence(companyId, fs.slice(0, 4)),
+    c,
+  );
+  assert.equal(
+    (await read.inventory(smaller.id, c, 0)).coverage.complete,
+    true,
+  );
+  assert.equal(
+    (smaller.metadata as { completenessBasis: string }).completenessBasis,
+    "CAPTURED_INVENTORY_SNAPSHOT",
+  );
+  assert.equal((await read.inventory(inv.id, c, 0)).coverage.complete, false);
+  const omitCaptured = await bridge.inventory(
+    inventoryEvidence(companyId, fs.slice(0, 3)),
+    c,
+  );
+  assert.equal(
+    (await read.inventory(omitCaptured.id, c, 0)).coverage.complete,
+    false,
+  );
+});
+test("concurrent different-content submissions preserve one canonical version and quarantine retry", async () => {
+  const f = statementFixture({ pid: "2023-04" });
+  const other = {
+    ...f,
+    bundle: {
+      ...f.bundle,
+      pdf: Buffer.from("%PDF-1.4\n% alternate synthetic\n%%EOF"),
+    },
+  };
+  const inv = await bridge.inventory(inventoryEvidence(companyId, [f]), c);
+  const results = await Promise.all([
+    bridge.capture(inv.id, bundleEvidence(companyId, f), c),
+    bridge.capture(inv.id, bundleEvidence(companyId, other), c),
+  ]);
+  assert.equal(results.filter((x) => x.status === "CAPTURING").length, 1);
+  const s = await prisma.archiveStatement.findFirstOrThrow({
+    where: { providerStatementId: f.id },
+    include: { versions: true },
+  });
+  const before = s.versions[0];
+  await bridge.capture(inv.id, bundleEvidence(companyId, f), c);
+  await bridge.capture(inv.id, bundleEvidence(companyId, other), c);
+  const after = await prisma.archiveStatement.findUniqueOrThrow({
+    where: { id: s.id },
+    include: { versions: true, conflicts: true },
+  });
+  assert.deepEqual(after.versions, [before]);
+  assert.equal(after.conflicts.length, 1);
+  assert.equal(after.status, "NEEDS_REVIEW");
+  assert.equal(
+    (before.header as { archiveProvenance: { acquisition: string } })
+      .archiveProvenance.acquisition,
+    "BROWSER_EVIDENCE_V1",
+  );
+  const audits = await prisma.financialAuditEvent.findMany({
+    where: {
+      operatingGroupId: c.operatingGroupId,
+      action: {
+        in: ["ARCHIVE_INVENTORY_CAPTURED", "ARCHIVE_CONTENT_CONFLICT"],
+      },
+    },
+  });
+  assert.ok(audits.length);
+  assert.ok(
+    audits.every(
+      (a) =>
+        (a.metadata as { acquisition: string }).acquisition ===
+        "BROWSER_EVIDENCE_V1",
+    ),
+  );
 });
 test("bridge creates zero economic records", async () => {
   assert.equal(

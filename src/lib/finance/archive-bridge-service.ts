@@ -185,7 +185,7 @@ export class ArchiveBridgeService {
         binding: bound ?? null,
         proposedCompanyId: candidate?.id ?? null,
         status: bound
-          ? "VERIFIED"
+          ? "OWNER_CONFIRMED"
           : candidates.length > 1 || ambiguous
             ? "AMBIGUOUS"
             : !candidate
@@ -260,6 +260,19 @@ export class ArchiveBridgeService {
       if (!canonical.operatingGroupLink && !input.historical)
         throw new FinancialValidationError(
           "Explicit historical archive scope approval required.",
+        );
+      const provenance = await tx.truckLifecycleEvent.findMany({
+        where: { companyId: canonical.id },
+        select: { metadata: true },
+      });
+      if (
+        provenance.some((event) => {
+          const id = object(event.metadata).sourceCompanyId;
+          return id != null && String(id).toLowerCase() !== source.id;
+        })
+      )
+        throw new FinancialValidationError(
+          "Stored source Company identity conflicts. Resolve authoritative provenance before binding.",
         );
       const prior = await tx.archiveCompany.findUnique({
         where: {
