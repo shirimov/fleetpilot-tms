@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { FinancialAuthorization } from "./financial-control-authorization";
+import { object } from "./archive-normalize";
 import { archiveScope } from "./archive-service";
 import {
   FinancialNotFoundError,
@@ -134,6 +135,8 @@ export class ArchiveReadService {
         return {
           ...x,
           metadata: undefined,
+          sourceUnit: object(x.metadata).truck_unit_id ?? null,
+          sourceStatus: object(x.metadata).status ?? null,
           statementId: s?.id ?? null,
           archiveStatus: s?.status ?? "MISSING",
           captured: !!s?.versions.some(

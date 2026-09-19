@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { financialControlAuthorization } from "@/lib/finance/financial-control-authorization";
+import { archiveContext } from "@/lib/finance/archive-bridge-service";
 import { archiveRead, archivePage } from "@/lib/finance/archive-read";
 import { archiveService, json } from "@/lib/finance/archive-service";
 import {
@@ -29,7 +29,7 @@ function failure(error: unknown) {
 }
 export async function GET(request: Request) {
   try {
-    const c = await financialControlAuthorization.requireContext(),
+    const c = await archiveContext(),
       p = new URL(request.url).searchParams;
     if (p.get("download")) {
       const file = await archiveService.original(p.get("download")!, c);
@@ -81,7 +81,7 @@ export async function GET(request: Request) {
 }
 export async function POST(request: Request) {
   try {
-    const c = await financialControlAuthorization.requireContext();
+    const c = await archiveContext();
     if (Number(request.headers.get("content-length") || 0) > 8192)
       throw new FinancialValidationError("Request too large.");
     const b = await request.json();

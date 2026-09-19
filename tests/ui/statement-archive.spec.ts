@@ -135,16 +135,20 @@ test("Statements archive shows scoped inventory, immutable history, bounded capt
     await page.screenshot({ path: `test-results/archive-detail-${width}.png` });
   }
   await nav.getByRole("button", { name: "Capture", exact: true }).click();
-  await expect(page.getByText(/Capture connection is disabled/)).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Discover / refresh inventory" }),
+    page.getByRole("heading", { name: "Browser-assisted capture" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Capture selected statements" }),
   ).toBeDisabled();
   await nav.getByRole("button", { name: "Documents", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Upload statement" }),
   ).toBeVisible();
   await page.goBack();
-  await expect(page.getByText(/Capture connection is disabled/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Browser-assisted capture" }),
+  ).toBeVisible();
   expect(browserErrors).toEqual([]);
 });
 
