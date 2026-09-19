@@ -120,7 +120,8 @@ export class ArchiveReadService {
             providerVersion: true,
             pid: true,
             recipientId: true,
-            providerUpdatedAt: true,
+            sealed: true,
+            recipientType: true,
           },
         },
       },
@@ -141,12 +142,11 @@ export class ArchiveReadService {
           archiveStatus: s?.status ?? "MISSING",
           captured: !!s?.versions.some(
             (v) =>
+              v.sealed &&
+              v.recipientType === x.recipientType &&
               v.providerVersion === x.providerVersion &&
               v.pid === snapshot.pid &&
-              v.recipientId === x.recipientId &&
-              (!x.providerUpdatedAt ||
-                v.providerUpdatedAt?.getTime() ===
-                  new Date(x.providerUpdatedAt).getTime()),
+              v.recipientId === x.recipientId,
           ),
         };
       }),

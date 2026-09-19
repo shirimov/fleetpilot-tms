@@ -1,3 +1,4 @@
+import { providerInstant } from "./archive-time";
 import { createHash } from "node:crypto";
 import { FinancialValidationError } from "./financial-control-errors";
 
@@ -80,8 +81,28 @@ export function dateOnly(v: unknown) {
     throw new FinancialValidationError("Invalid source date.");
   return date;
 }
-export const optionalTime = (v: unknown) =>
-  str(v) && Number.isFinite(Date.parse(String(v))) ? new Date(String(v)) : null;
+// Millisecond projection for display/storage only; never provider identity.
+export const optionalTime = (v: unknown) => {
+  const instant = providerInstant(v);
+  return instant === null ? null : new Date(instant);
+};
+/** Manifest equality uses instant semantics; source metadata and evidence stay raw. */
+export const inventoryFingerprint = (items: SourceObject[]) =>
+  hash(
+    items
+      .map((x) =>
+        JSON.stringify(
+          Object.fromEntries(
+            Object.entries({
+              ...x,
+              updated_date: providerInstant(x.updated_date),
+            }).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+          ),
+        ),
+      )
+      .sort()
+      .join("\n"),
+  );
 export function normalizeStatement(bytes: Uint8Array) {
   const d = object(parseSource(bytes).data),
     h = object(d.header),

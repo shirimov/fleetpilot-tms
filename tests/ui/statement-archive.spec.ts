@@ -56,6 +56,11 @@ test("Statements archive shows scoped inventory, immutable history, bounded capt
     statementFixture({ terminated: true }),
     statementFixture(),
   ];
+  // Real provider precision must not make captured rows appear missing.
+  for (const fixture of provider.fixtures) {
+    fixture.payload.data.updated_date = "2026-09-18T20:39:47.725261Z";
+    fixture.bundle.detail = Buffer.from(JSON.stringify(fixture.payload));
+  }
   const snapshot = await service.discover(binding.id, "2026-37", provider, c),
     items = await prisma.archiveInventoryItem.findMany({
       where: { inventoryId: snapshot.id },

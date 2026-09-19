@@ -474,15 +474,21 @@ test("protected posted Pilot fixture survives capture with exact economics, docu
   assert.deepEqual(await snapshot(), a);
 });
 
-test("a changed inventory timestamp cannot count an older same-version capture", async () => {
-  const f = statementFixture({ pid: "2026-35" });
+test("timestamp metadata cannot hide a captured UUID/version; changed content still conflicts", async () => {
+  const f = statementFixture({ pid: "2026-24" });
   await service.capture(bindingId, f.bundle, ctx);
   f.payload.data.updated_date = "2026-09-18T20:00:00.000Z";
-  const inv = await inventory([f], "2026-35");
+  const inv = await inventory([f], "2026-24");
   const view = await read.inventory(inv.id, ctx, 0);
-  assert.equal(view.coverage.captured, BigInt("0"));
-  assert.equal(view.coverage.complete, false);
-  assert.equal(view.items[0].captured, false);
+  assert.equal(view.coverage.captured, BigInt("1"));
+  assert.equal(view.coverage.complete, true);
+  assert.equal(view.items[0].captured, true);
+  f.bundle.detail = Buffer.from(JSON.stringify(f.payload));
+  assert.equal(
+    (await service.capture(bindingId, f.bundle, ctx)).status,
+    "NEEDS_REVIEW",
+  );
+  assert.equal((await read.inventory(inv.id, ctx, 0)).coverage.complete, false);
 });
 
 test("conflicting exact VIN/unit mappings remain unresolved without blocking capture", async () => {
