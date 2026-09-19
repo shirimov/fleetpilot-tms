@@ -104,6 +104,7 @@ test('OWNER completes the manual Accounting evidence workflow and MEMBER is deni
     await expect(page.getByText(`Disposable account ${suffix}`, { exact: true })).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Statements' }).click();
+    await page.getByRole('navigation', { name: 'Statement archive views' }).getByRole('button', { name: 'Documents' }).click();
     const uploadForm = page.getByRole('heading', { name: 'Upload statement' }).locator('xpath=ancestor::form');
     await uploadForm.getByRole('combobox').first().selectOption({ label: `Operating Bank ${suffix}` });
     await page.locator('input[name="periodStart"]').fill('2026-08-01');

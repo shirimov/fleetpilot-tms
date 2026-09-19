@@ -41,7 +41,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await page.getByRole('button',{name:new RegExp(`Invoice ${invoices[1].invoiceNumber}`)}).click();
     await page.waitForLoadState('networkidle');
     await expect(page.getByRole('heading',{name:invoices[1].invoiceNumber,exact:true})).toBeVisible();
-    await page.goto('/accounting?view=statements');
+    await page.goto('/accounting?view=statements&archive=documents');
     await expect(page.getByRole('heading',{name:'Statement documents'})).toBeVisible();
     await page.route('**/api/finance/overview',async route=>{
       const response = await route.fetch(); const body = await response.json();

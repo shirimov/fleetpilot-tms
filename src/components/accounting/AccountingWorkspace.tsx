@@ -2,6 +2,7 @@
 
 import { useSearchParams } from 'next/navigation';
 import FuelWorkspace from './FuelWorkspace';
+import StatementArchiveWorkspace from './StatementArchiveWorkspace';
 import { reviewQueues } from '@/lib/finance/accounting-read-model';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { formatMinorUnitsDecimal, minorUnitsToDecimalInput, parsePositiveMinorUnits } from '@/lib/finance/money';
@@ -83,11 +84,12 @@ export default function AccountingWorkspace() {
       if (tab === 'overview' || tab === 'audit') jobs.push(load('overview', setOverview));
       if (tab === 'audit') jobs.push(load('expectations', setExpectations));
       if (tab === 'transactions') jobs.push(load<{ rows: Row[]; page: number; total: number; pageSize: number }>(`transactions?${new URLSearchParams({ queue: exceptionFilter, page })}`, value => { setTransactions(value.rows); setPagination(value); }));
-      if (tab === 'transactions' || tab === 'statements' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'sources') jobs.push(load('sources', setSources));
+      if (tab === 'transactions' || tab === 'statements' && params.get('archive') === 'documents' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'sources') jobs.push(load('sources', setSources));
       if (tab === 'transactions' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && ['categories','fuel-rules'].includes(setting)) jobs.push(load('categories', setCategories));
       if (tab === 'transactions' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'settlement-rules') jobs.push(load('dimensions', setDimensions));
       if (tab === 'transactions') jobs.push(load('import-records', setRecords));
-      if (tab === 'statements') jobs.push(load('statements', setStatements));
+      if (tab === 'statements' && params.get('archive') === 'documents') jobs.push(load('statements', setStatements));
+      if (tab === 'statements' && params.get('archive') === 'capture') jobs.push(load('dimensions', setDimensions));
       if (tab === 'settings' && setting === 'cost-centers') jobs.push(load('programs', setPrograms));
       if (tab === 'settings' && setting === 'settlement-rules') jobs.push(load('admin-fee-agreements', setAdminFees));
       await Promise.all(jobs);
@@ -119,7 +121,7 @@ export default function AccountingWorkspace() {
     {loading ? <p role="status">Loading section…</p> : <>
     {tab === 'overview' && overview && <OverviewView overview={overview} />}
     {tab === 'audit' && overview && <AuditView overview={overview} expectations={expectations.filter(row => params.get('expectation') ? row.id === params.get('expectation') : exceptionFilter === 'payments' ? ['OPEN','PARTIALLY_MATCHED','MISSING'].includes(String(row.status)) : true)} busy={busy} submit={submit} refresh={reload} onDrill={filter => filter === 'missingExpected' ? navigate('audit', { queue: 'payments' }) : navigate('transactions', { queue: filter })} />}
-    {tab === 'statements' && <><h2 className="text-xl font-semibold">Statement documents</h2><p className="text-sm text-slate-400">Import and retain source documents. Owner/contractor deduction reconciliation is a future workflow.</p><StatementView rows={statements} sources={sources} busy={busy} submit={submit} /></>}
+    {tab === 'statements' && <StatementArchiveWorkspace companies={dimensions.companies.map(c => ({ id: String(c.id), name: String(c.name) }))} documents={<><h2 className="text-xl font-semibold">Statement documents</h2><StatementView rows={statements} sources={sources} busy={busy} submit={submit} /></>} />}
     {tab === 'fuel' && <FuelWorkspace sources={sources} categories={categories} trucks={dimensions.pilotTrucks} />}
     {tab === 'settings' && <section className="grid min-w-0 gap-5 md:grid-cols-[210px_minmax(0,1fr)]"><nav aria-label="Accounting settings" className="space-y-4">{settingGroups.map(([title,links]) => <div key={title}><h2 className="mb-2 text-xs uppercase text-slate-400">{title}</h2>{links.map(([key,label]) => <button className={`block w-full rounded-lg p-2 text-left text-sm ${setting === key ? 'bg-emerald-900' : 'hover:bg-slate-800'}`} aria-current={setting === key ? 'page' : undefined} onClick={() => navigate('settings', { section: key })} key={key}>{label}</button>)}</div>)}</nav><div className="min-w-0">
       {setting === 'companies' && <OperatingGroupCompanies groupName={String(group.name)} onChanged={reload} />}
