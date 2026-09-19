@@ -1,3 +1,4 @@
+import { archiveDocumentScope } from './archive-service';
 import { categoryAttribution, entryQueues, isReviewQueue, pageNumber, summarizeAccounting, reviewQueues } from './accounting-read-model';
 import { createHash } from 'node:crypto';
 import {
@@ -395,7 +396,7 @@ export class FinancialControlService {
 
   async listStatements(context: FinancialAuthorization) {
     const statements = await this.database.financialStatement.findMany({
-      where: { operatingGroupId: context.operatingGroupId }, orderBy: { createdAt: 'desc' },
+      where: { ...archiveDocumentScope(context), archiveVersions: { none: {} }, archiveConflicts: { none: {} } }, orderBy: { createdAt: 'desc' },
       select: { id: true, type: true, periodStart: true, periodEnd: true, originalFilename: true, mimeType: true, byteSize: true, checksumSha256: true, importStatus: true, currency: true, sourceTotalMinor: true, importedRowCount: true, matchedRowCount: true, unresolvedRowCount: true, createdAt: true, source: { select: { id: true, name: true } } },
     });
     return statements.map((statement) => ({ ...statement, sourceTotalMinor: bigintJson(statement.sourceTotalMinor) }));

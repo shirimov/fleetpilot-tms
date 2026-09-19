@@ -103,6 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
+  archiveCompanies           ArchiveCompany[]
   id                         String                      @id @default(cuid())
   name                       String
   dotNumber                  String?
@@ -147,15 +148,18 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  id              String   @id @default(cuid())
-  email           String   @unique
-  displayName     String
-  image           String?
-  isActive        Boolean  @default(true)
-  activeCompanyId String?
-  activeCompany   Company? @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  archiveVersions    ArchiveVersion[]   @relation("ArchiveVersionActor")
+  archiveConflicts   ArchiveConflict[]  @relation("ArchiveConflictActor")
+  archiveInventories ArchiveInventory[] @relation("ArchiveInventoryActor")
+  id                 String             @id @default(cuid())
+  email              String             @unique
+  displayName        String
+  image              String?
+  isActive           Boolean            @default(true)
+  activeCompanyId    String?
+  activeCompany      Company?           @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -420,6 +424,7 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  archiveTrucks              ArchiveTruck[]
   id                         String                      @id @default(cuid())
   unitNumber                 String
   unitNumberNormalized       String?
@@ -1451,6 +1456,7 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
+  archiveCompanies       ArchiveCompany[]
   id                     String                          @id @default(cuid())
   name                   String
   currency               String                          @default("USD")
@@ -1473,11 +1479,12 @@ model OperatingGroup {
 }
 
 model OperatingGroupCompany {
+  archiveCompanies ArchiveCompany[]
   operatingGroupId String
-  companyId        String         @unique
-  joinedAt         DateTime       @default(now())
-  operatingGroup   OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyId        String           @unique
+  joinedAt         DateTime         @default(now())
+  operatingGroup   OperatingGroup   @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company          Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@id([operatingGroupId, companyId])
   @@index([operatingGroupId])
@@ -1497,6 +1504,7 @@ model OperatingGroupMembership {
 }
 
 model FinancialSource {
+  archiveCompany       ArchiveCompany?
   id                   String                 @id @default(cuid())
   operatingGroupId     String
   companyId            String?
@@ -1524,6 +1532,8 @@ model FinancialSource {
 }
 
 model FinancialStatement {
+  archiveVersions    ArchiveVersion[]
+  archiveConflicts   ArchiveConflict[]
   id                 String                  @id @default(cuid())
   operatingGroupId   String
   sourceId           String
@@ -2383,4 +2393,199 @@ model TaskMention {
   @@index([cardId, sourceType, createdAt])
   @@index([commentId])
   @@index([mentionedUserId, resolvedAt])
+}
+
+// QuickManage evidence archive. No relationship to economic posting tables.
+model ArchiveCompany {
+  groupCompany        OperatingGroupCompany @relation(fields: [operatingGroupId, companyId], references: [operatingGroupId, companyId], onDelete: Restrict, map: "archive_company_group_fk")
+  id                  String                @id @default(cuid())
+  operatingGroupId    String
+  companyId           String
+  sourceId            String                @unique
+  provider            String                @default("QUICKMANAGE")
+  accountKey          String
+  providerCompanyId   String
+  providerCompanyName String
+  createdAt           DateTime              @default(now())
+  operatingGroup      OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company             Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source              FinancialSource       @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  statements          ArchiveStatement[]
+  inventories         ArchiveInventory[]
+
+  @@unique([operatingGroupId, accountKey, providerCompanyId])
+  @@unique([accountKey, providerCompanyId])
+  @@index([operatingGroupId, companyId])
+}
+
+model ArchiveStatement {
+  id                      String            @id @default(cuid())
+  archiveCompanyId        String
+  providerStatementId     String
+  latestProviderVersion   Int
+  acceptedProviderVersion Int
+  status                  String            @default("PARSED")
+  createdAt               DateTime          @default(now())
+  company                 ArchiveCompany    @relation(fields: [archiveCompanyId], references: [id], onDelete: Restrict)
+  versions                ArchiveVersion[]
+  conflicts               ArchiveConflict[]
+
+  @@unique([archiveCompanyId, providerStatementId])
+  @@index([archiveCompanyId, status])
+}
+
+model ArchiveVersion {
+  sealed            Boolean            @default(false)
+  capturedBy        User               @relation("ArchiveVersionActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
+  id                String             @id @default(cuid())
+  statementId       String
+  providerVersion   Int
+  documentId        String
+  detailStorageKey  String             @unique
+  detailChecksum    String
+  pdfChecksum       String
+  bundleChecksum    String
+  pid               String
+  statementNumber   String?
+  recipientId       String
+  recipientName     String?
+  recipientType     String
+  recipientStatus   String?
+  role              String?
+  contract          String?
+  sourceStatus      String?
+  workStart         DateTime
+  workEnd           DateTime
+  grossMinor        BigInt?
+  deductionsMinor   BigInt?
+  netPayMinor       BigInt?
+  payoutMinor       BigInt?
+  earningMinor      BigInt?
+  currency          String             @default("USD")
+  header            Json
+  issues            Json
+  parserVersion     String
+  providerCreatedAt DateTime?
+  providerUpdatedAt DateTime?
+  capturedAt        DateTime           @default(now())
+  capturedByUserId  String
+  statement         ArchiveStatement   @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  document          FinancialStatement @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  lines             ArchiveLine[]
+  trucks            ArchiveTruck[]
+
+  @@unique([statementId, providerVersion])
+  @@index([pid, capturedAt])
+  @@index([recipientId, pid])
+  @@index([recipientType, recipientStatus])
+  @@index([workStart, workEnd])
+  @@index([documentId])
+}
+
+model ArchiveLine {
+  id             String         @id @default(cuid())
+  versionId      String
+  kind           String
+  sourceArray    String
+  sourceOrder    Int
+  providerLineId String?
+  description    String?
+  sourceType     String?
+  amountMinor    BigInt?
+  rawAmount      String?
+  sourceDate     String?
+  reference      String?
+  sourceUnit     String?
+  included       Boolean?
+  metadata       Json
+  version        ArchiveVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+
+  @@unique([versionId, sourceArray, sourceOrder])
+  @@index([versionId, kind])
+  @@index([providerLineId])
+  @@index([sourceUnit, sourceDate])
+}
+
+model ArchiveTruck {
+  id              String         @id @default(cuid())
+  versionId       String
+  sourceKey       String
+  providerTruckId String?
+  unit            String?
+  vin             String?
+  truckId         String?
+  mappingStatus   String
+  version         ArchiveVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  truck           Truck?         @relation(fields: [truckId], references: [id], onDelete: Restrict)
+
+  @@unique([versionId, sourceKey])
+  @@index([truckId, versionId])
+  @@index([unit])
+}
+
+// A second representation of the SAME provider version is quarantined, never promoted.
+model ArchiveConflict {
+  capturedBy       User               @relation("ArchiveConflictActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
+  id               String             @id @default(cuid())
+  statementId      String
+  providerVersion  Int
+  documentId       String
+  detailStorageKey String             @unique
+  detailChecksum   String
+  pdfChecksum      String
+  bundleChecksum   String
+  capturedAt       DateTime           @default(now())
+  capturedByUserId String
+  statement        ArchiveStatement   @relation(fields: [statementId], references: [id], onDelete: Restrict)
+  document         FinancialStatement @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([statementId, providerVersion, bundleChecksum])
+  @@index([documentId])
+}
+
+model ArchiveInventory {
+  sealed           Boolean                @default(false)
+  capturedBy       User                   @relation("ArchiveInventoryActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
+  id               String                 @id @default(cuid())
+  archiveCompanyId String
+  pid              String
+  expectedCount    Int
+  fingerprint      String
+  observedAt       DateTime               @default(now())
+  capturedByUserId String
+  metadata         Json
+  company          ArchiveCompany         @relation(fields: [archiveCompanyId], references: [id], onDelete: Restrict)
+  items            ArchiveInventoryItem[]
+
+  @@index([archiveCompanyId, pid, observedAt])
+}
+
+model ArchiveInventoryItem {
+  id                  String             @id @default(cuid())
+  inventoryId         String
+  providerStatementId String
+  providerVersion     Int
+  recipientId         String
+  recipientName       String?
+  recipientType       String
+  providerUpdatedAt   String?
+  metadata            Json
+  inventory           ArchiveInventory   @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
+  job                 ArchiveCaptureJob?
+
+  @@unique([inventoryId, providerStatementId])
+}
+
+model ArchiveCaptureJob {
+  id             String               @id @default(cuid())
+  itemId         String               @unique
+  status         String               @default("DISCOVERED")
+  attempts       Int                  @default(0)
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  errorCode      String?
+  updatedAt      DateTime             @updatedAt
+  item           ArchiveInventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([status, leaseExpiresAt])
 }
