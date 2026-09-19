@@ -161,6 +161,16 @@ export class ArchiveReadService {
       lifecycle = params.get("lifecycle"),
       status = params.get("status"),
       truck = params.get("truck");
+    for (const value of [binding, recipient, truck])
+      if (value && value.length > 200)
+        throw new FinancialValidationError("Filter too long.");
+    if (
+      (pid && !/^\d{4}-\d{2}$/.test(pid)) ||
+      (type && !["DRIVER", "CONTRACTOR"].includes(type)) ||
+      (lifecycle && !["active", "terminated"].includes(lifecycle)) ||
+      (status && !["PARSED", "SOURCE_CHANGED", "NEEDS_REVIEW"].includes(status))
+    )
+      throw new FinancialValidationError("Invalid archive filter.");
     const version: Prisma.ArchiveVersionWhereInput = {
       sealed: true,
       ...(pid ? { pid } : {}),

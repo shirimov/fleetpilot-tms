@@ -198,7 +198,7 @@ export class ArchiveService {
     if (
       !/^\d{4}-\d{2}$/.test(pid) ||
       result.items.length > 2000 ||
-      new Set(result.items.map((x) => x.statement_id)).size !==
+      new Set(result.items.map((x) => uuid(x.statement_id))).size !==
         result.items.length ||
       result.metadata.verifiedTwice !== true
     )
@@ -240,9 +240,9 @@ export class ArchiveService {
           metadata: json(result.metadata),
           items: {
             create: result.items.map((x) => ({
-              providerStatementId: String(x.statement_id),
+              providerStatementId: uuid(x.statement_id),
               providerVersion: integer(x.version),
-              recipientId: String(x.driver_id),
+              recipientId: uuid(x.driver_id),
               recipientName:
                 [str(x.first_name), str(x.last_name)]
                   .filter(Boolean)
@@ -515,18 +515,25 @@ export class ArchiveService {
               ?.normalize("NFKC")
               .trim()
               .toUpperCase();
-            const truck = vin
+            const byVin = vin
               ? await tx.truck.findFirst({
                   where: { vinNormalized: vin, companyId: company.companyId },
                 })
-              : unit
-                ? await tx.truck.findFirst({
-                    where: {
-                      companyId: company.companyId,
-                      unitNumberNormalized: unit,
-                    },
-                  })
-                : null;
+              : null;
+            const byUnit = unit
+              ? await tx.truck.findFirst({
+                  where: {
+                    companyId: company.companyId,
+                    unitNumberNormalized: unit,
+                  },
+                })
+              : null;
+            // Conflicting exact identifiers are ambiguous historical evidence.
+            const truck = vin
+              ? byVin && (!byUnit || byUnit.id === byVin.id)
+                ? byVin
+                : null
+              : byUnit;
             trucks.push({
               ...sourceTruck,
               truckId: truck?.id ?? null,
