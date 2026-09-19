@@ -355,7 +355,7 @@ export class ArchiveService {
     if (
       expected &&
       (n.providerVersion !== expected.providerVersion ||
-        (expected.updatedAt &&
+        (expected.updatedAt != null &&
           providerInstant(
             object(parseSource(bundle.detail).data).updated_date,
           ) !== providerInstant(expected.updatedAt)))

@@ -53,7 +53,7 @@ hash original bytes; semantic equivalence must never erase evidence differences.
 
 ## Migration and immutability
 
-`20260919180000_archive_coverage_provider_identity` replaces the existing
+`20260920120000_archive_coverage_provider_identity` replaces the existing
 ArchiveCoverage view. A view migration is necessary because overview, list and
 detail aggregate reads share that database view. Patching a UI count would leave
 the other readers inconsistent. The migration removes timestamp equality and

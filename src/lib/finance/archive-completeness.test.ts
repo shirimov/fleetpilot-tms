@@ -94,7 +94,7 @@ async function economics(c = ctx) {
 test("five accepted UUID/version shapes: 5 sealed versions, 5 PDFs/JSON, 71 unchanged lines and complete scoped snapshots", async () => {
   const fixtures = acceptedStatementFixtures();
   const economicsBefore = await economics();
-  const snapshots = [];
+  const snapshots: { id: string }[] = [];
   const bindings = [bindingId];
   // Two separately scoped Companies, matching the acceptance sample layout.
   const company = await prisma.company.create({
@@ -146,7 +146,7 @@ test("five accepted UUID/version shapes: 5 sealed versions, 5 PDFs/JSON, 71 unch
       )
     ).split("-- An unseen")[0];
     const newSql = await readFile(
-      "prisma/migrations/20260919180000_archive_coverage_provider_identity/migration.sql",
+      "prisma/migrations/20260920120000_archive_coverage_provider_identity/migration.sql",
       "utf8",
     );
     await tx.$executeRawUnsafe(oldSql);
@@ -250,7 +250,7 @@ test("freshness compares exact raw instants; identity/version/checksum protectio
     () =>
       service.capture(bindingId, f.bundle, ctx, {
         ...expected,
-        updatedAt: "invalid",
+        updatedAt: "",
       }),
     /Invalid source timestamp/,
   );
