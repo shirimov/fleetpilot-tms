@@ -103,6 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
+  archiveGrants              ArchiveScopeGrant[]
   archiveCompanies           ArchiveCompany[]
   id                         String                      @id @default(cuid())
   name                       String
@@ -148,18 +149,20 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  archiveVersions    ArchiveVersion[]   @relation("ArchiveVersionActor")
-  archiveConflicts   ArchiveConflict[]  @relation("ArchiveConflictActor")
-  archiveInventories ArchiveInventory[] @relation("ArchiveInventoryActor")
-  id                 String             @id @default(cuid())
-  email              String             @unique
+  archiveGrants      ArchiveScopeGrant[]
+  archiveCatalogs    ArchiveBrowserCatalog[]
+  archiveVersions    ArchiveVersion[]        @relation("ArchiveVersionActor")
+  archiveConflicts   ArchiveConflict[]       @relation("ArchiveConflictActor")
+  archiveInventories ArchiveInventory[]      @relation("ArchiveInventoryActor")
+  id                 String                  @id @default(cuid())
+  email              String                  @unique
   displayName        String
   image              String?
-  isActive           Boolean            @default(true)
+  isActive           Boolean                 @default(true)
   activeCompanyId    String?
-  activeCompany      Company?           @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  activeCompany      Company?                @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -1456,6 +1459,8 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
+  archiveGrants          ArchiveScopeGrant[]
+  archiveCatalogs        ArchiveBrowserCatalog[]
   archiveCompanies       ArchiveCompany[]
   id                     String                          @id @default(cuid())
   name                   String
@@ -1479,12 +1484,11 @@ model OperatingGroup {
 }
 
 model OperatingGroupCompany {
-  archiveCompanies ArchiveCompany[]
   operatingGroupId String
-  companyId        String           @unique
-  joinedAt         DateTime         @default(now())
-  operatingGroup   OperatingGroup   @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
-  company          Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyId        String         @unique
+  joinedAt         DateTime       @default(now())
+  operatingGroup   OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Cascade)
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@id([operatingGroupId, companyId])
   @@index([operatingGroupId])
@@ -2397,19 +2401,19 @@ model TaskMention {
 
 // QuickManage evidence archive. No relationship to economic posting tables.
 model ArchiveCompany {
-  groupCompany        OperatingGroupCompany @relation(fields: [operatingGroupId, companyId], references: [operatingGroupId, companyId], onDelete: Restrict, map: "archive_company_group_fk")
-  id                  String                @id @default(cuid())
+  archiveGrant        ArchiveScopeGrant  @relation(fields: [operatingGroupId, companyId], references: [operatingGroupId, companyId], onDelete: Restrict, map: "archive_company_grant_fk")
+  id                  String             @id @default(cuid())
   operatingGroupId    String
   companyId           String
-  sourceId            String                @unique
-  provider            String                @default("QUICKMANAGE")
+  sourceId            String             @unique
+  provider            String             @default("QUICKMANAGE")
   accountKey          String
   providerCompanyId   String
   providerCompanyName String
-  createdAt           DateTime              @default(now())
-  operatingGroup      OperatingGroup        @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company             Company               @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source              FinancialSource       @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  createdAt           DateTime           @default(now())
+  operatingGroup      OperatingGroup     @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company             Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source              FinancialSource    @relation(fields: [sourceId], references: [id], onDelete: Restrict)
   statements          ArchiveStatement[]
   inventories         ArchiveInventory[]
 
@@ -2558,6 +2562,7 @@ model ArchiveInventory {
   items            ArchiveInventoryItem[]
 
   @@index([archiveCompanyId, pid, observedAt])
+  @@index([archiveCompanyId, pid, fingerprint], map: "archive_inventory_fingerprint_lookup")
 }
 
 model ArchiveInventoryItem {
@@ -2588,4 +2593,34 @@ model ArchiveCaptureJob {
   item           ArchiveInventoryItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   @@index([status, leaseExpiresAt])
+}
+
+// Owner-approved archive eligibility, independent of operational group membership.
+model ArchiveScopeGrant {
+  operatingGroupId String
+  companyId        String           @unique
+  grantedByUserId  String?
+  reason           String
+  createdAt        DateTime         @default(now())
+  operatingGroup   OperatingGroup   @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company          Company          @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  grantedBy        User?            @relation(fields: [grantedByUserId], references: [id], onDelete: Restrict)
+  bindings         ArchiveCompany[]
+
+  @@id([operatingGroupId, companyId])
+}
+
+// Validated business metadata, not browser credentials or a provider-authenticated assertion.
+model ArchiveBrowserCatalog {
+  id                String         @id @default(cuid())
+  operatingGroupId  String
+  accountKey        String
+  fingerprint       String
+  companies         Json
+  submittedByUserId String
+  createdAt         DateTime       @default(now())
+  operatingGroup    OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  submittedBy       User           @relation(fields: [submittedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([operatingGroupId, accountKey, fingerprint])
 }

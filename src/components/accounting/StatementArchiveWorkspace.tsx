@@ -1,4 +1,5 @@
 "use client";
+import BrowserStatementCapture from "./BrowserStatementCapture";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatMinorUnitsDecimal } from "@/lib/finance/money";
@@ -49,7 +50,7 @@ type Version = {
   trucks: Truck[];
   lines: Line[];
   issues: string[];
-  header: unknown;
+  header: { archiveProvenance?: { acquisition?: string; assurance?: string } };
   _count: { lines: number };
 };
 type Statement = {
@@ -117,7 +118,6 @@ async function api(url: string, init?: RequestInit) {
 }
 export default function StatementArchiveWorkspace({
   documents,
-  companies,
 }: {
   documents: ReactNode;
   companies: { id: string; name: string }[];
@@ -298,7 +298,10 @@ export default function StatementArchiveWorkspace({
       <h2 className="text-xl font-semibold">Statement archive</h2>
       <p>
         Historical settlement evidence. Capturing statements does not post
-        income, expenses, or bank matches.
+        income, expenses, or bank matches. Completeness means complete against
+        the captured inventory snapshot, not independently verified provider
+        history. Browser submissions are user-attested and checksum sealed;
+        QuickManage has not cryptographically authenticated them to FleetPilot.
       </p>
       <nav
         aria-label="Statement archive views"
@@ -329,7 +332,7 @@ export default function StatementArchiveWorkspace({
             ["Archived statements", overview.statementCount],
             ["Mapped companies", overview.bindings.length],
             ["Company/PID groups", overview.groups],
-            ["Complete groups", overview.complete],
+            ["Complete inventory snapshots", overview.complete],
             [
               "Incomplete groups",
               Number(overview.groups) - Number(overview.complete),
@@ -346,100 +349,7 @@ export default function StatementArchiveWorkspace({
           ))}
         </div>
       ) : null}
-      {view === "capture" && (
-        <>
-          <p>
-            Discover one Company/PID, then select up to five statements. Failed
-            or interrupted captures can be resumed from their inventory.
-          </p>
-          {!overview?.connectionEnabled && (
-            <p className={box}>
-              Capture connection is disabled. An operator must verify and enable
-              QuickManage archive access before live capture.
-            </p>
-          )}
-          <form
-            className={`${box} flex flex-wrap gap-3`}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              const r = await action({
-                action: "discover",
-                company: f.get("company"),
-                pid: f.get("pid"),
-              });
-              if (r) go({ archive: "inventory", id: r.id });
-            }}
-          >
-            <select
-              aria-label="Capture company"
-              name="company"
-              className={input}
-              required
-            >
-              <option value="">Select Company</option>
-              {overview?.bindings.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.company.name}
-                </option>
-              ))}
-            </select>
-            <input
-              className={input}
-              name="pid"
-              placeholder="PID (2026-37)"
-              pattern="[0-9]{4}-[0-9]{2}"
-              required
-            />
-            <button
-              className="btn"
-              disabled={busy || !overview?.connectionEnabled}
-            >
-              Discover / refresh inventory
-            </button>
-          </form>
-          <details className={box}>
-            <summary>Company mapping</summary>
-            <p>
-              Map an explicitly verified provider Company UUID to an authorized
-              FleetPilot Company. No Company or Truck is created automatically.
-            </p>
-            <form
-              className="flex flex-wrap gap-3 mt-3"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
-                void action({
-                  action: "bind",
-                  companyId: f.get("companyId"),
-                  providerCompanyId: f.get("providerCompanyId"),
-                });
-              }}
-            >
-              <select
-                aria-label="Canonical Company"
-                name="companyId"
-                className={input}
-              >
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-              <input
-                className={input}
-                name="providerCompanyId"
-                placeholder="QuickManage Company UUID"
-                required
-              />
-              <button disabled={busy || !overview?.connectionEnabled}>
-                Save verified mapping
-              </button>
-            </form>
-          </details>
-        </>
-      )}
+      {view === "capture" && <BrowserStatementCapture />}
       {(view === "statements" || view === "completeness") && filter}
       {view === "completeness" && data && (
         <>
@@ -692,6 +602,14 @@ export default function StatementArchiveWorkspace({
               Archive: {data.status}. Latest version{" "}
               {data.latestProviderVersion}; accepted version{" "}
               {data.acceptedProviderVersion}.
+            </p>
+            <p>
+              Provenance:{" "}
+              {data.version.header.archiveProvenance?.acquisition ===
+              "BROWSER_EVIDENCE_V1"
+                ? "Browser-submitted evidence · user attested · checksum sealed · provider UUID/version recorded"
+                : "Server acquisition / legacy archive · checksum sealed"}
+              .
             </p>
             {data.version.trucks.map((t) => (
               <p key={t.id}>

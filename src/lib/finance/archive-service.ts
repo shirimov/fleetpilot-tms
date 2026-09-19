@@ -102,6 +102,18 @@ export class ArchiveService {
     c: FinancialAuthorization,
   ) {
     archiveScope(c);
+    if (
+      c.role !== "OWNER" ||
+      !(await this.db.companyMembership.findFirst({
+        where: {
+          companyId,
+          userId: c.userId,
+          role: "OWNER",
+          user: { isActive: true },
+        },
+      }))
+    )
+      throw new AuthorizationDeniedError();
     uuid(providerCompanyId);
     if (
       !c.companyIds.includes(companyId) ||
@@ -144,6 +156,21 @@ export class ArchiveService {
           );
         return existing;
       }
+      await tx.archiveScopeGrant.upsert({
+        where: {
+          operatingGroupId_companyId: {
+            operatingGroupId: c.operatingGroupId,
+            companyId,
+          },
+        },
+        create: {
+          operatingGroupId: c.operatingGroupId,
+          companyId,
+          grantedByUserId: c.userId,
+          reason: "Operational Company archive binding",
+        },
+        update: {},
+      });
       const financialSource = await tx.financialSource.create({
         data: {
           operatingGroupId: c.operatingGroupId,
@@ -230,9 +257,18 @@ export class ArchiveService {
     if (fingerprint !== result.fingerprint)
       throw new FinancialValidationError("Inventory checksum mismatch.");
     return this.db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`archive:${c.operatingGroupId}`},0))`;
+      const prior = await tx.archiveInventory.findFirst({
+        where: { archiveCompanyId: id, pid, sealed: true },
+        orderBy: [{ observedAt: "desc" }, { id: "desc" }],
+      });
+      if (prior?.fingerprint === fingerprint) return prior;
       const snapshot = await tx.archiveInventory.create({
         data: {
           archiveCompanyId: id,
+          observedAt: new Date(
+            Math.max(Date.now(), (prior?.observedAt.getTime() ?? 0) + 1),
+          ),
           pid,
           expectedCount: result.items.length,
           fingerprint,
@@ -264,13 +300,20 @@ export class ArchiveService {
         pid,
         count: result.items.length,
         fingerprint,
+        acquisition: result.metadata.acquisition ?? "SERVER_PROVIDER",
+        completenessBasis: "CAPTURED_INVENTORY_SNAPSHOT",
       });
       return snapshot;
     });
   }
   async capture(
     bindingId: string,
-    bundle: { detail: Uint8Array; pdf: Uint8Array; originalFilename?: string },
+    bundle: {
+      detail: Uint8Array;
+      pdf: Uint8Array;
+      originalFilename?: string;
+      acquisition?: "BROWSER_EVIDENCE_V1";
+    },
     c: FinancialAuthorization,
     expected?: {
       statementId: string;
@@ -361,6 +404,17 @@ export class ArchiveService {
             },
           });
           if (prior?.bundleChecksum === bundleChecksum) {
+            await this.audit(
+              tx,
+              c,
+              company.companyId,
+              "ARCHIVE_CAPTURE_DUPLICATE",
+              {
+                statementId: statement.id,
+                providerVersion: n.providerVersion,
+                acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
+              },
+            );
             const original = await this.pdfStorage.get(
               prior.documentId
                 ? (
@@ -488,6 +542,7 @@ export class ArchiveService {
                 statementId: statement.id,
                 providerVersion: n.providerVersion,
                 bundleChecksum,
+                acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
               },
             );
             if (lease)
@@ -548,7 +603,15 @@ export class ArchiveService {
             data: {
               ...common,
               ...n.header,
-              header: json(n.header.header),
+              header: json({
+                ...n.header.header,
+                archiveProvenance: {
+                  acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
+                  assurance: bundle.acquisition
+                    ? "USER_ATTESTED_CHECKSUM_SEALED"
+                    : "SERVER_RETRIEVED",
+                },
+              }),
               issues: json(n.issues),
               lines: {
                 create: n.lines.map((x) => ({
@@ -599,6 +662,7 @@ export class ArchiveService {
               versionId: version.id,
               providerVersion: n.providerVersion,
               bundleChecksum,
+              acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
             },
           );
           return {
