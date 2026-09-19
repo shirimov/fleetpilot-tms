@@ -18,4 +18,3 @@ SELECT i.id, i."archiveCompanyId", i.pid, i."observedAt", i."expectedCount"::big
  (SELECT count(*) FROM "ArchiveInventoryItem" e JOIN "ArchiveCaptureJob" j ON j."itemId"=e.id
    WHERE e."inventoryId"=i.id AND (j.status IN ('FAILED','NEEDS_REVIEW') OR (j.status='CAPTURING' AND j."leaseExpiresAt"<now()))) AS failed
 FROM "ArchiveInventory" i WHERE i.sealed;
-
