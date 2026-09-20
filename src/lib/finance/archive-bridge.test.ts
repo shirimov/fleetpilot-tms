@@ -543,9 +543,8 @@ test("bridge creates zero economic records", async () => {
   );
 });
 test("posted Pilot baseline survives the complete browser bridge pipeline", async () => {
-  const { postedAccountingFixture } = await import(
-    "../../../tests/fixtures/accounting-posted"
-  );
+  const { postedAccountingFixture } =
+    await import("../../../tests/fixtures/accounting-posted");
   const f = await postedAccountingFixture();
   process.env.QUICKMANAGE_ARCHIVE_OPERATING_GROUP_ID =
     f.context.operatingGroupId;
@@ -611,4 +610,54 @@ test("posted Pilot baseline survives the complete browser bridge pipeline", asyn
   await bridge.capture(inv.id, bundleEvidence(provider, statement), f.context);
   await bridge.capture(inv.id, bundleEvidence(provider, statement), f.context);
   assert.deepEqual(await snapshot(), before);
+});
+
+test("dual raw observations accept only fixed-pay order variance and retain exact-identity completeness", async () => {
+  const { fixedPaysFixture } =
+    await import("../../../tests/fixtures/quickmanage-fixed-pays");
+  const { hash } = await import("./archive-normalize");
+  const f = fixedPaysFixture(),
+    original = f.bundle.detail;
+  const inv = await bridge.inventory(inventoryEvidence(companyId, [f]), c);
+  f.payload.data.fixed_pays.reverse();
+  const after = Buffer.from(JSON.stringify(f.payload));
+  const e = {
+    ...bundleEvidence(companyId, f),
+    detailAfterBase64: after.toString("base64"),
+    detailAfterSha256: hash(after),
+  };
+  const captured = await bridge.capture(inv.id, e, c);
+  assert.ok("versionId" in captured);
+  const version = await prisma.archiveVersion.findUniqueOrThrow({
+    where: { id: captured.versionId! },
+  });
+  assert.equal(version.detailChecksum, hash(original));
+  assert.equal((await read.inventory(inv.id, c, 0)).coverage.complete, true);
+  const repeat = await bridge.capture(
+    inv.id,
+    bundleEvidence(companyId, { ...f, bundle: { ...f.bundle, detail: after } }),
+    c,
+  );
+  assert.equal("idempotent" in repeat && repeat.idempotent, true);
+  assert.equal((await read.inventory(inv.id, c, 0)).coverage.complete, true);
+  f.payload.data.fixed_pays[0].worked_unit++;
+  const changed = Buffer.from(JSON.stringify(f.payload));
+  const conflict = await bridge.capture(
+    inv.id,
+    bundleEvidence(companyId, {
+      ...f,
+      bundle: { ...f.bundle, detail: changed },
+    }),
+    c,
+  );
+  assert.equal(conflict.status, "NEEDS_REVIEW");
+  const coverage = (await read.inventory(inv.id, c, 0)).coverage;
+  assert.equal(coverage.complete, false);
+  assert.equal(Number(coverage.conflicts), 1);
+  assert.equal(
+    await prisma.archiveVersion.count({
+      where: { statementId: version.statementId },
+    }),
+    1,
+  );
 });

@@ -1,5 +1,8 @@
 "use client";
-import { browserEvidenceGuard } from "@/lib/finance/archive-browser-evidence";
+import {
+  browserEvidenceGuard,
+  BRIDGE_UPLOAD_LIMIT,
+} from "@/lib/finance/archive-browser-evidence";
 import { useCallback, useEffect, useState } from "react";
 
 type Row = {
@@ -96,8 +99,8 @@ export default function BrowserStatementCapture() {
     }
   }
   async function read(file: File) {
-    if (file.size > 42 * 1024 * 1024)
-      throw Error("Evidence file exceeds 42 MiB.");
+    if (file.size > BRIDGE_UPLOAD_LIMIT)
+      throw Error("Evidence file exceeds 56 MiB.");
     let evidence: unknown;
     try {
       evidence = JSON.parse(await file.text());
@@ -453,10 +456,10 @@ export default function BrowserStatementCapture() {
                 throw Error("Select at most ten statements.");
               if (
                 uploads.reduce((total, file) => total + file.size, 0) >
-                42 * 1024 * 1024
+                BRIDGE_UPLOAD_LIMIT
               )
                 throw Error(
-                  "Selected batch exceeds 42 MiB. Choose fewer statements.",
+                  "Selected batch exceeds 56 MiB. Choose fewer statements.",
                 );
               const result = [];
               for (const file of uploads) {

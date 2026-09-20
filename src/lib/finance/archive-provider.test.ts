@@ -223,3 +223,31 @@ test("twice-read inventory compares timestamp instants at full source precision"
       );
   }
 });
+
+test("diagnosed v14 fixed-pay permutations remain stable and preserve first raw response", async () => {
+  const { fixedPaysFixture } =
+    await import("../../../tests/fixtures/quickmanage-fixed-pays");
+  const { hash } = await import("./archive-normalize");
+  const f = fixedPaysFixture(),
+    first = f.bundle.detail;
+  f.payload.data.fixed_pays.reverse();
+  const second = Buffer.from(JSON.stringify(f.payload));
+  assert.notEqual(hash(first), hash(second));
+  let details = 0;
+  const provider = new QuickManageArchiveProvider(
+    "test",
+    async () => ({}),
+    async (input) =>
+      new Response(
+        String(input).includes("/download?")
+          ? f.bundle.pdf
+          : details++ === 0
+            ? first
+            : second,
+      ),
+    async () => {},
+  );
+  const result = await provider.bundle(randomUUID(), f.id);
+  assert.deepEqual(Buffer.from(result.detail), first);
+  assert.deepEqual(Buffer.from(result.pdf), f.bundle.pdf);
+});

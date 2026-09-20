@@ -266,3 +266,45 @@ test("business-only uploads reject credentials, URL variants, excess count and d
     validateBundle([bundleEvidence(companyId, statementFixture())]),
   );
 });
+
+test("server recomputes canonical stability from both guarded raw observations, never trusts claimed hashes", async () => {
+  const { fixedPaysFixture } =
+    await import("../../../tests/fixtures/quickmanage-fixed-pays");
+  const { hash } = await import("./archive-normalize");
+  const { browserEvidenceGuard } = await import("./archive-browser-evidence");
+  const f = fixedPaysFixture(),
+    original = Buffer.from(f.bundle.detail);
+  f.payload.data.fixed_pays.reverse();
+  const after = Buffer.from(JSON.stringify(f.payload));
+  const e = {
+    ...bundleEvidence(companyId, f),
+    detailAfterBase64: after.toString("base64"),
+    detailAfterSha256: hash(after),
+  };
+  browserEvidenceGuard(e);
+  assert.deepEqual(validateBundle(e).detail, original);
+  // Legacy exports cannot claim a different raw response using only its hash.
+  const { detailAfterBase64: omitted, ...legacy } = e;
+  void omitted;
+  assert.throws(() => validateBundle(legacy));
+  f.payload.data.fixed_pays[0].amount += 1;
+  const changed = Buffer.from(JSON.stringify(f.payload));
+  assert.throws(() =>
+    validateBundle({
+      ...e,
+      detailAfterBase64: changed.toString("base64"),
+      detailAfterSha256: hash(changed),
+    }),
+  );
+  const credential = Buffer.from(
+    JSON.stringify({ ...f.payload, authorization: "secret-example" }),
+  );
+  const unsafe = {
+    ...e,
+    detailAfterBase64: credential.toString("base64"),
+    detailAfterSha256: hash(credential),
+  };
+  assert.throws(() => browserEvidenceGuard(unsafe));
+  assert.throws(() => validateBundle(unsafe));
+  assert.throws(() => validateBundle({ ...e, pdfSha256: "0".repeat(64) }));
+});

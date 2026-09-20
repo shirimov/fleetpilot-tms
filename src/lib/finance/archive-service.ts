@@ -1,3 +1,7 @@
+import {
+  BUSINESS_FINGERPRINT_VERSION,
+  statementBusinessFingerprint,
+} from "./archive-business-fingerprint";
 import { providerInstant } from "./archive-time";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -365,6 +369,7 @@ export class ArchiveService {
     n.header.deductionsMinor = expected ? minor(expected.deductions) : null;
     const pdfChecksum = hash(bundle.pdf),
       detailChecksum = hash(bundle.detail),
+      businessFingerprint = statementBusinessFingerprint(bundle.detail),
       bundleChecksum = hash(`${pdfChecksum}:${detailChecksum}`);
     const written: { storage: PrivateFileStorage; key: string }[] = [];
     try {
@@ -412,7 +417,36 @@ export class ArchiveService {
               },
             },
           });
-          if (prior?.bundleChecksum === bundleChecksum) {
+          const matchesStored = async (stored: {
+            documentId: string;
+            detailStorageKey: string;
+            pdfChecksum: string;
+            detailChecksum: string;
+            bundleChecksum: string;
+          }) => {
+            const document = await tx.financialStatement.findUniqueOrThrow({
+              where: { id: stored.documentId },
+            });
+            const originalPdf = await this.pdfStorage.get(document.storageKey);
+            const originalDetail = await this.detailStorage.get(
+              stored.detailStorageKey,
+            );
+            // Validate stored immutable evidence against ITS raw hashes before
+            // deriving a comparison fingerprint. Never rewrite prior bytes/rows.
+            if (
+              hash(originalPdf) !== stored.pdfChecksum ||
+              hash(originalDetail) !== stored.detailChecksum ||
+              hash(`${stored.pdfChecksum}:${stored.detailChecksum}`) !==
+                stored.bundleChecksum
+            )
+              throw new ArchiveProviderError("ARCHIVE_CHECKSUM_MISMATCH");
+            return (
+              stored.pdfChecksum === pdfChecksum &&
+              statementBusinessFingerprint(originalDetail) ===
+                businessFingerprint
+            );
+          };
+          if (prior && (await matchesStored(prior))) {
             await this.audit(
               tx,
               c,
@@ -422,23 +456,12 @@ export class ArchiveService {
                 statementId: statement.id,
                 providerVersion: n.providerVersion,
                 acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
+                archivedRawChecksum: prior.detailChecksum,
+                observedRawChecksum: detailChecksum,
+                businessFingerprint,
+                businessFingerprintVersion: BUSINESS_FINGERPRINT_VERSION,
               },
             );
-            const original = await this.pdfStorage.get(
-              prior.documentId
-                ? (
-                    await tx.financialStatement.findUniqueOrThrow({
-                      where: { id: prior.documentId },
-                    })
-                  ).storageKey
-                : "",
-            );
-            if (
-              hash(original) !== pdfChecksum ||
-              hash(await this.detailStorage.get(prior.detailStorageKey)) !==
-                detailChecksum
-            )
-              throw new ArchiveProviderError("ARCHIVE_CHECKSUM_MISMATCH");
             if (lease)
               await tx.archiveCaptureJob.update({
                 where: { id: lease.id },
@@ -459,17 +482,23 @@ export class ArchiveService {
               idempotent: true,
             };
           }
-          const knownConflict = prior
-            ? await tx.archiveConflict.findUnique({
-                where: {
-                  statementId_providerVersion_bundleChecksum: {
-                    statementId: statement.id,
-                    providerVersion: n.providerVersion,
-                    bundleChecksum,
-                  },
-                },
-              })
-            : null;
+          // Repeated observations of an already quarantined business conflict
+          // also remain idempotent when only the fixed-pay order differs.
+          let knownConflict = false;
+          if (prior) {
+            const conflicts = await tx.archiveConflict.findMany({
+              where: {
+                statementId: statement.id,
+                providerVersion: n.providerVersion,
+                pdfChecksum,
+              },
+            });
+            for (const conflict of conflicts)
+              if (await matchesStored(conflict)) {
+                knownConflict = true;
+                break;
+              }
+          }
           if (knownConflict) {
             if (lease)
               await tx.archiveCaptureJob.update({
@@ -671,6 +700,9 @@ export class ArchiveService {
               versionId: version.id,
               providerVersion: n.providerVersion,
               bundleChecksum,
+              rawSourceChecksum: detailChecksum,
+              businessFingerprint,
+              businessFingerprintVersion: BUSINESS_FINGERPRINT_VERSION,
               acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
             },
           );
