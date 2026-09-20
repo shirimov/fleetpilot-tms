@@ -613,6 +613,13 @@ test("posted Pilot baseline survives the complete browser bridge pipeline", asyn
 });
 
 test("dual raw observations accept only fixed-pay order variance and retain exact-identity completeness", async () => {
+  // Earlier authorization/economics cases deliberately switch the configured
+  // account/group. Restore this fixture's exact server scope for this case.
+  const binding = await prisma.archiveCompany.findFirstOrThrow({
+    where: { providerCompanyId: companyId, companyId: c.activeCompanyId },
+  });
+  process.env.QUICKMANAGE_ARCHIVE_ACCOUNT_KEY = binding.accountKey;
+  process.env.QUICKMANAGE_ARCHIVE_OPERATING_GROUP_ID = c.operatingGroupId;
   const { fixedPaysFixture } =
     await import("../../../tests/fixtures/quickmanage-fixed-pays");
   const { hash } = await import("./archive-normalize");
