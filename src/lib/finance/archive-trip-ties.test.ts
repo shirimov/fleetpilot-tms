@@ -75,6 +75,14 @@ test("safe UTC equality preserves timestamp lexemes and submillisecond precision
       { origin_app_time: ten, x: 1 },
     ]),
   );
+  assert.notEqual(
+    finger([a, row("B", ten)]),
+    finger([a, row("B", "2026-01-19T10:01:00Z")]),
+  );
+  assert.notEqual(
+    finger([row("A", "2026-01-19T10:00:00.000001Z")]),
+    finger([row("A", "2026-01-19T10:00:00.000002Z")]),
+  );
   for (const key of ["trip_ref_number", "id"])
     assert.equal(
       finger([
