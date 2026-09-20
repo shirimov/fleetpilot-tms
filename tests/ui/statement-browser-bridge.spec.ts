@@ -1,7 +1,7 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { test, expect } from "playwright/test";
 import { prisma } from "@/lib/prisma";
-import { statementFixture } from "../fixtures/quickmanage";
+import { fixedPaysFixture } from "../fixtures/quickmanage-fixed-pays";
 import {
   catalogEvidence,
   inventoryEvidence,
@@ -74,7 +74,14 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     page.getByRole("alert").filter({ hasText: "Credentials" }),
   ).toBeVisible();
   expect(requests).toHaveLength(0);
-  const f = statementFixture({ terminated: true });
+  const f = fixedPaysFixture();
+  f.payload.data.fixed_pays.reverse();
+  const after = Buffer.from(JSON.stringify(f.payload));
+  const evidence = {
+    ...bundleEvidence(provider, f),
+    detailAfterBase64: after.toString("base64"),
+    detailAfterSha256: createHash("sha256").update(after).digest("hex"),
+  };
   const inventory = inventoryEvidence(provider, [f]);
   await page
     .getByLabel("Inventory evidence", { exact: true })
@@ -111,9 +118,7 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
   ).toBeVisible();
   await page
     .getByLabel("Statement evidence", { exact: true })
-    .setInputFiles(
-      upload("terminated-driver.json", bundleEvidence(provider, f)),
-    );
+    .setInputFiles(upload("terminated-driver.json", evidence));
   await expect(page.getByText(new RegExp("UUID " + f.id))).toBeVisible();
   await page
     .getByRole("button", { name: "Capture selected statements" })
@@ -121,6 +126,18 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
   await expect(
     page.getByText(/Expected 1 · Captured 1 · Missing 0/),
   ).toBeVisible();
+  // A fresh raw ordering of the same version reuses the immutable first capture.
+  await page
+    .getByLabel("Statement evidence", { exact: true })
+    .setInputFiles(
+      upload(
+        "reordered.json",
+        bundleEvidence(provider, {
+          ...f,
+          bundle: { ...f.bundle, detail: after },
+        }),
+      ),
+    );
   await page
     .getByRole("button", { name: "Capture selected statements" })
     .click();

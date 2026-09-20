@@ -1,3 +1,4 @@
+import { statementBusinessFingerprint } from "./archive-business-fingerprint";
 import { providerInstant } from "./archive-time";
 import { businessOnly } from "./archive-browser-evidence";
 export { businessOnly } from "./archive-browser-evidence";
@@ -15,7 +16,7 @@ import {
 } from "./archive-normalize";
 
 export const BRIDGE_FORMAT = "fleetpilot.quickmanage.v1";
-export const BRIDGE_UPLOAD_LIMIT = 42 * 1024 * 1024;
+export { BRIDGE_UPLOAD_LIMIT } from "./archive-browser-evidence";
 export const BRIDGE_BATCH_LIMIT = 10;
 const fail = (message = "Invalid browser evidence."): never => {
   throw new FinancialValidationError(message);
@@ -230,6 +231,7 @@ export function validateBundle(value: unknown) {
     "detailBase64",
     "pdfBase64",
     "detailAfterSha256",
+    "detailAfterBase64",
     "pdfSha256",
     "mimeType",
   ]);
@@ -247,8 +249,17 @@ export function validateBundle(value: unknown) {
     fail("Invalid original PDF.");
   if (/\/(JavaScript|JS|Launch|EmbeddedFile)\b/.test(pdf.toString("latin1")))
     fail("Active PDF content is not accepted.");
-  if (hash(pdf) !== e.pdfSha256 || hash(detail) !== e.detailAfterSha256)
+  const after =
+    e.detailAfterBase64 === undefined
+      ? detail // Legacy exports remain accepted only with exact raw equality.
+      : decode(e.detailAfterBase64, 10 * 1024 * 1024);
+  if (hash(pdf) !== e.pdfSha256 || hash(after) !== e.detailAfterSha256)
     fail("Evidence checksum or source stability mismatch.");
+  businessOnly(parseSource(after));
+  if (
+    statementBusinessFingerprint(detail) !== statementBusinessFingerprint(after)
+  )
+    fail("Statement business content changed during acquisition.");
   const raw = parseSource(detail);
   businessOnly(raw);
   const d = record(raw.data),

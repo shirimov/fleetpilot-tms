@@ -1,3 +1,4 @@
+import { statementBusinessFingerprint } from "./archive-business-fingerprint";
 import { AuthorizationDeniedError } from "@/lib/auth/auth-errors";
 import { quickManageClient } from "@/lib/integrations/quickmanage-client";
 import { FinancialValidationError } from "./financial-control-errors";
@@ -254,7 +255,10 @@ export class QuickManageArchiveProvider implements ArchiveProvider {
         },
       ),
       after = await this.read(path);
-    if (hash(detail) !== hash(after))
+    if (
+      statementBusinessFingerprint(detail) !==
+      statementBusinessFingerprint(after)
+    )
       throw new ArchiveProviderError("SOURCE_CHANGED_DURING_CAPTURE");
     if (str(object(parseSource(detail).data).statement_id) !== statementId)
       throw new ArchiveProviderError("STATEMENT_MISMATCH");

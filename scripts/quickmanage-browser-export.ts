@@ -1,3 +1,4 @@
+import { statementBusinessFingerprint } from "../src/lib/finance/archive-business-fingerprint";
 /** Local acquisition only. No FleetPilot network calls, cookies, tokens or storage exports. */
 import { chromium, type APIResponse } from "playwright";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -247,7 +248,10 @@ async function main() {
       const after = await read(resource),
         afterBytes = await after.body();
       await after.dispose();
-      if (hash(detail) !== hash(afterBytes))
+      if (
+        statementBusinessFingerprint(detail) !==
+        statementBusinessFingerprint(afterBytes)
+      )
         throw Error("Statement changed during acquisition.");
       evidence = {
         format: BRIDGE_FORMAT,
@@ -260,6 +264,7 @@ async function main() {
         detailBase64: detail.toString("base64"),
         pdfBase64: pdf.toString("base64"),
         detailAfterSha256: hash(afterBytes),
+        detailAfterBase64: afterBytes.toString("base64"),
         pdfSha256: hash(pdf),
         mimeType,
       };

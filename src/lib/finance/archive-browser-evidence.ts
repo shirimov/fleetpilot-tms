@@ -1,5 +1,7 @@
 // Browser-safe transport guard. Runs before upload AND again on the server.
 import { FinancialValidationError } from "./financial-control-errors";
+// Two 10 MiB raw JSON reads and a 20 MiB PDF, with base64/envelope overhead.
+export const BRIDGE_UPLOAD_LIMIT = 56 * 1024 * 1024;
 const fail = (): never => {
   throw new FinancialValidationError(
     "Only QuickManage business evidence exports are accepted. Credentials, browser exports and URLs must never be uploaded.",
@@ -43,6 +45,7 @@ export function browserEvidenceGuard(value: unknown): void {
       "detailBase64",
       "pdfBase64",
       "detailAfterSha256",
+      "detailAfterBase64",
       "pdfSha256",
       "mimeType",
     ],
@@ -60,22 +63,30 @@ export function browserEvidenceGuard(value: unknown): void {
     businessOnly(x);
     return;
   }
-  const { detailBase64, pdfBase64, ...safe } = x;
+  const { detailBase64, detailAfterBase64, pdfBase64, ...safe } = x;
   businessOnly(safe);
   if (
     typeof detailBase64 !== "string" ||
     detailBase64.length > 14 * 1024 * 1024 ||
+    (detailAfterBase64 !== undefined &&
+      (typeof detailAfterBase64 !== "string" ||
+        detailAfterBase64.length > 14 * 1024 * 1024)) ||
     typeof pdfBase64 !== "string" ||
     pdfBase64.length > 28 * 1024 * 1024
   )
     fail();
   try {
-    const decoded = atob(detailBase64 as string);
-    const bytes = Uint8Array.from(decoded, (c) => c.charCodeAt(0));
-    const detail = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-    );
-    businessOnly(detail);
+    for (const source of [
+      detailBase64,
+      ...(detailAfterBase64 === undefined ? [] : [detailAfterBase64]),
+    ]) {
+      const decoded = atob(source as string);
+      const bytes = Uint8Array.from(decoded, (c) => c.charCodeAt(0));
+      const detail = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      );
+      businessOnly(detail);
+    }
     const pdf = atob(pdfBase64 as string);
     if (
       !pdf.startsWith("%PDF-") ||
