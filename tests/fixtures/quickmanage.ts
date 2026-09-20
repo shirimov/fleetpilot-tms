@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { hash, type SourceObject } from "@/lib/finance/archive-normalize";
+import {
+  inventoryFingerprint,
+  type SourceObject,
+} from "@/lib/finance/archive-normalize";
 import type {
   ArchiveProvider,
   InventoryResult,
@@ -131,12 +134,7 @@ export class FixtureArchiveProvider implements ArchiveProvider {
       }));
     return {
       items,
-      fingerprint: hash(
-        items
-          .map((x) => JSON.stringify(x))
-          .sort()
-          .join("\n"),
-      ),
+      fingerprint: inventoryFingerprint(items),
       metadata: { verifiedTwice: true, source: "synthetic", companyId, pid },
     };
   }

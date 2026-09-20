@@ -1,3 +1,4 @@
+import { providerInstant } from "./archive-time";
 import { businessOnly } from "./archive-browser-evidence";
 export { businessOnly } from "./archive-browser-evidence";
 import { FinancialValidationError } from "./financial-control-errors";
@@ -5,6 +6,7 @@ import {
   dateOnly,
   hash,
   integer,
+  inventoryFingerprint,
   minor,
   normalizeStatement,
   parseSource,
@@ -181,10 +183,7 @@ export function validateInventory(value: unknown) {
           (typeof x[k] !== "string" || (x[k] as string).length > 200)
         )
           fail();
-      if (
-        typeof x.updated_date !== "string" ||
-        !Number.isFinite(Date.parse(x.updated_date))
-      )
+      if (providerInstant(x.updated_date) === null)
         fail("Source timestamp required.");
       if (dateOnly(x.end_date) < dateOnly(x.start_date))
         fail("Invalid inventory period.");
@@ -199,12 +198,7 @@ export function validateInventory(value: unknown) {
     companyId,
     pid,
     items,
-    fingerprint: hash(
-      items
-        .map((x) => JSON.stringify(x))
-        .sort()
-        .join("\n"),
-    ),
+    fingerprint: inventoryFingerprint(items),
     metadata: {
       verifiedTwice: true,
       acquisition: "BROWSER_EVIDENCE_V1",
@@ -280,13 +274,7 @@ export function validateBundle(value: unknown) {
     for (const key of ["gross", "net_pay", "payout"])
       if (ytd[key] != null) money(ytd[key]);
   }
-  for (const key of ["created_date", "updated_date"])
-    if (
-      d[key] != null &&
-      (typeof d[key] !== "string" ||
-        !Number.isFinite(Date.parse(d[key] as string)))
-    )
-      fail("Invalid source timestamp.");
+  for (const key of ["created_date", "updated_date"]) providerInstant(d[key]);
   for (const [key, field] of [
     ["trips", "net_amount"],
     ["earnings", "amount"],

@@ -1,3 +1,4 @@
+import { providerInstant } from "./archive-time";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -17,9 +18,11 @@ import {
   displayFilename,
   hash,
   integer,
+  inventoryFingerprint,
   minor,
   normalizeStatement,
   object,
+  parseSource,
   str,
   uuid,
 } from "./archive-normalize";
@@ -236,11 +239,7 @@ export class ArchiveService {
       uuid(x.statement_id);
       uuid(x.driver_id);
       integer(x.version);
-      if (
-        x.updated_date != null &&
-        !Number.isFinite(Date.parse(String(x.updated_date)))
-      )
-        throw new FinancialValidationError("Invalid source updated timestamp.");
+      providerInstant(x.updated_date);
       if (
         x.carrier_id !== company.providerCompanyId ||
         String(x.batch_id) !== pid.replace("-", "") ||
@@ -248,12 +247,7 @@ export class ArchiveService {
       )
         throw new FinancialValidationError("Inventory scope mismatch.");
     }
-    const fingerprint = hash(
-      result.items
-        .map((x) => JSON.stringify(x))
-        .sort()
-        .join("\n"),
-    );
+    const fingerprint = inventoryFingerprint(result.items);
     if (fingerprint !== result.fingerprint)
       throw new FinancialValidationError("Inventory checksum mismatch.");
     return this.db.$transaction(async (tx) => {
@@ -263,6 +257,20 @@ export class ArchiveService {
         orderBy: [{ observedAt: "desc" }, { id: "desc" }],
       });
       if (prior?.fingerprint === fingerprint) return prior;
+      // Pre-canonicalization snapshots keep their immutable original fingerprint.
+      // Compare their raw metadata in memory so an identical retry does not
+      // manufacture another inventory merely because the hash algorithm changed.
+      if (prior) {
+        const items = await tx.archiveInventoryItem.findMany({
+          where: { inventoryId: prior.id },
+          select: { metadata: true },
+        });
+        if (
+          inventoryFingerprint(items.map((x) => object(x.metadata))) ===
+          fingerprint
+        )
+          return prior;
+      }
       const snapshot = await tx.archiveInventory.create({
         data: {
           archiveCompanyId: id,
@@ -347,9 +355,10 @@ export class ArchiveService {
     if (
       expected &&
       (n.providerVersion !== expected.providerVersion ||
-        (expected.updatedAt &&
-          n.header.providerUpdatedAt?.getTime() !==
-            Date.parse(expected.updatedAt)))
+        (expected.updatedAt != null &&
+          providerInstant(
+            object(parseSource(bundle.detail).data).updated_date,
+          ) !== providerInstant(expected.updatedAt)))
     )
       throw new ArchiveProviderError("INVENTORY_STALE_REFRESH_REQUIRED");
     // Detail deductions excludes some fuel/advance components. Only the inventory total is the total deduction field.

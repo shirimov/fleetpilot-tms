@@ -177,3 +177,49 @@ test("429 retry honors Retry-After and bounded retry/oversize limits", async () 
   );
   await assert.rejects(() => huge.companies(), /SOURCE_TOO_LARGE/);
 });
+
+test("twice-read inventory compares timestamp instants at full source precision", async () => {
+  for (const changed of [false, true]) {
+    const company = randomUUID(),
+      statement = randomUUID(),
+      recipient = randomUUID();
+    let scan = 0;
+    const provider = new QuickManageArchiveProvider(
+      "test",
+      async () => ({}),
+      async (input) =>
+        String(input).endsWith("/stats")
+          ? response({ count: 1 })
+          : response({
+              items: [
+                {
+                  carrier_id: company,
+                  statement_id: statement,
+                  driver_id: recipient,
+                  version: 1,
+                  batch_id: 202637,
+                  contractor: false,
+                  updated_date:
+                    scan++ === 0
+                      ? "2026-09-18T12:00:00.725261Z"
+                      : changed
+                        ? "2026-09-18T12:00:00.725262Z"
+                        : "2026-09-18T08:00:00.725261000-04:00",
+                },
+              ],
+              has_more: false,
+            }),
+      async () => {},
+    );
+    if (changed)
+      await assert.rejects(
+        () => provider.inventory(company, "2026-37"),
+        /INVENTORY_CHANGED/,
+      );
+    else
+      assert.equal(
+        (await provider.inventory(company, "2026-37")).items.length,
+        1,
+      );
+  }
+});

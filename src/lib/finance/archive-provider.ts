@@ -4,6 +4,7 @@ import { FinancialValidationError } from "./financial-control-errors";
 import {
   hash,
   integer,
+  inventoryFingerprint,
   object,
   parseSource,
   str,
@@ -206,8 +207,7 @@ export class QuickManageArchiveProvider implements ArchiveProvider {
         new Set(items.map((x) => x.statement_id)).size !== count
       )
         throw new ArchiveProviderError("INVENTORY_INCOMPLETE");
-      const manifest = items.map((x) => JSON.stringify(x)).sort();
-      return { items, pages, count, fingerprint: hash(manifest.join("\n")) };
+      return { items, pages, count, fingerprint: inventoryFingerprint(items) };
     };
     const first = await scan(),
       second = await scan();
@@ -218,12 +218,7 @@ export class QuickManageArchiveProvider implements ArchiveProvider {
     );
     return {
       items,
-      fingerprint: hash(
-        items
-          .map((x) => JSON.stringify(x))
-          .sort()
-          .join("\n"),
-      ),
+      fingerprint: inventoryFingerprint(items),
       metadata: {
         provider: "QUICKMANAGE",
         companyId,
