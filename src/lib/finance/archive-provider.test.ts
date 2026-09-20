@@ -251,3 +251,34 @@ test("diagnosed v14 fixed-pay permutations remain stable and preserve first raw 
   assert.deepEqual(Buffer.from(result.detail), first);
   assert.deepEqual(Buffer.from(result.pdf), f.bundle.pdf);
 });
+
+test("diagnosed v8 equal-time trip permutations remain stable and preserve first raw response", async () => {
+  const { tripTiesFixture } =
+    await import("../../../tests/fixtures/quickmanage-trip-ties");
+  const { hash } = await import("./archive-normalize");
+  const f = tripTiesFixture(),
+    first = f.bundle.detail;
+  [f.payload.data.trips[7], f.payload.data.trips[8]] = [
+    f.payload.data.trips[8],
+    f.payload.data.trips[7],
+  ];
+  const second = Buffer.from(JSON.stringify(f.payload));
+  assert.notEqual(hash(first), hash(second));
+  let details = 0;
+  const provider = new QuickManageArchiveProvider(
+    "test",
+    async () => ({}),
+    async (input) =>
+      new Response(
+        String(input).includes("/download?")
+          ? f.bundle.pdf
+          : details++ === 0
+            ? first
+            : second,
+      ),
+    async () => {},
+  );
+  const result = await provider.bundle(randomUUID(), f.id);
+  assert.deepEqual(Buffer.from(result.detail), first);
+  assert.deepEqual(Buffer.from(result.pdf), f.bundle.pdf);
+});

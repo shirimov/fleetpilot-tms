@@ -1,7 +1,7 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { test, expect } from "playwright/test";
 import { prisma } from "@/lib/prisma";
-import { fixedPaysFixture } from "../fixtures/quickmanage-fixed-pays";
+import { tripTiesFixture } from "../fixtures/quickmanage-trip-ties";
 import {
   catalogEvidence,
   inventoryEvidence,
@@ -74,8 +74,11 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     page.getByRole("alert").filter({ hasText: "Credentials" }),
   ).toBeVisible();
   expect(requests).toHaveLength(0);
-  const f = fixedPaysFixture();
-  f.payload.data.fixed_pays.reverse();
+  const f = tripTiesFixture();
+  [f.payload.data.trips[7], f.payload.data.trips[8]] = [
+    f.payload.data.trips[8],
+    f.payload.data.trips[7],
+  ];
   const after = Buffer.from(JSON.stringify(f.payload));
   const evidence = {
     ...bundleEvidence(provider, f),
@@ -127,17 +130,15 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     page.getByText(/Expected 1 · Captured 1 · Missing 0/),
   ).toBeVisible();
   // A fresh raw ordering of the same version reuses the immutable first capture.
-  await page
-    .getByLabel("Statement evidence", { exact: true })
-    .setInputFiles(
-      upload(
-        "reordered.json",
-        bundleEvidence(provider, {
-          ...f,
-          bundle: { ...f.bundle, detail: after },
-        }),
-      ),
-    );
+  await page.getByLabel("Statement evidence", { exact: true }).setInputFiles(
+    upload(
+      "reordered.json",
+      bundleEvidence(provider, {
+        ...f,
+        bundle: { ...f.bundle, detail: after },
+      }),
+    ),
+  );
   await page
     .getByRole("button", { name: "Capture selected statements" })
     .click();

@@ -1,8 +1,10 @@
+import { providerInstant } from "./archive-time";
 import { createHash } from "node:crypto";
 import { FinancialValidationError } from "./financial-control-errors";
 
 // Versioned comparison only. Never serialize this representation into raw evidence storage.
-export const BUSINESS_FINGERPRINT_VERSION = "quickmanage-fixed-pays-v1";
+export const BUSINESS_FINGERPRINT_VERSION =
+  "quickmanage-fixed-pays-trip-ties-v2";
 type Node =
   | ["object", [string, Node][]]
   | ["array", Node[]]
@@ -93,7 +95,7 @@ const field = (node: Node | undefined, key: string) =>
     ? node[1].find(([name]) => name === key)?.[1]
     : undefined;
 
-/** Only data.fixed_pays is unordered. Sort by weekday rank, then complete typed
+/** data.fixed_pays is unordered. Sort by weekday rank, then complete typed
  * canonical row as the tie-breaker. No row is deduplicated, summed or rounded;
  * duplicate weekdays and identical rows retain their full multiplicity. Unknown
  * row fields participate in the tie-breaker and fingerprint, never disappear.
@@ -119,6 +121,48 @@ export function statementBusinessFingerprint(bytes: Uint8Array): string {
     });
     rows.sort((a, b) => a.day - b.day || compare(a.key, b.key));
     fixed[1] = rows.map((x) => x.row);
+  }
+  // Preserve sequence between different instants. Missing/invalid times or
+  // identities are barriers, never a reason to infer an ordering equivalence.
+  const trips = field(field(value, "data"), "trips");
+  if (trips?.[0] === "array") {
+    const text = (row: Node, key: string) => {
+      const v = field(row, key);
+      return v?.[0] === "string" && v[1].length ? v[1] : null;
+    };
+    const rows = trips[1].map((row) => {
+      const identity = ["trip_id", "trip_ref_number", "id"]
+        .map((key, rank) => ({ rank, value: text(row, key) }))
+        .find((entry) => entry.value !== null);
+      let instant: string | null = null;
+      try {
+        instant = providerInstant(text(row, "origin_app_time"));
+      } catch {
+        // Keep unsupported values exact and order-sensitive.
+      }
+      return { row, identity, instant, key: JSON.stringify(row) };
+    });
+    for (let start = 0; start < rows.length;) {
+      const first = rows[start];
+      let end = start + 1;
+      if (first.instant !== null && first.identity)
+        while (
+          end < rows.length &&
+          rows[end].identity &&
+          rows[end].instant === first.instant
+        )
+          end++;
+      const group = rows.slice(start, end);
+      if (group.length > 1)
+        group.sort(
+          (a, b) =>
+            a.identity!.rank - b.identity!.rank ||
+            compare(a.identity!.value!, b.identity!.value!) ||
+            compare(a.key, b.key),
+        );
+      for (let i = 0; i < group.length; i++) trips[1][start + i] = group[i].row;
+      start = end;
+    }
   }
   return createHash("sha256")
     .update(BUSINESS_FINGERPRINT_VERSION + ":" + JSON.stringify(value))
