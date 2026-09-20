@@ -1,7 +1,8 @@
+import { fixtureCaptureRun } from "../../../tests/fixtures/archive-run";
 import { inventoryFingerprint, hash } from "./archive-normalize";
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { before, after, test } from "node:test";
+import { before, after, beforeEach, test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { FilesystemPrivateFileStorage } from "@/lib/storage/private-file-storage
 import { ArchiveService, json } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
 import { FinancialControlService } from "./financial-control-service";
-import type { FinancialAuthorization } from "./financial-control-authorization";
+import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import {
   FixtureArchiveProvider,
   statementFixture,
@@ -63,6 +64,7 @@ before(async () => {
   bindingId = (
     await service.bind(company.id, provider.companyId, provider, ctx)
   ).id;
+  await fixtureCaptureRun(ctx);
   await prisma.truck.create({
     data: {
       companyId: company.id,
@@ -73,6 +75,10 @@ before(async () => {
   });
 });
 // Append-only fixtures deliberately remain in the disposable database; destroy the database after the suite.
+beforeEach(() => {
+  process.env.QUICKMANAGE_ARCHIVE_OPERATING_GROUP_ID = ctx.operatingGroupId;
+  process.env.QUICKMANAGE_ARCHIVE_ACCOUNT_KEY = provider.accountKey;
+});
 after(async () => {
   await rm(root, { recursive: true, force: true });
   await prisma.$disconnect();
@@ -108,9 +114,11 @@ test("five accepted UUID/version shapes: 5 sealed versions, 5 PDFs/JSON, 71 unch
     data: { companyId: company.id, userId: ctx.userId, role: "OWNER" },
   });
   const second = new FixtureArchiveProvider();
+  second.accountKey = provider.accountKey;
   bindings.push(
     (await service.bind(company.id, second.companyId, second, ctx)).id,
   );
+  await fixtureCaptureRun(ctx);
   for (const [index, pid] of ["2026-37", "2026-36"].entries()) {
     const p = index === 0 ? provider : second;
     p.fixtures = fixtures.filter((f) => f.pid === pid);
@@ -323,7 +331,7 @@ test("coverage keeps UUID/version and recipient guards", async () => {
   }
 });
 
-test("pre-fix immutable inventory fingerprints remain idempotent after canonicalization", async () => {
+test("legacy inventory retains null provenance while a new run creates a resumable snapshot", async () => {
   const f = statementFixture({ pid: "2026-23" });
   f.payload.data.updated_date = "2026-09-18T08:00:00.725261000-04:00";
   provider.fixtures = [f];
@@ -362,12 +370,20 @@ test("pre-fix immutable inventory fingerprints remain idempotent after canonical
     });
   });
   const retry = await service.saveInventory(bindingId, f.pid, manifest, ctx);
-  assert.equal(retry.id, old.id);
-  assert.equal(retry.fingerprint, rawFingerprint);
+  assert.notEqual(retry.id, old.id);
+  assert.equal(
+    (await service.saveInventory(bindingId, f.pid, manifest, ctx)).id,
+    retry.id,
+  );
+  const preserved = await prisma.archiveInventory.findUniqueOrThrow({
+    where: { id: old.id },
+  });
+  assert.equal(preserved.fingerprint, rawFingerprint);
+  assert.equal(preserved.captureRunId, null);
   assert.equal(
     await prisma.archiveInventory.count({
       where: { archiveCompanyId: bindingId, pid: f.pid },
     }),
-    1,
+    2,
   );
 });

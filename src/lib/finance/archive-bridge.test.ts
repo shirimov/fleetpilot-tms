@@ -1,3 +1,4 @@
+import { fixtureCaptureRun } from "../../../tests/fixtures/archive-run";
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -13,7 +14,7 @@ import {
 import { ArchiveService } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
 import { FinancialControlService } from "./financial-control-service";
-import type { FinancialAuthorization } from "./financial-control-authorization";
+import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import { statementFixture } from "../../../tests/fixtures/quickmanage";
 import {
   catalogEvidence,
@@ -106,6 +107,7 @@ test("explicit verified binding creates immutable scoped grant/audit, catalog re
     catalogId,
   );
   const b = await bridge.bind(confirm(), c);
+  await fixtureCaptureRun(c);
   assert.equal((await bridge.bind(confirm(), c)).id, b.id);
   const audit = await prisma.financialAuditEvent.findMany({
     where: {
@@ -310,7 +312,11 @@ test("historical grant is explicit, does not join Accounting; membership and gro
       operatingGroupId: randomUUID(),
     }),
   );
-  const expanded = await expandArchiveScope(c);
+  const expanded: FinancialAuthorization = {
+    ...(await expandArchiveScope(c)),
+    captureRunId: c.captureRunId,
+  };
+  await fixtureCaptureRun(expanded);
   assert.ok(expanded.companyIds.includes(historic.id));
   const fixture = statementFixture({ terminated: true, pid: "2025-43" });
   fixture.payload.data.header.carrier.name = "Historical synthetic";
@@ -324,9 +330,18 @@ test("historical grant is explicit, does not join Accounting; membership and gro
     (await read.inventory(inventory.id, expanded, 0)).coverage.complete,
     true,
   );
+  await new (
+    await import("./archive-capture-run")
+  ).ArchiveCaptureRunService().transition(
+    expanded.captureRunId!,
+    "CLOSED",
+    expanded,
+  );
+  c.captureRunId = undefined;
   await prisma.companyMembership.delete({
     where: { userId_companyId: { userId: c.userId, companyId: historic.id } },
   });
+  await fixtureCaptureRun(c);
   const revoked = await expandArchiveScope(c);
   assert.ok(!revoked.companyIds.includes(historic.id));
   await assert.rejects(() => read.inventory(inventory.id, revoked, 0));
@@ -473,7 +488,9 @@ test("concurrent different-content submissions preserve one canonical version an
     bridge.capture(inv.id, bundleEvidence(companyId, f), c),
     bridge.capture(inv.id, bundleEvidence(companyId, other), c),
   ]);
-  assert.equal(results.filter((x) => x.status === "CAPTURING").length, 1);
+  // The run lock may serialize both requests through completion; either a
+  // lease retry or a completed, quarantined conflict is safe.
+  assert.ok(results.filter((x) => x.status === "CAPTURING").length <= 1);
   const s = await prisma.archiveStatement.findFirstOrThrow({
     where: { providerStatementId: f.id },
     include: { versions: true },
@@ -602,6 +619,7 @@ test("posted Pilot baseline survives the complete browser bridge pipeline", asyn
     },
     f.context,
   );
+  await fixtureCaptureRun(f.context);
   const statement = statementFixture({ terminated: true });
   const inv = await bridge.inventory(
     inventoryEvidence(provider, [statement]),

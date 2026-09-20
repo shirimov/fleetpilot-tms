@@ -19,7 +19,15 @@ type Row = {
   status: string;
   evidence: string;
 };
+type CaptureRun = {
+  id: string;
+  status: string;
+  label: string | null;
+  allowedProviderCompanyIds: string[];
+};
 type Review = {
+  captureRuns?: CaptureRun[];
+  captureEnabled?: boolean;
   catalogId: string | null;
   rows: Row[];
   canonical: { id: string; name: string }[];
@@ -79,6 +87,13 @@ export default function BrowserStatementCapture() {
     [coverage, setCoverage] = useState<Record<string, string | boolean> | null>(
       null,
     );
+  const [selectedCompanies, setSelectedCompanies] = useState<string[]>([]);
+  const activeRun = review?.captureRuns?.find((r) => r.status === "ACTIVE");
+  const acquisitionEnabled = !!(
+    review?.captureEnabled &&
+    review?.bridgeEnabled &&
+    activeRun
+  );
   const refresh = useCallback(
     async () => setReview(await request(endpoint)),
     [],
@@ -151,6 +166,152 @@ export default function BrowserStatementCapture() {
       )}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
+      <section className={box} aria-label="Historical capture run">
+        <h4>Historical capture run</h4>
+        {!review?.captureEnabled && (
+          <p>Statement acquisition is globally disabled.</p>
+        )}
+        {activeRun ? (
+          <>
+            <p>
+              {activeRun.label || "Historical capture"} — Status:{" "}
+              {activeRun.status}
+            </p>
+            <p>
+              Run ID: <code>{activeRun.id}</code>
+            </p>
+            <ul>
+              {activeRun.allowedProviderCompanyIds.map((id) => (
+                <li key={id}>
+                  {
+                    review?.rows.find((r) => r.source.id === id)?.source
+                      .carrier_name
+                  }
+                  <br />
+                  Provider Company ID: <code>{id}</code>
+                </li>
+              ))}
+            </ul>
+            {review?.canConfirm &&
+              ["COMPLETED", "CLOSED", "FAILED"].map((status) => (
+                <button
+                  key={status}
+                  className="btn mr-2"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(async () => {
+                      await request("/api/finance/archive/runs", {
+                        action: status,
+                        captureRunId: activeRun.id,
+                      });
+                      setSnapshot("");
+                      setFiles([]);
+                      await refresh();
+                    })
+                  }
+                >
+                  {status === "COMPLETED"
+                    ? "Complete run"
+                    : status === "CLOSED"
+                      ? "Close run"
+                      : "Mark run failed"}
+                </button>
+              ))}
+          </>
+        ) : (
+          <p>
+            No active run. Inventory and statement capture require an explicitly
+            authorized run.
+          </p>
+        )}
+        {review?.canConfirm && !activeRun && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              void act(async () => {
+                await request("/api/finance/archive/runs", {
+                  action: "create",
+                  allowedProviderCompanyIds: selectedCompanies,
+                  label: f.get("label"),
+                });
+                setSelectedCompanies([]);
+                await refresh();
+              });
+            }}
+          >
+            <label>
+              Run label <input className={input} name="label" maxLength={200} />
+            </label>
+            {review.rows
+              .filter((r) => r.binding)
+              .map((row) => (
+                <label className="block" key={row.source.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedCompanies.includes(row.source.id)}
+                    onChange={(e) =>
+                      setSelectedCompanies((ids) =>
+                        e.target.checked
+                          ? [...ids, row.source.id]
+                          : ids.filter((id) => id !== row.source.id),
+                      )
+                    }
+                  />{" "}
+                  {row.source.carrier_name} — {row.source.id}
+                </label>
+              ))}
+            <button
+              className="btn"
+              disabled={busy || !selectedCompanies.length}
+            >
+              Create draft run
+            </button>
+          </form>
+        )}
+        {review?.captureRuns
+          ?.filter((r) => r.status === "DRAFT")
+          .map((run) => (
+            <div key={run.id}>
+              <p>{run.label || run.id} — DRAFT</p>
+              <p>Scope: {run.allowedProviderCompanyIds.join(", ")}</p>
+              {review.canConfirm && (
+                <>
+                  <button
+                    className="btn"
+                    disabled={busy || !!activeRun}
+                    onClick={() =>
+                      void act(async () => {
+                        await request("/api/finance/archive/runs", {
+                          action: "ACTIVE",
+                          captureRunId: run.id,
+                        });
+                        await refresh();
+                      })
+                    }
+                  >
+                    Activate run
+                  </button>
+                  <button
+                    className="btn"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(async () => {
+                        await request("/api/finance/archive/runs", {
+                          action: "CLOSED",
+                          captureRunId: run.id,
+                        });
+                        await refresh();
+                      })
+                    }
+                  >
+                    Close draft
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+      </section>
       <section className={box}>
         <h4>1. Review Company identities</h4>
         {!review?.accountConfigured && (
@@ -230,7 +391,13 @@ export default function BrowserStatementCapture() {
                   </td>
                   <td>
                     {row.binding ? (
-                      "Binding recorded"
+                      activeRun?.allowedProviderCompanyIds.includes(
+                        row.source.id,
+                      ) ? (
+                        "Authorized for this run"
+                      ) : (
+                        "Not authorized for this run"
+                      )
                     ) : (
                       <form
                         onSubmit={(e) => {
@@ -324,7 +491,7 @@ export default function BrowserStatementCapture() {
             type="file"
             className="block max-w-full text-sm"
             accept=".json,application/json"
-            disabled={busy}
+            disabled={busy || !acquisitionEnabled}
             onChange={(e) => {
               const f = e.target.files?.[0];
               if (f)
@@ -338,8 +505,15 @@ export default function BrowserStatementCapture() {
                     throw Error(
                       "Unbound Company: confirm Company identity first.",
                     );
+                  if (
+                    !activeRun?.allowedProviderCompanyIds.includes(
+                      String(evidence.companyId),
+                    )
+                  )
+                    throw Error("Not authorized for this run");
                   const r = await request(endpoint, {
                     action: "inventory",
+                    captureRunId: activeRun?.id,
                     evidence,
                   });
                   setSnapshot(r.id);
@@ -500,6 +674,7 @@ export default function BrowserStatementCapture() {
             busy ||
             !review?.bridgeEnabled ||
             !review?.accountConfigured ||
+            !acquisitionEnabled ||
             !snapshot ||
             !files.some((x) => x.selected)
           }
@@ -512,6 +687,7 @@ export default function BrowserStatementCapture() {
               for (const f of chosen) {
                 const result = await request(endpoint, {
                   action: "capture",
+                  captureRunId: activeRun?.id,
                   inventoryId: snapshot,
                   evidence: f.evidence,
                 });

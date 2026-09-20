@@ -1,4 +1,11 @@
 import {
+  requireCaptureRun,
+  auditCaptureDenial,
+  lockArchive,
+  type CaptureContext,
+  type AcquisitionChannel,
+} from "./archive-capture-run";
+import {
   BUSINESS_FINGERPRINT_VERSION,
   statementBusinessFingerprint,
 } from "./archive-business-fingerprint";
@@ -204,13 +211,71 @@ export class ArchiveService {
       return binding;
     });
   }
+  async authorizeCapture(
+    bindingId: string,
+    c: CaptureContext,
+    channel: AcquisitionChannel,
+    inventoryRunId?: string | null,
+  ) {
+    return this.db
+      .$transaction(async (tx) => {
+        await lockArchive(tx, c.operatingGroupId);
+        return requireCaptureRun(tx, c, bindingId, channel, inventoryRunId);
+      })
+      .catch(async (error) => {
+        if (error instanceof AuthorizationDeniedError)
+          await auditCaptureDenial(this.db, c, bindingId);
+        throw error;
+      });
+  }
+  async claimCapture(
+    jobId: string,
+    token: string,
+    bindingId: string,
+    c: CaptureContext,
+    channel: AcquisitionChannel,
+  ) {
+    return this.db.$transaction(async (tx) => {
+      await lockArchive(tx, c.operatingGroupId);
+      const job = await tx.archiveCaptureJob.findUnique({
+        where: { id: jobId },
+        include: { item: { include: { inventory: true } } },
+      });
+      if (!job || job.item.inventory.archiveCompanyId !== bindingId)
+        throw new FinancialNotFoundError();
+      await requireCaptureRun(
+        tx,
+        c,
+        bindingId,
+        channel,
+        job.item.inventory.captureRunId,
+      );
+      return tx.archiveCaptureJob.updateMany({
+        where: {
+          id: jobId,
+          OR: [
+            { status: { not: "CAPTURING" } },
+            { leaseExpiresAt: { lt: new Date() } },
+          ],
+        },
+        data: {
+          status: "CAPTURING",
+          leaseToken: token,
+          leaseExpiresAt: new Date(Date.now() + 180000),
+          attempts: { increment: 1 },
+          errorCode: null,
+        },
+      });
+    });
+  }
   async discover(
     id: string,
     pid: string,
     provider: ArchiveProvider,
-    c: FinancialAuthorization,
+    c: CaptureContext,
   ) {
     const company = await this.company(id, c);
+    await this.authorizeCapture(id, c, "SERVER");
     if (provider.accountKey !== company.accountKey)
       throw new FinancialValidationError(
         "Archive connection does not match this Company.",
@@ -226,9 +291,13 @@ export class ArchiveService {
     id: string,
     pid: string,
     result: InventoryResult,
-    c: FinancialAuthorization,
+    c: CaptureContext,
   ) {
     const company = await this.company(id, c);
+    const channel: AcquisitionChannel =
+      result.metadata.acquisition === "BROWSER_EVIDENCE_V1"
+        ? "BROWSER"
+        : "SERVER";
     if (
       !/^\d{4}-\d{2}$/.test(pid) ||
       result.items.length > 2000 ||
@@ -254,69 +323,88 @@ export class ArchiveService {
     const fingerprint = inventoryFingerprint(result.items);
     if (fingerprint !== result.fingerprint)
       throw new FinancialValidationError("Inventory checksum mismatch.");
-    return this.db.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`archive:${c.operatingGroupId}`},0))`;
-      const prior = await tx.archiveInventory.findFirst({
-        where: { archiveCompanyId: id, pid, sealed: true },
-        orderBy: [{ observedAt: "desc" }, { id: "desc" }],
-      });
-      if (prior?.fingerprint === fingerprint) return prior;
-      // Pre-canonicalization snapshots keep their immutable original fingerprint.
-      // Compare their raw metadata in memory so an identical retry does not
-      // manufacture another inventory merely because the hash algorithm changed.
-      if (prior) {
-        const items = await tx.archiveInventoryItem.findMany({
-          where: { inventoryId: prior.id },
-          select: { metadata: true },
+    return this.db
+      .$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`archive:${c.operatingGroupId}`},0))`;
+        await requireCaptureRun(tx, c, id, channel);
+        const prior = await tx.archiveInventory.findFirst({
+          where: { archiveCompanyId: id, pid, sealed: true },
+          orderBy: [{ observedAt: "desc" }, { id: "desc" }],
         });
         if (
-          inventoryFingerprint(items.map((x) => object(x.metadata))) ===
-          fingerprint
+          prior?.captureRunId === c.captureRunId &&
+          prior?.fingerprint === fingerprint
         )
           return prior;
-      }
-      const snapshot = await tx.archiveInventory.create({
-        data: {
-          archiveCompanyId: id,
-          observedAt: new Date(
-            Math.max(Date.now(), (prior?.observedAt.getTime() ?? 0) + 1),
-          ),
-          pid,
-          expectedCount: result.items.length,
-          fingerprint,
-          capturedByUserId: c.userId,
-          metadata: json(result.metadata),
-          items: {
-            create: result.items.map((x) => ({
-              providerStatementId: uuid(x.statement_id),
-              providerVersion: integer(x.version),
-              recipientId: uuid(x.driver_id),
-              recipientName:
-                [str(x.first_name), str(x.last_name)]
-                  .filter(Boolean)
-                  .join(" ") || null,
-              recipientType: x.contractor ? "CONTRACTOR" : "DRIVER",
-              providerUpdatedAt: str(x.updated_date),
-              metadata: json(x),
-              job: { create: {} },
-            })),
+        // Pre-canonicalization snapshots keep their immutable original fingerprint.
+        // Compare their raw metadata in memory so an identical retry does not
+        // manufacture another inventory merely because the hash algorithm changed.
+        if (prior && prior.captureRunId === c.captureRunId) {
+          const items = await tx.archiveInventoryItem.findMany({
+            where: { inventoryId: prior.id },
+            select: { metadata: true },
+          });
+          if (
+            inventoryFingerprint(items.map((x) => object(x.metadata))) ===
+            fingerprint
+          )
+            return prior;
+        }
+        const snapshot = await tx.archiveInventory.create({
+          data: {
+            archiveCompanyId: id,
+            captureRunId: c.captureRunId,
+            observedAt: new Date(
+              Math.max(Date.now(), (prior?.observedAt.getTime() ?? 0) + 1),
+            ),
+            pid,
+            expectedCount: result.items.length,
+            fingerprint,
+            capturedByUserId: c.userId,
+            metadata: json(result.metadata),
+            items: {
+              create: result.items.map((x) => ({
+                providerStatementId: uuid(x.statement_id),
+                providerVersion: integer(x.version),
+                recipientId: uuid(x.driver_id),
+                recipientName:
+                  [str(x.first_name), str(x.last_name)]
+                    .filter(Boolean)
+                    .join(" ") || null,
+                recipientType: x.contractor ? "CONTRACTOR" : "DRIVER",
+                providerUpdatedAt: str(x.updated_date),
+                metadata: json(x),
+                job: { create: {} },
+              })),
+            },
           },
-        },
+        });
+        await tx.archiveInventory.update({
+          where: { id: snapshot.id },
+          data: { sealed: true },
+        });
+        await this.audit(
+          tx,
+          c,
+          company.companyId,
+          "ARCHIVE_INVENTORY_CAPTURED",
+          {
+            captureRunId: c.captureRunId,
+            inventoryId: snapshot.id,
+            pid,
+            count: result.items.length,
+            fingerprint,
+            acquisition: result.metadata.acquisition ?? "SERVER_PROVIDER",
+            completenessBasis: "CAPTURED_INVENTORY_SNAPSHOT",
+          },
+        );
+        return snapshot;
+      })
+      .catch(async (error) => {
+        if (error instanceof AuthorizationDeniedError)
+          await auditCaptureDenial(this.db, c, id);
+        throw error;
       });
-      await tx.archiveInventory.update({
-        where: { id: snapshot.id },
-        data: { sealed: true },
-      });
-      await this.audit(tx, c, company.companyId, "ARCHIVE_INVENTORY_CAPTURED", {
-        inventoryId: snapshot.id,
-        pid,
-        count: result.items.length,
-        fingerprint,
-        acquisition: result.metadata.acquisition ?? "SERVER_PROVIDER",
-        completenessBasis: "CAPTURED_INVENTORY_SNAPSHOT",
-      });
-      return snapshot;
-    });
   }
   async capture(
     bindingId: string,
@@ -326,7 +414,7 @@ export class ArchiveService {
       originalFilename?: string;
       acquisition?: "BROWSER_EVIDENCE_V1";
     },
-    c: FinancialAuthorization,
+    c: CaptureContext,
     expected?: {
       statementId: string;
       pid: string;
@@ -376,6 +464,37 @@ export class ArchiveService {
       return await this.db.$transaction(
         async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`archive:${c.operatingGroupId}`},0))`;
+          const channel: AcquisitionChannel =
+            bundle.acquisition === "BROWSER_EVIDENCE_V1" ? "BROWSER" : "SERVER";
+          const jobScope = lease
+            ? await tx.archiveCaptureJob.findUnique({
+                where: { id: lease.id },
+                include: { item: { include: { inventory: true } } },
+              })
+            : null;
+          await requireCaptureRun(
+            tx,
+            c,
+            bindingId,
+            channel,
+            lease ? (jobScope?.item.inventory.captureRunId ?? null) : undefined,
+          );
+          if (
+            jobScope &&
+            (jobScope.item.inventory.archiveCompanyId !== bindingId ||
+              jobScope.item.providerStatementId !== n.providerStatementId)
+          )
+            throw new FinancialValidationError(
+              "Capture job identity mismatch.",
+            );
+          if (
+            object(
+              object(object(parseSource(bundle.detail).data).header).carrier,
+            ).name !== company.providerCompanyName
+          )
+            throw new FinancialValidationError(
+              "Detail Company differs from binding.",
+            );
           // Keep the claimed job locked until evidence and completion commit together.
           // A replacement worker must not change the lease after this validation.
           if (lease)
@@ -453,6 +572,7 @@ export class ArchiveService {
               company.companyId,
               "ARCHIVE_CAPTURE_DUPLICATE",
               {
+                captureRunId: c.captureRunId,
                 statementId: statement.id,
                 providerVersion: n.providerVersion,
                 acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
@@ -476,6 +596,7 @@ export class ArchiveService {
                 },
               });
             return {
+              captureRunId: c.captureRunId,
               statementId: statement.id,
               versionId: prior.id,
               status: statement.status,
@@ -556,6 +677,7 @@ export class ArchiveService {
           const detailStorageKey = await this.detailStorage.put(bundle.detail);
           written.push({ storage: this.detailStorage, key: detailStorageKey });
           const common = {
+            captureRunId: c.captureRunId,
             statementId: statement.id,
             providerVersion: n.providerVersion,
             documentId: document.id,
@@ -577,6 +699,7 @@ export class ArchiveService {
               company.companyId,
               "ARCHIVE_CONTENT_CONFLICT",
               {
+                captureRunId: c.captureRunId,
                 statementId: statement.id,
                 providerVersion: n.providerVersion,
                 bundleChecksum,
@@ -644,6 +767,7 @@ export class ArchiveService {
               header: json({
                 ...n.header.header,
                 archiveProvenance: {
+                  captureRunId: c.captureRunId,
                   acquisition: bundle.acquisition ?? "SERVER_PROVIDER",
                   assurance: bundle.acquisition
                     ? "USER_ATTESTED_CHECKSUM_SEALED"
@@ -696,6 +820,7 @@ export class ArchiveService {
               ? "ARCHIVE_SOURCE_CHANGED"
               : "ARCHIVE_VERSION_CAPTURED",
             {
+              captureRunId: c.captureRunId,
               statementId: statement.id,
               versionId: version.id,
               providerVersion: n.providerVersion,
@@ -716,6 +841,8 @@ export class ArchiveService {
         { timeout: 60_000, maxWait: 60_000 },
       );
     } catch (error) {
+      if (error instanceof AuthorizationDeniedError)
+        await auditCaptureDenial(this.db, c, bindingId);
       for (const x of written) {
         try {
           const references =
@@ -741,7 +868,7 @@ export class ArchiveService {
     inventoryId: string,
     itemIds: string[],
     provider: ArchiveProvider,
-    c: FinancialAuthorization,
+    c: CaptureContext,
   ) {
     if (
       !itemIds.length ||
@@ -762,6 +889,12 @@ export class ArchiveService {
       throw new FinancialNotFoundError();
     if (provider.accountKey !== inventory.company.accountKey)
       throw new FinancialValidationError("Archive connection mismatch.");
+    await this.authorizeCapture(
+      inventory.archiveCompanyId,
+      c,
+      "SERVER",
+      inventory.captureRunId,
+    );
     const results = [];
     for (const item of inventory.items) {
       const job = item.job!;
@@ -770,22 +903,13 @@ export class ArchiveService {
         continue;
       }
       const token = randomUUID();
-      const claimed = await this.db.archiveCaptureJob.updateMany({
-        where: {
-          id: job.id,
-          OR: [
-            { status: { in: ["DISCOVERED", "FAILED"] } },
-            { status: "CAPTURING", leaseExpiresAt: { lt: new Date() } },
-          ],
-        },
-        data: {
-          status: "CAPTURING",
-          leaseToken: token,
-          leaseExpiresAt: new Date(Date.now() + 180_000),
-          attempts: { increment: 1 },
-          errorCode: null,
-        },
-      });
+      const claimed = await this.claimCapture(
+        job.id,
+        token,
+        inventory.archiveCompanyId,
+        c,
+        "SERVER",
+      );
       if (!claimed.count) {
         results.push({ itemId: item.id, status: "CAPTURING" });
         continue;
@@ -833,7 +957,12 @@ export class ArchiveService {
               c,
               inventory.company.companyId,
               "ARCHIVE_CAPTURE_FAILED",
-              { jobId: job.id, attempt: job.attempts + 1, code },
+              {
+                captureRunId: c.captureRunId,
+                jobId: job.id,
+                attempt: job.attempts + 1,
+                code,
+              },
             );
         });
         results.push({ itemId: item.id, status: "FAILED", code });

@@ -155,3 +155,17 @@ The v8 regression models 27 trips and all seven observed response orders (four
 unique variants), with two equal-time pairs. Unknown provider ordering behavior
 outside this rule remains fail-closed; this does not declare trips globally
 unordered.
+
+## Capture runs (required for new acquisitions)
+
+OWNERs create a draft in **Accounting → Statements → Capture → Historical capture run**, select exact bound provider Company IDs, review the draft scope, and activate it. A run belongs to its creator, Operating Group and configured account namespace. Its scope is immutable, including in DRAFT; close it and create a new run to change scope. Only one run can be ACTIVE per group/account/provider. Other bound Companies show **Not authorized for this run**. Closing/completing/failing a run is terminal. Run completion is an operator lifecycle action, not an independent completeness certification.
+
+All acquisition channels additionally require `QUICKMANAGE_CAPTURE_ENABLED=true` (default false). Browser uploads also require `QUICKMANAGE_BROWSER_BRIDGE_ENABLED=true`; server-provider acquisition separately requires `QUICKMANAGE_ARCHIVE_ENABLED=true`. Opening the browser gate does **not** enable server QuickManage access. All existing namespace, binding and actor checks remain. Keep all three gates disabled outside an authorized run.
+
+OWNER configuration uses `POST /api/finance/archive/runs`: `{action:"create", allowedProviderCompanyIds:[exactProviderUuid], label:"Purpose"}`, then `{action:"ACTIVE",captureRunId}`. Terminal actions are `COMPLETED`, `CLOSED`, `FAILED`. The creator must still be an active OWNER with access to every bound Company at use time. Run IDs are not bearer authorization. Ordinary ingestion requests cannot supply/expand an allowlist.
+
+Inventory and statement uploads now include `captureRunId` alongside the existing action/evidence/inventoryId. Legacy server `discover` and bounded `capture` requests also include `captureRunId`. Inventory snapshots carry the run FK; their items/jobs derive scope from that immutable parent. Retry/resume must use the same active run. If that run is closed, explicitly authorize a new run and re-observe inventory; the new immutable snapshot carries the new provenance. Previously captured UUID/versions are reused without rewriting evidence or fabricating historical run provenance. Older records retain null run IDs.
+
+Shared service guards check the master/channel gates, current actor, configured group/account, ACTIVE run, exact provider IDs and binding. Job claims and final evidence transactions revalidate scope. Acquisition and run lifecycle changes use the same group advisory transaction lock. A close committed while a provider download is pending prevents subsequent evidence writes. Captures already holding the commit lock linearize before closure; closure cannot claim success while such a transaction can still commit afterward. Failed in-flight jobs may release their leases after closure, but cannot write evidence.
+
+Run creation/activation/terminal status and inventory/version actions are audited with safe IDs; recognized-owner denials are best-effort audited without evidence payloads or provider secrets. No run action creates Accounting economics. API responses and the Capture screen show current run status; stale UI requests are still rejected server-side.

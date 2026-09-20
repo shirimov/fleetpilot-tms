@@ -32,6 +32,7 @@ export async function POST(request: Request) {
       throw new FinancialValidationError("Browser bridge is disabled.");
     const b = exact(await bridgeBody(request), [
       "action",
+      "captureRunId",
       "evidence",
       "catalogId",
       "providerCompanyId",
@@ -62,10 +63,18 @@ export async function POST(request: Request) {
           ),
         );
       case "inventory":
-        return reply(await archiveBridge.inventory(b.evidence, c));
+        return reply(
+          await archiveBridge.inventory(b.evidence, {
+            ...c,
+            captureRunId: text(b.captureRunId),
+          }),
+        );
       case "capture":
         return reply(
-          await archiveBridge.capture(text(b.inventoryId), b.evidence, c),
+          await archiveBridge.capture(text(b.inventoryId), b.evidence, {
+            ...c,
+            captureRunId: text(b.captureRunId),
+          }),
         );
       default:
         throw new FinancialValidationError("Unknown bridge action.");
