@@ -1,3 +1,4 @@
+import { archiveCaptureRuns, type CaptureContext } from "./archive-capture-run";
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -205,6 +206,8 @@ export class ArchiveBridgeService {
       rows,
       canonical,
       canConfirm: c.role === "OWNER",
+      captureRuns: await archiveCaptureRuns.list(c),
+      captureEnabled: process.env.QUICKMANAGE_CAPTURE_ENABLED === "true",
       bridgeEnabled: process.env.QUICKMANAGE_BROWSER_BRIDGE_ENABLED === "true",
       accountConfigured:
         !!process.env.QUICKMANAGE_ARCHIVE_ACCOUNT_KEY &&
@@ -359,17 +362,13 @@ export class ArchiveBridgeService {
       throw new FinancialNotFoundError();
     return binding;
   }
-  async inventory(value: unknown, c: FinancialAuthorization) {
+  async inventory(value: unknown, c: CaptureContext) {
     archiveScope(c);
     const result = validateInventory(value),
       binding = await this.binding(result.companyId, c);
     return this.archive.saveInventory(binding.id, result.pid, result, c);
   }
-  async capture(
-    inventoryId: string,
-    value: unknown,
-    c: FinancialAuthorization,
-  ) {
+  async capture(inventoryId: string, value: unknown, c: CaptureContext) {
     archiveScope(c);
     const bundle = validateBundle(value),
       binding = await this.binding(bundle.companyId, c);
@@ -387,9 +386,15 @@ export class ArchiveBridgeService {
           sealed: true,
         },
       },
-      include: { job: true },
+      include: { job: true, inventory: true },
     });
     if (!item || !item.job) throw new FinancialNotFoundError();
+    await this.archive.authorizeCapture(
+      binding.id,
+      c,
+      "BROWSER",
+      item.inventory.captureRunId,
+    );
     if (
       item.recipientType !== bundle.normalized.header.recipientType ||
       item.recipientId !== bundle.normalized.header.recipientId ||
@@ -415,22 +420,13 @@ export class ArchiveBridgeService {
         );
     }
     const token = randomUUID();
-    const claimed = await this.db.archiveCaptureJob.updateMany({
-      where: {
-        id: item.job.id,
-        OR: [
-          { status: { not: "CAPTURING" } },
-          { leaseExpiresAt: { lt: new Date() } },
-        ],
-      },
-      data: {
-        status: "CAPTURING",
-        leaseToken: token,
-        leaseExpiresAt: new Date(Date.now() + 180000),
-        attempts: { increment: 1 },
-        errorCode: null,
-      },
-    });
+    const claimed = await this.archive.claimCapture(
+      item.job.id,
+      token,
+      binding.id,
+      c,
+      "BROWSER",
+    );
     if (!claimed.count) return { status: "CAPTURING", retry: true };
     try {
       return await this.archive.capture(
@@ -466,6 +462,7 @@ export class ArchiveBridgeService {
               actorUserId: c.userId,
               action: "ARCHIVE_CAPTURE_FAILED",
               metadata: {
+                captureRunId: c.captureRunId!,
                 jobId: item.job!.id,
                 code: "BROWSER_CAPTURE_FAILED",
                 acquisition: "BROWSER_EVIDENCE_V1",

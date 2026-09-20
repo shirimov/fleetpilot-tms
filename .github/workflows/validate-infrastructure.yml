@@ -30,6 +30,11 @@ jobs:
       RELEASE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact validation commit
+        run: test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
 
       - name: Validate shell scripts
         run: |

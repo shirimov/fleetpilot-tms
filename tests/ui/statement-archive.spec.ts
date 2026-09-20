@@ -1,3 +1,4 @@
+import { fixtureCaptureRun } from "../fixtures/archive-run";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { expect, test } from "playwright/test";
 import { prisma } from "@/lib/prisma";
@@ -50,6 +51,7 @@ test("Statements archive shows scoped inventory, immutable history, bounded capt
   const provider = new FixtureArchiveProvider(),
     service = new ArchiveService(),
     binding = await service.bind(company.id, provider.companyId, provider, c);
+  await fixtureCaptureRun(c);
   provider.fixtures = [
     statementFixture(),
     statementFixture({ contractor: true }),

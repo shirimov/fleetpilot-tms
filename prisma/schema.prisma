@@ -149,6 +149,7 @@ enum CompanyMembershipRole {
 }
 
 model User {
+  archiveCaptureRuns ArchiveCaptureRun[]
   archiveGrants      ArchiveScopeGrant[]
   archiveCatalogs    ArchiveBrowserCatalog[]
   archiveVersions    ArchiveVersion[]        @relation("ArchiveVersionActor")
@@ -1459,6 +1460,7 @@ enum AdminFeeFrequency {
 }
 
 model OperatingGroup {
+  archiveCaptureRuns     ArchiveCaptureRun[]
   archiveGrants          ArchiveScopeGrant[]
   archiveCatalogs        ArchiveBrowserCatalog[]
   archiveCompanies       ArchiveCompany[]
@@ -2439,6 +2441,8 @@ model ArchiveStatement {
 }
 
 model ArchiveVersion {
+  captureRunId      String?
+  captureRun        ArchiveCaptureRun? @relation(fields: [captureRunId], references: [id], onDelete: Restrict)
   sealed            Boolean            @default(false)
   capturedBy        User               @relation("ArchiveVersionActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
   id                String             @id @default(cuid())
@@ -2479,6 +2483,7 @@ model ArchiveVersion {
   trucks            ArchiveTruck[]
 
   @@unique([statementId, providerVersion])
+  @@index([captureRunId])
   @@index([pid, capturedAt])
   @@index([recipientId, pid])
   @@index([recipientType, recipientStatus])
@@ -2529,6 +2534,8 @@ model ArchiveTruck {
 
 // A second representation of the SAME provider version is quarantined, never promoted.
 model ArchiveConflict {
+  captureRunId     String?
+  captureRun       ArchiveCaptureRun? @relation(fields: [captureRunId], references: [id], onDelete: Restrict)
   capturedBy       User               @relation("ArchiveConflictActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
   id               String             @id @default(cuid())
   statementId      String
@@ -2544,10 +2551,13 @@ model ArchiveConflict {
   document         FinancialStatement @relation(fields: [documentId], references: [id], onDelete: Restrict)
 
   @@unique([statementId, providerVersion, bundleChecksum])
+  @@index([captureRunId])
   @@index([documentId])
 }
 
 model ArchiveInventory {
+  captureRunId     String?
+  captureRun       ArchiveCaptureRun?     @relation(fields: [captureRunId], references: [id], onDelete: Restrict)
   sealed           Boolean                @default(false)
   capturedBy       User                   @relation("ArchiveInventoryActor", fields: [capturedByUserId], references: [id], onDelete: Restrict)
   id               String                 @id @default(cuid())
@@ -2561,6 +2571,7 @@ model ArchiveInventory {
   company          ArchiveCompany         @relation(fields: [archiveCompanyId], references: [id], onDelete: Restrict)
   items            ArchiveInventoryItem[]
 
+  @@index([captureRunId])
   @@index([archiveCompanyId, pid, observedAt])
   @@index([archiveCompanyId, pid, fingerprint], map: "archive_inventory_fingerprint_lookup")
 }
@@ -2623,4 +2634,25 @@ model ArchiveBrowserCatalog {
   submittedBy       User           @relation(fields: [submittedByUserId], references: [id], onDelete: Restrict)
 
   @@unique([operatingGroupId, accountKey, fingerprint])
+}
+
+model ArchiveCaptureRun {
+  id                        String             @id @default(cuid())
+  provider                  String             @default("QUICKMANAGE")
+  operatingGroupId          String
+  operatingGroup            OperatingGroup     @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  accountKey                String
+  createdByUserId           String
+  createdBy                 User               @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdAt                 DateTime           @default(now())
+  status                    String             @default("DRAFT")
+  allowedProviderCompanyIds String[]
+  label                     String?
+  startedAt                 DateTime?
+  closedAt                  DateTime?
+  inventories               ArchiveInventory[]
+  versions                  ArchiveVersion[]
+  conflicts                 ArchiveConflict[]
+
+  @@index([operatingGroupId, accountKey, status])
 }

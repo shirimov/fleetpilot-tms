@@ -69,6 +69,7 @@ export async function GET(request: Request) {
         result = {
           ...(await archiveRead.overview(c)),
           connectionEnabled:
+            process.env.QUICKMANAGE_CAPTURE_ENABLED === "true" &&
             archiveProviderConfigured() &&
             process.env.QUICKMANAGE_ARCHIVE_OPERATING_GROUP_ID ===
               c.operatingGroupId,
@@ -85,6 +86,15 @@ export async function POST(request: Request) {
     if (Number(request.headers.get("content-length") || 0) > 8192)
       throw new FinancialValidationError("Request too large.");
     const b = await request.json();
+    if ("allowedProviderCompanyIds" in b)
+      throw new FinancialValidationError(
+        "Run scope cannot be supplied on acquisition requests.",
+      );
+    const captureContext = {
+      ...c,
+      captureRunId:
+        typeof b.captureRunId === "string" ? b.captureRunId : undefined,
+    };
     let result: unknown;
     if (b.action === "accept") {
       if (typeof b.statementId !== "string")
@@ -108,7 +118,12 @@ export async function POST(request: Request) {
         typeof b.company === "string" &&
         typeof b.pid === "string"
       )
-        result = await archiveService.discover(b.company, b.pid, provider, c);
+        result = await archiveService.discover(
+          b.company,
+          b.pid,
+          provider,
+          captureContext,
+        );
       else if (
         b.action === "capture" &&
         typeof b.inventoryId === "string" &&
@@ -119,7 +134,7 @@ export async function POST(request: Request) {
           b.inventoryId,
           b.itemIds,
           provider,
-          c,
+          captureContext,
         );
       else throw new FinancialValidationError("Invalid archive action.");
     }

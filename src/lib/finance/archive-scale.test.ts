@@ -1,3 +1,4 @@
+import { fixtureCaptureRun } from "../../../tests/fixtures/archive-run";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -9,7 +10,7 @@ import { FilesystemPrivateFileStorage } from "@/lib/storage/private-file-storage
 import { FinancialControlService } from "./financial-control-service";
 import { ArchiveService } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
-import type { FinancialAuthorization } from "./financial-control-authorization";
+import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import {
   FixtureArchiveProvider,
   statementFixture,
@@ -80,6 +81,7 @@ test("scale: 14 Companies, 310 inventories, 9127 real synthetic captures and 827
         ),
       );
     }
+    await fixtureCaptureRun(ctx);
     let captured = 0,
       extraVersions = 0;
     const started = Date.now();

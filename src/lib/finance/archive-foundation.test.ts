@@ -1,6 +1,7 @@
+import { fixtureCaptureRun } from "../../../tests/fixtures/archive-run";
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { before, after, test } from "node:test";
+import { before, after, beforeEach, test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile, readdir } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { ArchiveService, archiveDocumentScope } from "./archive-service";
 import { ArchiveProviderError } from "./archive-provider";
 import { ArchiveReadService } from "./archive-read";
 import { FinancialControlService } from "./financial-control-service";
-import type { FinancialAuthorization } from "./financial-control-authorization";
+import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import { minor, normalizeStatement, parseSource } from "./archive-normalize";
 import {
   FixtureArchiveProvider,
@@ -64,6 +65,7 @@ before(async () => {
   bindingId = (
     await service.bind(company.id, provider.companyId, provider, ctx)
   ).id;
+  await fixtureCaptureRun(ctx);
   await prisma.truck.create({
     data: {
       companyId: company.id,
@@ -72,6 +74,10 @@ before(async () => {
       status: "INACTIVE",
     },
   });
+});
+beforeEach(() => {
+  process.env.QUICKMANAGE_ARCHIVE_OPERATING_GROUP_ID = ctx.operatingGroupId;
+  process.env.QUICKMANAGE_ARCHIVE_ACCOUNT_KEY = provider.accountKey;
 });
 // Append-only fixtures deliberately remain in the disposable database; destroy the database after the suite.
 after(async () => {
@@ -425,6 +431,7 @@ test("protected posted Pilot fixture survives capture with exact economics, docu
     isolatedProvider,
     f.context,
   );
+  await fixtureCaptureRun(f.context);
   const snapshot = async () => ({
     economics: await economics(f.context),
     allocations: await prisma.financialAllocation.count({
@@ -520,7 +527,9 @@ test("conflicting exact VIN/unit mappings remain unresolved without blocking cap
 
 test("42-item interruption and repeated resume retain exactly one version, PDF, line set and success audit per identity", async () => {
   const p = new FixtureArchiveProvider();
+  p.accountKey = provider.accountKey;
   const b = await service.bind(ctx.activeCompanyId, p.companyId, p, ctx);
+  await fixtureCaptureRun(ctx);
   p.fixtures = Array.from({ length: 42 }, (_, i) =>
     statementFixture({ terminated: i < 38, contractor: i % 2 === 0 }),
   );
@@ -719,7 +728,9 @@ test("UUID casing cannot create a second inventory identity or prevent completen
 
 test("individual PDF, JSON, parse, timeout and auth failures preserve successful captures and retry without duplicates", async () => {
   const p = new FixtureArchiveProvider();
+  p.accountKey = provider.accountKey;
   const b = await service.bind(ctx.activeCompanyId, p.companyId, p, ctx);
+  await fixtureCaptureRun(ctx);
   p.fixtures = Array.from({ length: 6 }, () =>
     statementFixture({ pid: "2026-27" }),
   );

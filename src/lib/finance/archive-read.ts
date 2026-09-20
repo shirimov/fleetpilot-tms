@@ -90,7 +90,12 @@ export class ArchiveReadService {
   async inventory(id: string, c: FinancialAuthorization, page: number) {
     const snapshot = await this.db.archiveInventory.findFirst({
       where: { id, sealed: true, company: archiveScope(c) },
-      include: { company: true },
+      include: {
+        company: true,
+        captureRun: {
+          select: { id: true, status: true, createdByUserId: true },
+        },
+      },
     });
     if (!snapshot) throw new FinancialNotFoundError();
     const [items, cov, unexpected] = await Promise.all([

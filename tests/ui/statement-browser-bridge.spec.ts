@@ -64,16 +64,7 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
   ).toBeVisible();
   await expect(
     page.getByLabel("Inventory evidence", { exact: true }),
-  ).toBeEnabled();
-  await page.getByLabel("Inventory evidence", { exact: true }).setInputFiles(
-    upload("accidental-browser-export.json", {
-      cookies: [{ name: "fake-session", value: "synthetic-do-not-upload" }],
-    }),
-  );
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Credentials" }),
-  ).toBeVisible();
-  expect(requests).toHaveLength(0);
+  ).toBeDisabled();
   const f = tripTiesFixture();
   [f.payload.data.trips[7], f.payload.data.trips[8]] = [
     f.payload.data.trips[8],
@@ -86,12 +77,6 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     detailAfterSha256: createHash("sha256").update(after).digest("hex"),
   };
   const inventory = inventoryEvidence(provider, [f]);
-  await page
-    .getByLabel("Inventory evidence", { exact: true })
-    .setInputFiles(upload("inventory.json", inventory));
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Unbound Company" }),
-  ).toContainText("Unbound Company");
   await page
     .getByLabel("Company catalog", { exact: true })
     .setInputFiles(upload("companies.json", catalogEvidence(provider)));
@@ -111,7 +96,29 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
     .check();
   await page.getByRole("button", { name: "Confirm Company binding" }).click();
   await expect(
-    page.getByText("Binding recorded", { exact: true }),
+    page.getByText("Not authorized for this run", { exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Run label").fill("Synthetic UI capture run");
+  await page
+    .getByRole("checkbox", {
+      name: new RegExp("Synthetic Carrier — " + provider),
+    })
+    .check();
+  await page.getByRole("button", { name: "Create draft run" }).click();
+  await page.getByRole("button", { name: "Activate run" }).click();
+  await expect(
+    page.getByText("Authorized for this run", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(/Status: ACTIVE/)).toBeVisible();
+  await page.getByLabel("Inventory evidence", { exact: true }).setInputFiles(
+    upload("secret.json", {
+      cookies: [{ name: "fake", value: "do-not-upload" }],
+    }),
+  );
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Only QuickManage business evidence" }),
   ).toBeVisible();
   await page
     .getByLabel("Inventory evidence", { exact: true })
@@ -185,4 +192,23 @@ test("OWNER review, unbound rejection, inventory preview, selected capture and d
   await expect(
     page.getByRole("cell", { name: /Synthetic Recipient/ }).first(),
   ).toBeVisible();
+  await page.goto("/accounting?view=statements&archive=capture");
+  await page.getByRole("button", { name: "Close run", exact: true }).click();
+  await expect(
+    page.getByLabel("Inventory evidence", { exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByText(/No active run/)).toBeVisible();
+  const priorRequest = JSON.parse(
+    requests.find((x) => JSON.parse(x).action === "inventory")!,
+  );
+  const denied = await page.request.post("/api/finance/archive/bridge", {
+    headers: { origin: "http://127.0.0.1:3100" },
+    data: priorRequest,
+  });
+  expect(denied.status()).toBe(403);
+  const tampered = await page.request.post("/api/finance/archive/bridge", {
+    headers: { origin: "http://127.0.0.1:3100" },
+    data: { ...priorRequest, allowedProviderCompanyIds: [randomUUID()] },
+  });
+  expect(tampered.status()).toBe(400);
 });

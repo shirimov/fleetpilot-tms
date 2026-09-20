@@ -103,7 +103,13 @@ type Data = {
   items: Statement[] & Coverage[] & Item[];
   total: number;
   coverage: Coverage;
-  snapshot: { id: string; pid: string; company: Binding };
+  snapshot: {
+    id: string;
+    pid: string;
+    company: Binding;
+    captureRunId: string | null;
+    captureRun: { id: string; status: string } | null;
+  };
   unexpected: { id: string; providerStatementId: string }[];
 } & Statement;
 const box = "rounded-xl border border-white/10 bg-slate-900/70 p-4";
@@ -492,6 +498,7 @@ export default function StatementArchiveWorkspace({
             disabled={
               busy ||
               !overview?.connectionEnabled ||
+              data.snapshot.captureRun?.status !== "ACTIVE" ||
               !selected.length ||
               selected.length > 5
             }
@@ -499,6 +506,7 @@ export default function StatementArchiveWorkspace({
               action({
                 action: "capture",
                 inventoryId: data.snapshot.id,
+                captureRunId: data.snapshot.captureRunId,
                 itemIds: selected,
               })
             }
