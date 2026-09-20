@@ -874,3 +874,117 @@ test("fixed-pay ordering retries and concurrency preserve raw evidence; changed 
   );
   assert.deepEqual(await economics(), moneyBefore);
 });
+
+test("equal-time trip ordering retries and concurrency preserve raw evidence; changed values/PDF conflict; newer version remains distinct", async () => {
+  const { tripTiesFixture } =
+    await import("../../../tests/fixtures/quickmanage-trip-ties");
+  const { hash } = await import("./archive-normalize");
+  const f = tripTiesFixture();
+  const original = Buffer.from(f.bundle.detail),
+    moneyBefore = await economics();
+  const first = await service.capture(bindingId, f.bundle, ctx);
+  const versionBefore = await prisma.archiveVersion.findUniqueOrThrow({
+    where: { id: first.versionId! },
+    include: { lines: true, trucks: true, document: true },
+  });
+  const countFiles = async () =>
+    (await readdir(root, { recursive: true })).sort();
+  const filesBefore = await countFiles();
+  [f.payload.data.trips[7], f.payload.data.trips[8]] = [
+    f.payload.data.trips[8],
+    f.payload.data.trips[7],
+  ];
+  const reordered = {
+    ...f.bundle,
+    detail: Buffer.from(JSON.stringify(f.payload)),
+  };
+  assert.notEqual(hash(original), hash(reordered.detail));
+  const repeats = await Promise.all(
+    Array.from({ length: 5 }, () => service.capture(bindingId, reordered, ctx)),
+  );
+  assert.ok(
+    repeats.every((x) => x.idempotent && x.versionId === first.versionId),
+  );
+  assert.deepEqual(await countFiles(), filesBefore);
+  assert.deepEqual(
+    await prisma.archiveVersion.findUniqueOrThrow({
+      where: { id: first.versionId! },
+      include: { lines: true, trucks: true, document: true },
+    }),
+    versionBefore,
+  );
+  const detailStorage = new FilesystemPrivateFileStorage(
+    "quickmanage-details",
+    root,
+  );
+  assert.deepEqual(
+    Buffer.from(await detailStorage.get(versionBefore.detailStorageKey)),
+    original,
+  );
+  assert.equal(versionBefore.detailChecksum, hash(original));
+  f.payload.data.trips[7].rate += 0.01;
+  const changed = {
+    ...f.bundle,
+    detail: Buffer.from(JSON.stringify(f.payload)),
+  };
+  assert.equal(
+    (await service.capture(bindingId, changed, ctx)).status,
+    "NEEDS_REVIEW",
+  );
+  const conflictFiles = await countFiles();
+  [f.payload.data.trips[7], f.payload.data.trips[8]] = [
+    f.payload.data.trips[8],
+    f.payload.data.trips[7],
+  ];
+  const conflictRetry = await service.capture(
+    bindingId,
+    { ...changed, detail: Buffer.from(JSON.stringify(f.payload)) },
+    ctx,
+  );
+  assert.equal(conflictRetry.idempotent, true);
+  assert.equal(conflictRetry.status, "NEEDS_REVIEW");
+  assert.deepEqual(await countFiles(), conflictFiles);
+  assert.equal(
+    (
+      await service.capture(
+        bindingId,
+        { ...reordered, pdf: Buffer.from("%PDF-1.4\nchanged PDF\n%%EOF") },
+        ctx,
+      )
+    ).status,
+    "NEEDS_REVIEW",
+  );
+  assert.equal(
+    await prisma.archiveVersion.count({
+      where: { statementId: first.statementId },
+    }),
+    1,
+  );
+  assert.equal(
+    await prisma.archiveConflict.count({
+      where: { statementId: first.statementId },
+    }),
+    2,
+  );
+  assert.deepEqual(
+    await prisma.archiveVersion.findUniqueOrThrow({
+      where: { id: first.versionId! },
+      include: { lines: true, trucks: true, document: true },
+    }),
+    versionBefore,
+  );
+  f.payload.data.version = 15;
+  const newer = await service.capture(
+    bindingId,
+    { ...f.bundle, detail: Buffer.from(JSON.stringify(f.payload)) },
+    ctx,
+  );
+  assert.notEqual(newer.versionId, first.versionId);
+  assert.equal(
+    await prisma.archiveVersion.count({
+      where: { statementId: first.statementId },
+    }),
+    2,
+  );
+  assert.deepEqual(await economics(), moneyBefore);
+});

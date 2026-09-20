@@ -91,10 +91,10 @@ Credential guards reject recognizable credential fields and URL/Bearer/JWT value
 
 The diagnosed Caribe v14 response has seven `data.fixed_pays` records whose array
 order varies while complete day-keyed rows and the PDF remain identical. Acquisition
-now compares `quickmanage-fixed-pays-v1` business fingerprints, independently of
+compares versioned business fingerprints (currently `quickmanage-fixed-pays-trip-ties-v2`), independently of
 raw JSON SHA-256. The shared helper uses a bounded, lossless typed JSON tree: sorted
 object keys, exact numeric lexemes and types, and unchanged order for every other
-array. Only `data.fixed_pays` is sorted by `(Sunday=0 … Saturday=6, complete typed
+array. The fixed-pay rule sorts `data.fixed_pays` by `(Sunday=0 … Saturday=6, complete typed
 canonical row serialization)`. The full row is a deterministic tie-breaker, including
 unknown fields. Identical and same-day duplicate rows are retained; nothing is
 summed, rounded, deduplicated, stripped or rewritten. Missing/invalid weekday
@@ -125,3 +125,33 @@ from old raw attachments when needed: no schema change, migration, existing chec
 rewrite, or normalized-line rewrite. Completeness still uses exact provider
 UUID/version/PID/recipient identity, not the business fingerprint. This comparison
 is an internal control, not provider authentication; provenance is unchanged.
+
+
+### Equal-time trip comparison (v2)
+
+`quickmanage-fixed-pays-trip-ties-v2` retains the fixed-pay rule and normalizes
+only contiguous `data.trips` runs whose `origin_app_time` values resolve to the
+same instant using `providerInstant`. That parser preserves every fractional
+second digit; no rounding or time bucketing occurs. Original timestamp strings
+still participate in the fingerprint, so changing their representation remains
+a detectable source change even when they denote the same instant.
+
+Within each run the sort key is identity kind rank (`trip_id`, then
+`trip_ref_number`, then `id`), the first nonempty string identity available, then
+the complete typed canonical row. Comparisons use deterministic code-unit order.
+Missing/invalid times and absent usable identities are barriers: they retain
+source order and never authorize equivalence. Equal times separated by another
+group are not collected together. Distinct-time group order, nested
+`statement_stops`, and every other array remain significant.
+
+Every row, including identical rows and repeated IDs, is retained. No values are
+summed, rounded, dropped or rewritten. Raw JSON/PDF bytes and checksums retain
+their existing contracts; only the internal comparison representation changes.
+Existing evidence is hash-verified and compared at read time under v2; old audit
+fingerprints remain immutable with their recorded version. No migration,
+recapture, completeness-identity or provider-version change is required.
+
+The v8 regression models 27 trips and all seven observed response orders (four
+unique variants), with two equal-time pairs. Unknown provider ordering behavior
+outside this rule remains fail-closed; this does not declare trips globally
+unordered.
