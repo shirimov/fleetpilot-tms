@@ -93,8 +93,8 @@ The diagnosed Caribe v14 response has seven `data.fixed_pays` records whose arra
 order varies while complete day-keyed rows and the PDF remain identical. Acquisition
 compares versioned business fingerprints (currently `quickmanage-fixed-pays-trip-ties-v2`), independently of
 raw JSON SHA-256. The shared helper uses a bounded, lossless typed JSON tree: sorted
-object keys, exact numeric lexemes and types, and unchanged order for every other
-array. The fixed-pay rule sorts `data.fixed_pays` by `(Sunday=0 … Saturday=6, complete typed
+object keys, exact numeric lexemes and types, and unchanged array order except
+for the fixed-pay rule and the equal-time trip rule documented below. The fixed-pay rule sorts `data.fixed_pays` by `(Sunday=0 … Saturday=6, complete typed
 canonical row serialization)`. The full row is a deterministic tie-breaker, including
 unknown fields. Identical and same-day duplicate rows are retained; nothing is
 summed, rounded, deduplicated, stripped or rewritten. Missing/invalid weekday
