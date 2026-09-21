@@ -1,0 +1,71 @@
+name: Validate Truck history foundation
+on:
+  pull_request:
+    paths:
+      - .github/workflows/validate-truck-history.yml
+      - src/lib/fleet/**
+      - src/components/fleet/**
+      - src/app/trucks/**
+      - src/app/api/trucks/**
+      - prisma/**
+      - tests/ui/truck-company-history.spec.ts
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  history:
+    name: History unit, integration and browser regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-history-test
+          POSTGRES_DB: history_validation
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:disposable-history-test@localhost:5432/history_validation
+      AUTH_SECRET: fleetpilot-test-only-not-production
+      RELEASE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate && npx prisma generate && npx prisma migrate deploy
+      - run: npm test
+      - run: npx tsc --noEmit
+      - name: Lint changed foundation
+        run: >-
+          npx eslint src/lib/fleet/truck-company-history.ts
+          src/lib/fleet/truck-company-history.test.ts
+          src/lib/fleet/truck-lifecycle-service.ts
+          src/app/api/trucks/\[id\]/company-history/route.ts
+          src/components/fleet/TruckCompanyHistory.tsx src/app/trucks/page.tsx
+          tests/ui/truck-company-history.spec.ts
+      - run: npx playwright install --with-deps chromium
+      - name: Fleet, Accounting, Pilot and archive browser regressions
+        run: >-
+          npm run test:ui -- tests/ui/truck-company-history.spec.ts
+          tests/ui/equipment-scope.spec.ts tests/ui/truck-import.spec.ts
+          tests/ui/accounting-workspace.spec.ts tests/ui/pilot-import.spec.ts
+          tests/ui/statement-archive.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: history-browser-failures
+          path: test-results/
+          retention-days: 5

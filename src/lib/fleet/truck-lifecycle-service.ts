@@ -11,7 +11,7 @@ export class TruckLifecycleError extends Error {
 
 const protectedRelations = [
   'drivers', 'loads', 'settlements', 'truckInspections', 'financialAllocations',
-  'financialExpectations', 'adminFeeAgreements', 'pilotFuelingEvents', 'importRows',
+  'financialExpectations', 'adminFeeAgreements', 'pilotFuelingEvents', 'importRows', 'operatingHistoryRevisions',
 ] as const;
 
 export class TruckLifecycleService {
@@ -42,7 +42,7 @@ export class TruckLifecycleService {
         include: { _count: { select: {
           drivers: true, loads: true, settlements: true, truckInspections: true,
           financialAllocations: true, financialExpectations: true, adminFeeAgreements: true,
-          pilotFuelingEvents: true, importRows: true,
+          pilotFuelingEvents: true, importRows: true, operatingHistoryRevisions: true,
         } } },
       });
       if (!truck) throw new TruckLifecycleError('Truck not found.');

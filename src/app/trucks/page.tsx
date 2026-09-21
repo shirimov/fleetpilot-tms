@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { TruckCompanyHistory } from '@/components/fleet/TruckCompanyHistory'
 import Sidebar from '@/components/Sidebar'
 import { TruckImportPanel } from '@/components/fleet/TruckImportPanel'
 
@@ -37,6 +38,7 @@ const statusColor: Record<string, string> = {
 }
 
 export default function TrucksPage() {
+  const [historyTruck, setHistoryTruck] = useState<TruckItem | null>(null)
   const [trucks, setTrucks] = useState<TruckItem[]>([])
   const [companies, setCompanies] = useState<CompanyOption[]>([])
   const [fleetCompanies, setFleetCompanies] = useState<FleetCompanyOption[]>([])
@@ -183,6 +185,7 @@ export default function TrucksPage() {
           </button>
         </div>
 
+        {historyTruck && <TruckCompanyHistory truck={historyTruck} companies={fleetCompanies} onClose={() => setHistoryTruck(null)} onChanged={() => { loadData().catch(e => setPageError(e.message)) }} />}
         {showForm && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={e => { if (e.target === e.currentTarget) setShowForm(false) }}>
             <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto">
@@ -262,7 +265,7 @@ export default function TrucksPage() {
               </div>
               <div>
                 <label className="text-xs text-gray-400 uppercase">Company *</label>
-                <select required value={form.companyId} onChange={e => setForm({ ...form, companyId: e.target.value })}
+                <select disabled={!!editId} required value={form.companyId} onChange={e => setForm({ ...form, companyId: e.target.value })}
                   className="w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
                   <option value="">Select company...</option>
                   {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -323,7 +326,7 @@ export default function TrucksPage() {
               <tbody>
                 {trucks.map((t, i) => (
                   <tr key={t.id} className={`border-b border-gray-800/50 hover:bg-gray-800/30 ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}>
-                    <td className="px-6 py-4 font-bold">{t.unitNumber}</td>
+                    <td aria-label={t.unitNumber} className="px-6 py-4 font-bold"><button className="text-blue-300 hover:underline" onClick={() => setHistoryTruck(t)} aria-label={`Truck ${t.unitNumber} history`}>{t.unitNumber}</button></td>
                     <td className="px-6 py-4 text-gray-300">{[t.year, t.make, t.model].filter(Boolean).join(' ') || '—'}</td>
                     <td className="px-6 py-4 text-gray-400">{t.company?.name || '—'}</td>
                     <td className="px-6 py-4">

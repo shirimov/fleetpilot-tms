@@ -103,6 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
+  truckOperatingAffiliations TruckCompanyAffiliation[]
   archiveGrants              ArchiveScopeGrant[]
   archiveCompanies           ArchiveCompany[]
   id                         String                      @id @default(cuid())
@@ -149,21 +150,22 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  archiveCaptureRuns ArchiveCaptureRun[]
-  archiveGrants      ArchiveScopeGrant[]
-  archiveCatalogs    ArchiveBrowserCatalog[]
-  archiveVersions    ArchiveVersion[]        @relation("ArchiveVersionActor")
-  archiveConflicts   ArchiveConflict[]       @relation("ArchiveConflictActor")
-  archiveInventories ArchiveInventory[]      @relation("ArchiveInventoryActor")
-  id                 String                  @id @default(cuid())
-  email              String                  @unique
-  displayName        String
-  image              String?
-  isActive           Boolean                 @default(true)
-  activeCompanyId    String?
-  activeCompany      Company?                @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt          DateTime                @default(now())
-  updatedAt          DateTime                @updatedAt
+  truckHistoryRevisions TruckCompanyHistoryRevision[]
+  archiveCaptureRuns    ArchiveCaptureRun[]
+  archiveGrants         ArchiveScopeGrant[]
+  archiveCatalogs       ArchiveBrowserCatalog[]
+  archiveVersions       ArchiveVersion[]              @relation("ArchiveVersionActor")
+  archiveConflicts      ArchiveConflict[]             @relation("ArchiveConflictActor")
+  archiveInventories    ArchiveInventory[]            @relation("ArchiveInventoryActor")
+  id                    String                        @id @default(cuid())
+  email                 String                        @unique
+  displayName           String
+  image                 String?
+  isActive              Boolean                       @default(true)
+  activeCompanyId       String?
+  activeCompany         Company?                      @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -428,23 +430,26 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  operatingAffiliations      TruckCompanyAffiliation[]
+  operatingHistoryRevisions  TruckCompanyHistoryRevision[]
   archiveTrucks              ArchiveTruck[]
-  id                         String                      @id @default(cuid())
+  id                         String                        @id @default(cuid())
   unitNumber                 String
   unitNumberNormalized       String?
   vin                        String?
-  vinNormalized              String?                     @unique
+  vinNormalized              String?                       @unique
   year                       Int?
   make                       String?
   model                      String?
-  status                     TruckStatus                 @default(ACTIVE)
+  status                     TruckStatus                   @default(ACTIVE)
+  /// Current operational Company, never a historical attribution fallback.
   companyId                  String
-  company                    Company                     @relation(fields: [companyId], references: [id])
-  cabType                    CabType                     @default(SLEEPER)
-  isOwnerOp                  Boolean                     @default(false)
+  company                    Company                       @relation(fields: [companyId], references: [id])
+  cabType                    CabType                       @default(SLEEPER)
+  isOwnerOp                  Boolean                       @default(false)
   ownerName                  String?
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
+  createdAt                  DateTime                      @default(now())
+  updatedAt                  DateTime                      @updatedAt
   drivers                    Driver[]
   loads                      Load[]
   settlements                Settlement[]
@@ -2655,4 +2660,42 @@ model ArchiveCaptureRun {
   conflicts                 ArchiveConflict[]
 
   @@index([operatingGroupId, accountKey, status])
+}
+
+// Confirmed calendar-date intervals [effectiveFrom, effectiveTo). No automatic backfill.
+model TruckCompanyAffiliation {
+  id            String                      @id @default(cuid())
+  truckId       String
+  companyId     String
+  effectiveFrom DateTime                    @db.Date
+  effectiveTo   DateTime?                   @db.Date
+  revisionId    String
+  supersededAt  DateTime?
+  truck         Truck                       @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  company       Company                     @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  revision      TruckCompanyHistoryRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@index([truckId, supersededAt, effectiveFrom])
+  @@index([companyId, effectiveFrom])
+}
+
+// Append-only decision/evidence envelope; past period rows remain reproducible.
+model TruckCompanyHistoryRevision {
+  id                 String                       @id @default(cuid())
+  truckId            String
+  actorUserId        String
+  previousRevisionId String?                      @unique
+  action             String
+  source             String
+  sourceReference    String
+  reason             String
+  vinSnapshot        String?
+  createdAt          DateTime                     @default(now())
+  truck              Truck                        @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  actor              User                         @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  previousRevision   TruckCompanyHistoryRevision? @relation("HistoryRevisionChain", fields: [previousRevisionId], references: [id], onDelete: Restrict)
+  nextRevision       TruckCompanyHistoryRevision? @relation("HistoryRevisionChain")
+  affiliations       TruckCompanyAffiliation[]
+
+  @@index([truckId, createdAt])
 }
