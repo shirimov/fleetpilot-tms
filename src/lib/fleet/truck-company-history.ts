@@ -77,7 +77,7 @@ export class TruckCompanyHistoryService {
       const managed = await this.companies(tx, actorId);
       const allCompanies = await tx.truckCompanyAffiliation.findMany({ where: { truckId, supersededAt: null }, select: { companyId: true } });
       const canManage = managed.includes(truck.companyId) && allCompanies.every(p => managed.includes(p.companyId));
-      const latest = canManage ? await tx.truckCompanyHistoryRevision.findFirst({ where: { truckId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { id: true } }) : null;
+      const latest = canManage ? await tx.truckCompanyHistoryRevision.findFirst({ where: { truckId, nextRevision: { is: null } }, select: { id: true } }) : null;
       return { truckId, unitNumber: currentVisible ? truck.unitNumber : null, currentCompanyId: currentVisible ? truck.companyId : null, canManage, revisionId: latest?.id ?? null,
         periods: periods.map(p => ({ id: p.id, companyId: p.companyId, companyName: p.company.name, effectiveFrom: day(p.effectiveFrom), effectiveTo: p.effectiveTo ? day(p.effectiveTo) : null, status: 'CONFIRMED', source: p.revision.source, sourceReference: canManage ? p.revision.sourceReference : null, reason: canManage ? p.revision.reason : null })),
       };
@@ -122,7 +122,7 @@ export class TruckCompanyHistoryService {
       if (!truck || !allowed.includes(truck.companyId)) throw new AuthorizationDeniedError();
       const existing = await tx.truckCompanyAffiliation.findMany({ where: { truckId, supersededAt: null }, orderBy: { effectiveFrom: 'asc' } });
       if (existing.some(p => !allowed.includes(p.companyId))) throw new AuthorizationDeniedError();
-      const previous = await tx.truckCompanyHistoryRevision.findFirst({ where: { truckId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      const previous = await tx.truckCompanyHistoryRevision.findFirst({ where: { truckId, nextRevision: { is: null } } });
       if ((previous?.id ?? null) !== input.expectedRevisionId) throw new TruckHistoryError('History changed. Reload before submitting.');
       if (input.action === 'CONFIRM' && previous) throw new TruckHistoryError('Use a reviewed correction for existing history.');
       if (input.action !== 'CONFIRM' && !previous) throw new TruckHistoryError('Confirm a known current start date before movement; do not guess past history.');

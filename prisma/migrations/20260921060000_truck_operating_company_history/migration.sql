@@ -108,3 +108,6 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER tracked_truck_identity BEFORE UPDATE ON "Truck" FOR EACH ROW EXECUTE FUNCTION guard_tracked_truck_identity();
+
+-- One revision chain per physical Truck; head selection uses linkage, never clock ordering.
+CREATE UNIQUE INDEX "history_one_root" ON "TruckCompanyHistoryRevision"("truckId") WHERE "previousRevisionId" IS NULL;
