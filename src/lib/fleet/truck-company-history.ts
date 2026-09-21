@@ -53,7 +53,7 @@ function validatePeriods(periods: CompanyPeriod[]) {
 
 export type HistoryChange = {
   action: 'CONFIRM' | 'MOVE' | 'CORRECT'; expectedRevisionId: string | null;
-  source: 'OWNER_CONFIRMATION' | 'PROVIDER_HISTORY'; sourceReference: string; reason: string;
+  source: 'MANUAL_CONFIRMATION' | 'PROVIDER_HISTORY'; sourceReference: string; reason: string;
   periods?: CompanyPeriod[]; destinationCompanyId?: string; effectiveDate?: string;
 };
 
@@ -112,7 +112,7 @@ export class TruckCompanyHistoryService {
   }
 
   async change(truckId: string, input: HistoryChange, actorId: string) {
-    if (!['CONFIRM', 'MOVE', 'CORRECT'].includes(input.action) || !['OWNER_CONFIRMATION', 'PROVIDER_HISTORY'].includes(input.source)) throw new TruckHistoryError('Unsupported history action/source.');
+    if (!['CONFIRM', 'MOVE', 'CORRECT'].includes(input.action) || !['MANUAL_CONFIRMATION', 'PROVIDER_HISTORY'].includes(input.source)) throw new TruckHistoryError('Unsupported history action/source.');
     if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 2000 || typeof input.sourceReference !== 'string' || !input.sourceReference.trim() || input.sourceReference.length > 2000) throw new TruckHistoryError('A reason and evidence reference are required (maximum 2000 characters each).');
     return this.database.$transaction(async tx => {
       // Lock the physical Truck before reading its current Company or timeline. All competing moves serialize.

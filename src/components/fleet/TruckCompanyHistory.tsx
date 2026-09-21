@@ -27,7 +27,7 @@ export function TruckCompanyHistory({ truck, companies, onClose, onChanged }: {
     event.preventDefault(); setBusy(true); setError('');
     try {
       const input = history?.revisionId ? { action: 'MOVE', destinationCompanyId: destination, effectiveDate: date } : { action: 'CONFIRM', periods: [{ companyId: truck.companyId, effectiveFrom: date, effectiveTo: null }] };
-      const response = await fetch(`/api/trucks/${truck.id}/company-history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, expectedRevisionId: history?.revisionId ?? null, source: 'OWNER_CONFIRMATION', sourceReference: reference, reason }) });
+      const response = await fetch(`/api/trucks/${truck.id}/company-history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, expectedRevisionId: history?.revisionId ?? null, source: 'MANUAL_CONFIRMATION', sourceReference: reference, reason }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.error);
       await load(); onChanged(); setDate(''); setReason(''); setReference('');
     } catch (e) { setError(e instanceof Error ? e.message : 'History change failed.'); }

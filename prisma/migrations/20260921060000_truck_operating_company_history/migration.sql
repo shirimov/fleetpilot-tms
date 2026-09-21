@@ -83,14 +83,20 @@ DECLARE tid text; current_company text; open_company text; open_start date;
 BEGIN
   IF TG_TABLE_NAME = 'Truck' THEN tid := NEW.id; ELSE tid := NEW."truckId"; END IF;
   SELECT "companyId" INTO current_company FROM "Truck" WHERE id = tid FOR UPDATE;
+  IF EXISTS (SELECT 1 FROM "TruckCompanyAffiliation" a JOIN "TruckCompanyHistoryRevision" r ON r.id=a."revisionId" WHERE a."truckId"=tid AND r."truckId"<>tid) THEN
+    RAISE EXCEPTION 'Affiliation revision must belong to the same Truck';
+  END IF;
+  IF EXISTS (SELECT 1 FROM "TruckCompanyHistoryRevision" r JOIN "TruckCompanyHistoryRevision" p ON p.id=r."previousRevisionId" WHERE r."truckId"=tid AND p."truckId"<>tid) THEN
+    RAISE EXCEPTION 'History revision chain must belong to the same Truck';
+  END IF;
+  IF EXISTS (SELECT 1 FROM "TruckCompanyAffiliation" a JOIN "TruckCompanyHistoryRevision" n ON n."previousRevisionId"=a."revisionId" WHERE a."truckId"=tid AND a."supersededAt" IS NULL) THEN
+    RAISE EXCEPTION 'Current affiliations must belong to the current revision';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM "TruckCompanyHistoryRevision" WHERE "truckId"=tid) THEN RETURN NULL; END IF;
   SELECT "companyId", "effectiveFrom" INTO open_company, open_start FROM "TruckCompanyAffiliation"
     WHERE "truckId"=tid AND "supersededAt" IS NULL AND "effectiveTo" IS NULL;
   IF open_company IS NULL OR open_company <> current_company OR open_start > (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date THEN
     RAISE EXCEPTION 'Current Truck Company must agree with one confirmed current open affiliation';
-  END IF;
-  IF EXISTS (SELECT 1 FROM "TruckCompanyAffiliation" a JOIN "TruckCompanyHistoryRevision" r ON r.id=a."revisionId" WHERE a."truckId"=tid AND r."truckId"<>tid) THEN
-    RAISE EXCEPTION 'Affiliation revision must belong to the same Truck';
   END IF;
   RETURN NULL;
 END $$;

@@ -14,7 +14,7 @@ url.pathname = `/${dbName}`;
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: url.toString() }) });
 const service = new TruckCompanyHistoryService(db);
 let a: string, b: string, c: string, actor: string, reader: string;
-const input = (periods: HistoryChange['periods']): HistoryChange => ({ action: 'CONFIRM', expectedRevisionId: null, source: 'OWNER_CONFIRMATION', sourceReference: 'Synthetic OWNER evidence', reason: 'Verified operating Company dates', periods });
+const input = (periods: HistoryChange['periods']): HistoryChange => ({ action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic OWNER evidence', reason: 'Verified operating Company dates', periods });
 async function truck(unit: string = randomUUID(), status: 'ACTIVE' | 'INACTIVE' = 'ACTIVE') { return db.truck.create({ data: { companyId: a, unitNumber: unit, unitNumberNormalized: unit.toUpperCase(), status } }); }
 const period = (companyId: string, effectiveFrom: string, effectiveTo: string | null = null) => ({ companyId, effectiveFrom, effectiveTo });
 
@@ -103,4 +103,103 @@ test('normalized raw VIN duplicates cannot bypass canonical uniqueness; no econo
   await db.truck.create({ data: { companyId: a, unitNumber: 'vin-1', vin: '1XKYDP9X3KJ278859' } });
   await assert.rejects(db.truck.create({ data: { companyId: b, unitNumber: 'vin-2', vin: '1xkydp9x3kj278859' } }));
   for (const count of [await db.financialTransaction.count(), await db.financialAllocation.count(), await db.pilotFuelingEvent.count(), await db.archiveVersion.count(), await db.archiveLine.count()]) assert.equal(count, 0);
+});
+
+test('database rejects foreign-Truck affiliation parents and revision-chain splicing', async () => {
+  const first = await truck(); const second = await truck();
+  const root = await service.change(first.id, input([period(a, '2026-01-01')]), actor);
+  await assert.rejects(db.truckCompanyAffiliation.create({ data: { truckId: second.id, companyId: b, effectiveFrom: historyDate('2026-01-01'), revisionId: root.revisionId } }));
+  await assert.rejects(db.$transaction(async tx => {
+    const revision = await tx.truckCompanyHistoryRevision.create({ data: { truckId: second.id, actorUserId: actor, previousRevisionId: root.revisionId, action: 'CORRECT', source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic evidence', reason: 'Cross-Truck parent must fail' } });
+    await tx.truckCompanyAffiliation.create({ data: { truckId: second.id, companyId: a, effectiveFrom: historyDate('2026-01-01'), revisionId: revision.id } });
+  }));
+});
+
+test('superseded decisions cannot acquire new active intervals without a reviewed revision', async () => {
+  const t = await truck(); const root = await service.change(t.id, input([period(a, '2026-02-01')]), actor);
+  await service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: root.revisionId, destinationCompanyId: b, effectiveDate: '2026-07-01' }, actor);
+  await assert.rejects(db.truckCompanyAffiliation.create({ data: { truckId: t.id, companyId: a, effectiveFrom: historyDate('2026-01-01'), effectiveTo: historyDate('2026-02-01'), revisionId: root.revisionId } }));
+  await assert.rejects(db.truck.updateMany({ where: { id: t.id }, data: { companyId: a } }));
+  await assert.rejects(db.$executeRaw`UPDATE "Truck" SET "companyId"=${a} WHERE id=${t.id}`);
+  assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-01-15', actor), { status: 'UNKNOWN' });
+});
+
+async function authorizedUser(name: string, companies: string[], role: 'OWNER' | 'ADMIN' | 'MEMBER' = 'OWNER') {
+  return db.user.create({ data: { email: `${name}-${randomUUID()}@example.test`, displayName: name, memberships: { create: companies.map(companyId => ({ companyId, role })) } } });
+}
+
+test('A→B→A→C keeps one identity and separate periods; audit reconstructs actor, source and boundary', async () => {
+  const owner = await authorizedUser('Three Company owner', [a, b, c]);
+  const created = await truck();
+  const t = await db.truck.update({ where: { id: created.id }, data: { vin: '1HGCM82633A004352', vinNormalized: '1HGCM82633A004352' } }); // Synthetic physical-identity fixture.
+  const count = await db.truck.count();
+  let revision = await service.change(t.id, input([period(a, '2026-01-01')]), owner.id);
+  for (const [destinationCompanyId, effectiveDate] of [[b, '2026-04-01'], [a, '2026-06-01'], [c, '2026-08-01']]) {
+    revision = await service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: revision.revisionId, destinationCompanyId, effectiveDate }, owner.id);
+  }
+  assert.equal(await db.truck.count(), count);
+  const final = await db.truck.findUniqueOrThrow({ where: { id: t.id } });
+  assert.equal(final.vin, t.vin); assert.equal(final.companyId, c);
+  const timeline = await service.history(t.id, owner.id);
+  assert.deepEqual(timeline.periods.map(p => p.companyId), [a, b, a, c]);
+  assert.deepEqual(await service.resolveRange(t.id, '2026-04-01', '2026-06-01', owner.id), { status: 'EXACT', companyId: b });
+  const audit = await db.truckLifecycleEvent.findFirstOrThrow({ where: { truckReference: t.id, action: 'TRUCK_COMPANY_MOVE', after: { path: ['revisionId'], equals: revision.revisionId } } });
+  assert.equal(audit.actorUserId, owner.id); assert.equal(audit.companyId, a);
+  assert.deepEqual(audit.after, { companyId: c, revisionId: revision.revisionId });
+  assert.deepEqual(audit.metadata, { source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic OWNER evidence', reason: 'Verified operating Company dates', vin: t.vin, periods: [period(a, '2026-01-01', '2026-04-01'), period(b, '2026-04-01', '2026-06-01'), period(a, '2026-06-01', '2026-08-01'), period(c, '2026-08-01')] });
+});
+
+test('simultaneous A→B and A→C are both authorized but only one revision can commit', async () => {
+  const owner = await authorizedUser('Competing destinations', [a, b, c]);
+  const t = await truck(); const root = await service.change(t.id, input([period(a, '2026-01-01')]), owner.id);
+  const count = await db.truck.count();
+  const results = await Promise.allSettled([b, c].map(destinationCompanyId => service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: root.revisionId, destinationCompanyId, effectiveDate: '2026-07-01' }, owner.id)));
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  const failed = results.find(r => r.status === 'rejected');
+  assert.ok(failed?.status === 'rejected' && /History changed/.test(failed.reason.message));
+  const current = await db.truck.findUniqueOrThrow({ where: { id: t.id } });
+  const open = await db.truckCompanyAffiliation.findMany({ where: { truckId: t.id, supersededAt: null, effectiveTo: null } });
+  assert.equal(open.length, 1); assert.equal(open[0].companyId, current.companyId);
+  assert.ok([b, c].includes(current.companyId)); assert.equal(await db.truck.count(), count);
+});
+
+test('movement rolls back periods, Truck and revision if audit insertion fails', async () => {
+  const t = await truck('ROLLBACK-AUDIT'); const root = await service.change(t.id, input([period(a, '2026-01-01')]), actor);
+  const before = await db.truckCompanyAffiliation.findMany({ where: { truckId: t.id } });
+  await db.$executeRawUnsafe(`CREATE FUNCTION reject_test_movement_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."unitNumber"='ROLLBACK-AUDIT' AND NEW.action='TRUCK_COMPANY_MOVE' THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$`);
+  await db.$executeRawUnsafe(`CREATE TRIGGER reject_test_movement_audit BEFORE INSERT ON "TruckLifecycleEvent" FOR EACH ROW EXECUTE FUNCTION reject_test_movement_audit()`);
+  await assert.rejects(service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: root.revisionId, destinationCompanyId: b, effectiveDate: '2026-07-01' }, actor));
+  assert.equal((await db.truck.findUniqueOrThrow({ where: { id: t.id } })).companyId, a);
+  assert.deepEqual(await db.truckCompanyAffiliation.findMany({ where: { truckId: t.id } }), before);
+  assert.equal(await db.truckCompanyHistoryRevision.count({ where: { truckId: t.id } }), 1);
+});
+
+test('OWNER and ADMIN are allowed; MEMBER, inactive, revoked and foreign-group users cannot read or mutate', async () => {
+  const t = await truck(); const adminUser = await authorizedUser('Authorized admin', [a, b], 'ADMIN');
+  const root = await service.change(t.id, input([period(a, '2026-01-01')]), adminUser.id);
+  assert.equal((await service.history(t.id, adminUser.id)).canManage, true);
+  const member = await authorizedUser('Member', [a, b], 'MEMBER');
+  const inactive = await authorizedUser('Inactive', [a, b]); await db.user.update({ where: { id: inactive.id }, data: { isActive: false } });
+  const revoked = await authorizedUser('Revoked', [a, b]); await db.companyMembership.deleteMany({ where: { userId: revoked.id } });
+  const foreign = await authorizedUser('Foreign group', [c]);
+  await db.operatingGroup.create({ data: { name: 'Foreign review group', memberships: { create: { userId: foreign.id, role: 'OWNER' } }, companies: { create: { companyId: c } } } });
+  for (const user of [member, inactive, revoked, foreign]) {
+    await assert.rejects(service.history(t.id, user.id));
+    await assert.rejects(service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: root.revisionId, destinationCompanyId: b, effectiveDate: '2026-07-01' }, user.id));
+    await assert.rejects(service.resolveStatementTruck('1XKYDP9X5PJ225667', a, '2026-07-01', '2026-07-02', user.id));
+  }
+});
+
+test('calendar resolution is stable across UTC, timezone offsets and DST environments', () => {
+  const original = process.env.TZ;
+  try {
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Pacific/Auckland', 'Asia/Tokyo']) {
+      process.env.TZ = tz;
+      for (const boundary of ['2026-03-08', '2026-11-01']) {
+        assert.equal(historyDate(boundary).toISOString(), `${boundary}T00:00:00.000Z`);
+        assert.deepEqual(resolveCompanyRange([period('A', '2026-01-01', boundary), period('B', boundary)], boundary, boundary === '2026-03-08' ? '2026-03-09' : '2026-11-02'), { status: 'EXACT', companyId: 'B' });
+      }
+    }
+    for (const value of ['2026-03-08T00:00:00-08:00', '2026-03-08T08:00:00Z', '2026-11-01T00:00:00+13:00']) assert.throws(() => historyDate(value));
+  } finally { if (original === undefined) delete process.env.TZ; else process.env.TZ = original; }
 });
