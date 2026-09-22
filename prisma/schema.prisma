@@ -103,6 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
+  fuelDeductionPolicies      FuelDeductionPolicy[]
   truckOperatingAffiliations TruckCompanyAffiliation[]
   archiveGrants              ArchiveScopeGrant[]
   archiveCompanies           ArchiveCompany[]
@@ -150,22 +151,23 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  truckHistoryRevisions TruckCompanyHistoryRevision[]
-  archiveCaptureRuns    ArchiveCaptureRun[]
-  archiveGrants         ArchiveScopeGrant[]
-  archiveCatalogs       ArchiveBrowserCatalog[]
-  archiveVersions       ArchiveVersion[]              @relation("ArchiveVersionActor")
-  archiveConflicts      ArchiveConflict[]             @relation("ArchiveConflictActor")
-  archiveInventories    ArchiveInventory[]            @relation("ArchiveInventoryActor")
-  id                    String                        @id @default(cuid())
-  email                 String                        @unique
-  displayName           String
-  image                 String?
-  isActive              Boolean                       @default(true)
-  activeCompanyId       String?
-  activeCompany         Company?                      @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt             DateTime                      @default(now())
-  updatedAt             DateTime                      @updatedAt
+  approvedFuelDeductionPolicies FuelDeductionPolicy[]         @relation("FuelDeductionPolicyApprover")
+  truckHistoryRevisions         TruckCompanyHistoryRevision[]
+  archiveCaptureRuns            ArchiveCaptureRun[]
+  archiveGrants                 ArchiveScopeGrant[]
+  archiveCatalogs               ArchiveBrowserCatalog[]
+  archiveVersions               ArchiveVersion[]              @relation("ArchiveVersionActor")
+  archiveConflicts              ArchiveConflict[]             @relation("ArchiveConflictActor")
+  archiveInventories            ArchiveInventory[]            @relation("ArchiveInventoryActor")
+  id                            String                        @id @default(cuid())
+  email                         String                        @unique
+  displayName                   String
+  image                         String?
+  isActive                      Boolean                       @default(true)
+  activeCompanyId               String?
+  activeCompany                 Company?                      @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt                     DateTime                      @default(now())
+  updatedAt                     DateTime                      @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -430,6 +432,7 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  fuelDeductionPolicies      FuelDeductionPolicy[]
   operatingAffiliations      TruckCompanyAffiliation[]
   operatingHistoryRevisions  TruckCompanyHistoryRevision[]
   archiveTrucks              ArchiveTruck[]
@@ -1464,7 +1467,18 @@ enum AdminFeeFrequency {
   WEEKLY
 }
 
+enum FuelRecoveryResponsibility {
+  COMPANY
+  RECIPIENT
+}
+
+enum FuelDiscountTreatment {
+  FULL_PASS_THROUGH
+  COMPANY_RETENTION
+}
+
 model OperatingGroup {
+  fuelDeductionPolicies  FuelDeductionPolicy[]
   archiveCaptureRuns     ArchiveCaptureRun[]
   archiveGrants          ArchiveScopeGrant[]
   archiveCatalogs        ArchiveBrowserCatalog[]
@@ -1488,6 +1502,32 @@ model OperatingGroup {
   auditEvents            FinancialAuditEvent[]
   pilotInvoices          PilotProviderInvoice[]
   pilotProductMappings   PilotProductMapping[]
+}
+
+/// Effective-dated control policy. It determines expected recovery only and never posts economics.
+model FuelDeductionPolicy {
+  id                          String                     @id @default(cuid())
+  operatingGroupId            String
+  companyId                   String
+  truckId                     String?
+  providerRecipientId         String?
+  responsibility              FuelRecoveryResponsibility
+  discountTreatment           FuelDiscountTreatment
+  companyRetentionBasisPoints Int                        @default(0)
+  effectiveFrom               DateTime                   @db.Date
+  effectiveTo                 DateTime?                  @db.Date
+  sourceReference             String
+  reason                      String
+  approvedByUserId            String
+  approvedAt                  DateTime                   @default(now())
+  operatingGroup              OperatingGroup             @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                     Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck                       Truck?                     @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  approvedBy                  User                       @relation("FuelDeductionPolicyApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([operatingGroupId, companyId, effectiveFrom])
+  @@index([truckId, effectiveFrom])
+  @@index([providerRecipientId, effectiveFrom])
 }
 
 model OperatingGroupCompany {

@@ -1,0 +1,52 @@
+name: Validate fuel reconciliation
+
+on:
+  pull_request:
+    paths:
+      - 'prisma/**'
+      - 'src/lib/finance/fuel-deduction-reconciliation*'
+      - 'src/app/api/finance/fuel-reconciliation/**'
+      - 'src/components/accounting/**'
+      - 'tests/ui/accounting-workspace.spec.ts'
+      - '.github/workflows/validate-fuel-reconciliation.yml'
+  workflow_dispatch:
+
+jobs:
+  exact-head:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fleetpilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fleetpilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/fleetpilot?schema=public
+      AUTH_SECRET: fleetpilot-ci-only-not-production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma format --check
+      - run: npx prisma validate
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm test
+      - run: npx tsc --noEmit
+      - run: npx eslint src/lib/finance/fuel-deduction-reconciliation.ts src/lib/finance/fuel-deduction-reconciliation.test.ts src/app/api/finance/fuel-reconciliation/route.ts src/components/accounting/FuelReconciliationWorkspace.tsx src/components/accounting/StatementArchiveWorkspace.tsx src/components/accounting/AccountingWorkspace.tsx tests/ui/accounting-workspace.spec.ts
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/ui/accounting-workspace.spec.ts
