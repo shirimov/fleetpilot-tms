@@ -46,10 +46,16 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     const reconciliation = {
       coverage:{start:'2026-04-22',end:'2026-08-02'},
       summary:{count:1,pilotActualMinor:'10000',expectedMinor:'10000',statementMinor:'11509',comparableStatementMinor:'11509',rawStatementDeductionMinor:'15000',rawFuelStatementMinor:'11509',unsupportedFuelStatementCount:0,unsupportedFuelStatementMinor:'0',differenceMinor:'1509',outsideCoverageStatementMinor:'0',comparablePilotMinor:'10000',reeferExcludedMinor:'500',providerCreditExcludedMinor:'-2859',historicalPostedDifferences:1},
-      byStatus:Object.fromEntries(['MATCHED','UNDER_DEDUCTED','OVER_DEDUCTED','MISSING_DEDUCTION','STATEMENT_ONLY','TIMING_DIFFERENCE','NO_PILOT_DATA_IMPORTED','NEEDS_COMPANY_HISTORY','NEEDS_TRUCK_MAPPING','NEEDS_RECIPIENT_MAPPING','NEEDS_POLICY','NEEDS_REVIEW'].map(status=>[status,{count:status==='TIMING_DIFFERENCE'?1:0,pilotActualMinor:status==='TIMING_DIFFERENCE'?'10000':'0',expectedMinor:status==='TIMING_DIFFERENCE'?'10000':'0',statementMinor:status==='TIMING_DIFFERENCE'?'11509':'0',differenceMinor:status==='TIMING_DIFFERENCE'?'1509':'0'}])),
+      byStatus:Object.fromEntries(['MATCHED','UNDER_DEDUCTED','OVER_DEDUCTED','MISSING_DEDUCTION','STATEMENT_ONLY','TIMING_DIFFERENCE','NO_PILOT_DATA_IMPORTED','NEEDS_COMPANY_HISTORY','NEEDS_TRUCK_MAPPING','NEEDS_RECIPIENT_MAPPING','NEEDS_RECIPIENT_REVIEW','PRODUCT_CLASSIFICATION_REVIEW','NEEDS_POLICY','NEEDS_REVIEW'].map(status=>[status,{count:status==='TIMING_DIFFERENCE'?1:0,pilotActualMinor:status==='TIMING_DIFFERENCE'?'10000':'0',expectedMinor:status==='TIMING_DIFFERENCE'?'10000':'0',statementMinor:status==='TIMING_DIFFERENCE'?'11509':'0',differenceMinor:status==='TIMING_DIFFERENCE'?'1509':'0'}])),
       byCompany:[],total:1,page:1,pageSize:50,
       rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',currentCompanyId:'current',currentCompanyName:'Current Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',matchMethod:'REFERENCE',pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
     };
+    reconciliation.rows.push(
+      {...reconciliation.rows[0],key:'pilot:weekend',status:'MATCHED',truckUnit:'7455',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'},
+      {...reconciliation.rows[0],key:'pilot:recipient',status:'NEEDS_RECIPIENT_REVIEW',truckUnit:'7906',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'CROSS_RECIPIENT_STRUCTURED_IDENTITY'},
+      {...reconciliation.rows[0],key:'pilot:product',status:'PRODUCT_CLASSIFICATION_REVIEW',truckUnit:'8479',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PRODUCT_CLASSIFICATION_CONFLICT'},
+    );
+    reconciliation.total = reconciliation.rows.length;
     await page.route('**/api/finance/fuel-reconciliation**',async route=>{
       const requestUrl=new URL(route.request().url());
       if(route.request().method()==='POST') return route.fulfill({status:201,json:{id:'created-policy'}});
@@ -60,10 +66,16 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(page.getByText('Comparable Pilot Diesel + DEF')).toBeVisible();
     await expect(page.getByText('$15.09',{exact:true}).first()).toBeVisible();
     await expect(page.getByText('TIMING DIFFERENCE',{exact:true}).first()).toBeVisible();
-    await page.getByText('Evidence and calculation').click();
-    await expect(page.getByText(/invoice PILOT-1/)).toBeVisible();
-    await expect(page.getByText(/PID 30/)).toBeVisible();
-    await expect(page.getByText(/Current Company Current Company/)).toBeVisible();
+    const timingRow = page.getByRole('row').filter({hasText:'TIMING DIFFERENCE'}).last();
+    await timingRow.getByText('Evidence and calculation').click();
+    await expect(timingRow.getByText(/invoice PILOT-1/)).toBeVisible();
+    await expect(timingRow.getByText(/PID 30/)).toBeVisible();
+    await expect(timingRow.getByText(/Current Company Current Company/)).toBeVisible();
+    for (const [status, explanation] of [['MATCHED','Matched the Pilot Sunday date-only row'],['NEEDS RECIPIENT REVIEW','Recipient responsibility requires review'],['PRODUCT CLASSIFICATION REVIEW','No over- or under-deduction conclusion is made']]) {
+      const row = page.getByRole('row').filter({hasText:status}).last();
+      await row.getByText('Evidence and calculation').click();
+      await expect(row.getByText(new RegExp(explanation))).toBeVisible();
+    }
     for (const viewport of [{width:1440,height:900},{width:900,height:900},{width:390,height:844}]) {
       await page.setViewportSize(viewport);
       await expect(page.getByText('Comparable statement fuel in coverage')).toBeVisible();
