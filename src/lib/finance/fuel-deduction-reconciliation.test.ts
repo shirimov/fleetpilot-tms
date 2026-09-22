@@ -6,16 +6,18 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
-import { classifyFuelDeductionLine, discrepancyStatus, expectedFuelDeduction, FuelDeductionReconciliationService } from './fuel-deduction-reconciliation';
+import { classifyFuelDeductionLine, corroboratesFuelIdentity, discrepancyStatus, expectedFuelDeduction, FuelDeductionReconciliationService, resolveApplicableFuelPolicy } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
-  assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), true);
+  assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'deductions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'EARNING', included: true, amountMinor: BigInt(1509) }), false);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: false, amountMinor: BigInt(1509) }), false);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: null }), false);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509), metadata: { diesel_amount: '0', def_amount: '15.09', reefer_amount: '0' } }), true);
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509), metadata: { diesel_amount: '0', def_amount: '0', reefer_amount: '15.09' } }), false);
+  assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509), metadata: { diesel_amount: '10', def_amount: '0', reefer_amount: '5.09' } }), false);
+  assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509), metadata: { diesel_amount: '15.09' } }), false);
 });
 
 test('policy arithmetic is exact in integer minor units', () => {
@@ -30,10 +32,30 @@ test('policy arithmetic is exact in integer minor units', () => {
 
 test('10% retention truncates fractional cents like the real April 22 Truck 024 deduction', () => {
   const pilot = { amountMinor: BigInt(56_748), retailMinor: BigInt(71_847), savingsMinor: BigInt(15_099) };
-  assert.deepEqual(
-    expectedFuelDeduction(pilot, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }),
-    { expectedMinor: BigInt(58_257), retainedDiscountMinor: BigInt(1_509) },
-  );
+  const result = expectedFuelDeduction(pilot, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 });
+  assert.deepEqual(result, { expectedMinor: BigInt(58_257), retainedDiscountMinor: BigInt(1_509) });
+  assert.equal(discrepancyStatus(result!.expectedMinor, BigInt(58_257), false), 'MATCHED');
+  assert.equal(discrepancyStatus(result!.expectedMinor, BigInt(58_257), true), 'TIMING_DIFFERENCE');
+});
+
+test('policy resolution prefers unique specificity and fails closed on equally specific scopes', () => {
+  type Candidate = Parameters<typeof resolveApplicableFuelPolicy>[0][number];
+  const policy = (id: string, truckId: string | null, providerRecipientId: string | null): Candidate => ({
+    id, companyId: 'company', truckId, providerRecipientId, responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION',
+    companyRetentionBasisPoints: 1000, effectiveFrom: new Date('2026-01-01T00:00:00Z'), effectiveTo: new Date('2027-01-01T00:00:00Z'),
+  });
+  const company = policy('company', null, null), truck = policy('truck', 'truck', null), recipient = policy('recipient', null, 'recipient'), exact = policy('exact', 'truck', 'recipient');
+  assert.equal(resolveApplicableFuelPolicy([company, truck], 'company', 'truck', 'recipient', '2026-06-01').policy?.id, 'truck');
+  assert.deepEqual(resolveApplicableFuelPolicy([company, truck, recipient], 'company', 'truck', 'recipient', '2026-06-01'), { policy: null, ambiguous: true });
+  assert.equal(resolveApplicableFuelPolicy([company, truck, recipient, exact], 'company', 'truck', 'recipient', '2026-06-01').policy?.id, 'exact');
+  assert.deepEqual(resolveApplicableFuelPolicy([exact], 'company', 'truck', 'recipient', '2027-01-01'), { policy: null, ambiguous: false });
+});
+
+test('Truck/date fallback requires structured identity corroboration', () => {
+  const pilot = { cardLastFour: '1234', locationNumber: '358', city: 'Paducah', state: 'KY' };
+  assert.equal(corroboratesFuelIdentity(pilot, { cardLastFour: '1234', locationNumber: '358', city: 'Paducah', state: 'KY' }), true);
+  assert.equal(corroboratesFuelIdentity(pilot, { cardLastFour: '1234', locationNumber: '999', city: 'Paducah', state: 'KY' }), false);
+  assert.equal(corroboratesFuelIdentity(pilot, { cardLastFour: '1234', locationNumber: null, city: null, state: null }), false);
 });
 
 const rootUrl = new URL(process.env.DATABASE_URL!);
@@ -55,7 +77,7 @@ async function importRecord(rawAmount = '0') {
 
 async function addEvent(input: { key: string; date: string; truckId?: string | null; unit: string; product?: 'TRUCK_DIESEL' | 'DEF' | 'REEFER_FUEL'; amount: bigint; retail?: bigint; savings?: bigint; reference?: string }) {
   const invoice = await db.pilotProviderInvoice.create({ data: { operatingGroupId: groupId, sourceId, providerAccountHash: hash('account'), invoiceNumber: `INV-${input.key}`, billingDate: historyDate(input.date), periodStart: historyDate(input.date), periodEnd: historyDate(input.date), invoiceTotalMinor: input.amount, parsedTotalMinor: input.amount, differenceMinor: BigInt(0), status: 'POSTED', parseVersion: 'test', uploadedByUserId: userId, postedByUserId: userId, postedAt: new Date() } });
-  const event = await db.pilotFuelingEvent.create({ data: { invoiceId: invoice.id, eventKeyHash: hash(input.key), ticketHash: hash(input.reference ?? `ticket-${input.key}`), authorizationHash: hash(`auth-${input.key}`), sourceUnitNumber: input.unit, transactionDate: historyDate(input.date), truckId: input.truckId, truckMatchStatus: input.truckId ? 'MATCHED' : 'UNMATCHED' } });
+  const event = await db.pilotFuelingEvent.create({ data: { invoiceId: invoice.id, eventKeyHash: hash(input.key), ticketHash: hash(input.reference ?? `ticket-${input.key}`), authorizationHash: hash(`auth-${input.key}`), cardLastFour: '1234', sourceUnitNumber: input.unit, locationNumber: '100', city: 'Test City', state: 'CA', transactionDate: historyDate(input.date), truckId: input.truckId, truckMatchStatus: input.truckId ? 'MATCHED' : 'UNMATCHED' } });
   const record = await importRecord(input.amount.toString());
   await db.pilotFuelProductLine.create({ data: { invoiceId: invoice.id, eventId: event.id, importRecordId: record.id, lineFingerprint: hash(`line-${input.key}`), sourceLineIdentity: input.key, sourceProductCode: input.product ?? 'DIESEL', productType: input.product ?? 'TRUCK_DIESEL', quantity: '20.00', unitPrice: '5.0000000', amountMinor: input.amount, retailAmountMinor: input.retail ?? input.amount, savingsMinor: input.savings ?? BigInt(0) } });
   return event;
@@ -67,7 +89,7 @@ async function archiveVersion(input: { key: string; pid: string; recipientId: st
   return db.$transaction(async tx => {
     const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
     await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, unit: input.unit, truckId: input.truckId, mappingStatus: 'MATCHED' } });
-    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.unit, included: true, metadata: { type: 'fuel', diesel_amount: input.amount.toString(), def_amount: '0', reefer_amount: '0', pay_amount: input.amount.toString() } } });
+    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.unit, included: true, metadata: { type: 'fuel', diesel_amount: input.amount.toString(), def_amount: '0', reefer_amount: '0', pay_amount: input.amount.toString(), card_number: '991234', merchant: '100', city: 'Test City', state: 'CA' } } });
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
 }

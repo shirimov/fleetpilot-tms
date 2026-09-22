@@ -114,10 +114,10 @@ export default function AccountingWorkspace() {
   if (group === undefined) return <div className="p-6">{error ? <p role="alert">{error}</p> : 'Loading Accounting…'}</div>;
   if (!group) return <div className="mx-auto max-w-xl p-6"><form className={`${panel} space-y-4`} onSubmit={(event) => submit(event, '/api/finance/group')}><h1 className="text-2xl font-semibold">Accounting</h1><p className="text-sm text-slate-400">Create an operating group while preserving each record’s legal company.</p><input className={`${input} w-full`} name="name" required placeholder="Marybeg Group" /><button disabled={busy} className="btn">Create operating group</button>{error && <p role="alert" className="text-red-300">{error}</p>}</form></div>;
 
-  return <main className="min-w-0 space-y-5 p-4 md:p-6">
+  return <main className="min-w-0 max-w-[100vw] space-y-5 overflow-x-hidden p-4 md:p-6">
     <header><p className="text-xs uppercase tracking-wide text-emerald-400">{String(group.name)}</p><h1 className="text-2xl font-semibold">Accounting</h1><p className="text-sm text-slate-400">Recorded Accounting activity; not necessarily a complete final tax P&amp;L.</p></header>
     <nav aria-label="Accounting sections" className="hidden flex-wrap gap-2 xl:flex">{tabs.map(([key,label]) => <button key={key} aria-current={tab === key ? 'page' : undefined} onClick={() => navigate(key)} className={`rounded-lg px-3 py-2 text-sm ${tab === key ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800'}`}>{label}</button>)}</nav>
-    <label className="grid gap-1 xl:hidden">Accounting section<select aria-label="Accounting section" className={input} value={tab} onChange={event => navigate(event.target.value as Tab)}>{tabs.map(([key,label]) => <option value={key} key={key}>{label}</option>)}</select></label>
+    <label className="grid min-w-0 gap-1 xl:hidden">Accounting section<select aria-label="Accounting section" className={`${input} min-w-0 max-w-full`} value={tab} onChange={event => navigate(event.target.value as Tab)}>{tabs.map(([key,label]) => <option value={key} key={key}>{label}</option>)}</select></label>
     {error && <p role="alert" className="rounded-lg bg-red-950/60 p-3 text-red-200">{error}</p>}
     {loading ? <p role="status">Loading section…</p> : <>
     {tab === 'overview' && overview && <OverviewView overview={overview} />}
