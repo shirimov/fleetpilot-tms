@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { boundedHistoryShape } from '../../../tests/fixtures/truck-history-bounded';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { PrismaClient } from '@prisma/client';
@@ -63,10 +64,10 @@ test('one physical Truck: A→B→A, immutable correction revisions, inactive hi
   await assert.rejects(db.truck.update({ where: { id: t.id }, data: { vin: 'ANOTHER_PHYSICAL_VIN' } }));
 });
 
-test('overlap, two opens, missing current, future move, unauthorized Company, collisions fail closed', async () => {
+test('overlap, two opens, empty revision, future move, unauthorized Company, collisions fail closed', async () => {
   const t = await truck();
   await assert.rejects(service.change(t.id, input([period(a, '2026-01-01'), period(b, '2026-02-01')]), actor), /overlap/);
-  await assert.rejects(service.change(t.id, input([period(a, '2026-01-01', '2026-02-01')]), actor), /open/);
+  await assert.rejects(service.change(t.id, input([]), actor), /Supply/);
   await assert.rejects(service.change(t.id, input([period(c, '2026-01-01', '2026-02-01'), period(a, '2026-02-01')]), actor));
   const rev = await service.change(t.id, input([period(a, '2026-01-01')]), actor);
   const move: HistoryChange = { ...input([]), action: 'MOVE', destinationCompanyId: b, effectiveDate: '2026-07-01', expectedRevisionId: rev.revisionId };
@@ -202,4 +203,124 @@ test('calendar resolution is stable across UTC, timezone offsets and DST environ
     }
     for (const value of ['2026-03-08T00:00:00-08:00', '2026-03-08T08:00:00Z', '2026-11-01T00:00:00+13:00']) assert.throws(() => historyDate(value));
   } finally { if (original === undefined) delete process.env.TZ; else process.env.TZ = original; }
+});
+
+
+test('bounded-only evidence preserves operational Company and every uncovered date stays UNKNOWN', async () => {
+  const owner = await authorizedUser('Bounded owner', [a, b, c]);
+  const t = await db.truck.create({ data: { companyId: c, unitNumber: 'BOUNDED-ONLY', vin: '1HGCM82633A004353' } });
+  assert.equal((await service.history(t.id, owner.id)).periods.length, 0);
+  const before = await db.truck.findUniqueOrThrow({ where: { id: t.id } });
+  const rev = await service.change(t.id, { ...input([period(a, '2026-01-01', '2026-01-22'), period(b, '2026-02-05', '2026-03-01')]), source: 'QUICKMANAGE_STATEMENT' }, owner.id);
+  assert.deepEqual(await db.truck.findUniqueOrThrow({ where: { id: t.id } }), before);
+  assert.equal(await db.truckCompanyAffiliation.count({ where: { truckId: t.id, effectiveTo: null, supersededAt: null } }), 0);
+  for (const date of ['2025-12-31', '2026-01-22', '2026-01-28', '2026-03-01', '2026-09-10']) {
+    assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, date, owner.id), { status: 'UNKNOWN' });
+  }
+  assert.deepEqual(await service.resolveRange(t.id, '2026-01-02', '2026-01-22', owner.id), { status: 'EXACT', companyId: a });
+  assert.deepEqual(await service.resolveRange(t.id, '2026-01-21', '2026-02-06', owner.id), { status: 'UNKNOWN' });
+  const audit = await db.truckLifecycleEvent.findFirstOrThrow({ where: { truckReference: t.id } });
+  assert.deepEqual(audit.before, { companyId: c, revisionId: null });
+  assert.deepEqual(audit.after, { companyId: c, revisionId: rev.revisionId });
+  assert.equal((await service.history(t.id, owner.id)).periods[0].source, 'QUICKMANAGE_STATEMENT');
+  await assert.rejects(db.truck.update({ where: { id: t.id }, data: { companyId: a } }));
+  await assert.rejects(db.$executeRaw`UPDATE "Truck" SET "companyId"=${a} WHERE id=${t.id}`);
+  await assert.rejects(service.change(t.id, { ...input([period(c, '2026-01-01', '2026-02-01')]), action: 'CORRECT', expectedRevisionId: rev.revisionId }, reader));
+});
+
+test('adjacent bounded dates and gaps survive persisted correction without extending the final Company', async () => {
+  const t = await truck();
+  const r = await service.change(t.id, input([period(a, '2026-01-01', '2026-01-22'), period(b, '2026-01-22', '2026-02-05')]), actor);
+  assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-01-21', actor), { status: 'EXACT', companyId: a });
+  assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-01-22', actor), { status: 'EXACT', companyId: b });
+  assert.deepEqual(await service.resolveRange(t.id, '2026-01-21', '2026-01-23', actor), { status: 'SPLIT_PERIOD' });
+  assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-02-05', actor), { status: 'UNKNOWN' });
+  await service.change(t.id, { ...input([period(a, '2026-01-01', '2026-01-22'), period(b, '2026-02-01', '2026-02-05')]), action: 'CORRECT', expectedRevisionId: r.revisionId }, actor);
+  assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-01-25', actor), { status: 'UNKNOWN' });
+  assert.equal(await db.truckCompanyAffiliation.count({ where: { truckId: t.id } }), 4);
+});
+
+test('bounded/bounded and bounded/open overlap are rejected in service and direct concurrent database writes', async () => {
+  const t = await truck();
+  await assert.rejects(service.change(t.id, input([period(a, '2026-01-01', '2026-02-01'), period(b, '2026-01-15', '2026-03-01')]), actor), /overlap/);
+  await assert.rejects(service.change(t.id, input([period(b, '2026-01-01', '2026-02-01'), period(a, '2026-01-15')]), actor), /overlap/);
+  const r = await service.change(t.id, input([period(a, '2026-01-01', '2026-02-01')]), actor);
+  await assert.rejects(db.truckCompanyAffiliation.create({ data: { truckId: t.id, companyId: b, effectiveFrom: historyDate('2026-01-15'), effectiveTo: historyDate('2026-03-01'), revisionId: r.revisionId } }));
+  await assert.rejects(db.truckCompanyAffiliation.create({ data: { truckId: t.id, companyId: a, effectiveFrom: historyDate('2026-01-15'), revisionId: r.revisionId } }));
+  await assert.rejects(db.truckCompanyAffiliation.create({ data: { truckId: t.id, companyId: b, effectiveFrom: historyDate('2026-03-01'), revisionId: r.revisionId } })); // Wrong current open Company.
+  const writes = await Promise.allSettled([a, b].map(companyId => db.truckCompanyAffiliation.create({ data: { truckId: t.id, companyId, effectiveFrom: historyDate('2026-03-01'), effectiveTo: historyDate('2026-04-01'), revisionId: r.revisionId } })));
+  assert.equal(writes.filter(x => x.status === 'fulfilled').length, 1);
+});
+
+test('first movement and movement after bounded history record only the evidenced destination start', async () => {
+  for (const withBounded of [false, true]) {
+    const t = await truck();
+    const r = withBounded ? await service.change(t.id, input([period(b, '2026-01-01', '2026-02-01')]), actor) : null;
+    if (withBounded) await assert.rejects(service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: r!.revisionId, destinationCompanyId: b, effectiveDate: '2026-01-15' }, actor), /overlap/);
+    const count = await db.truck.count();
+    await service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: r?.revisionId ?? null, destinationCompanyId: b, effectiveDate: '2026-07-01' }, actor);
+    assert.equal(await db.truck.count(), count);
+    assert.equal((await db.truck.findUniqueOrThrow({ where: { id: t.id } })).companyId, b);
+    const rows = await db.truckCompanyAffiliation.findMany({ where: { truckId: t.id, supersededAt: null } });
+    assert.equal(rows.length, withBounded ? 2 : 1);
+    assert.equal(rows.filter(p => p.effectiveTo === null).length, 1);
+    assert.ok(rows.every(p => p.companyId === b)); // No fabricated prior A period.
+    assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-06-30', actor), { status: 'UNKNOWN' });
+    assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-07-01', actor), { status: 'EXACT', companyId: b });
+  }
+});
+
+test('concurrent first movements from no history or bounded history commit only one destination', async () => {
+  const owner = await authorizedUser('First movement owner', [a, b, c]);
+  for (const withBounded of [false, true]) {
+    const t = await truck(); const r = withBounded ? await service.change(t.id, input([period(a, '2026-01-01', '2026-02-01')]), owner.id) : null;
+    const results = await Promise.allSettled([b, c].map(destinationCompanyId => service.change(t.id, { ...input([]), action: 'MOVE', expectedRevisionId: r?.revisionId ?? null, destinationCompanyId, effectiveDate: '2026-07-01' }, owner.id)));
+    assert.equal(results.filter(x => x.status === 'fulfilled').length, 1);
+    const open = await db.truckCompanyAffiliation.findMany({ where: { truckId: t.id, supersededAt: null, effectiveTo: null } });
+    assert.equal(open.length, 1); assert.equal(open[0].companyId, (await db.truck.findUniqueOrThrow({ where: { id: t.id } })).companyId);
+  }
+});
+
+test('78 synthetic bounded blocks preserve 24 adjacent/13 gapped transitions and six Sep 6 moves', async () => {
+  const owner = await authorizedUser('Statement shape owner', [a, b, c]);
+  const shape = boundedHistoryShape(a, b);
+  assert.equal(shape.flat().length, 78);
+  let adjacent = 0, gapped = 0;
+  const persisted: string[] = [];
+  for (const [i, periods] of shape.entries()) {
+    const t = await db.truck.create({ data: { companyId: c, unitNumber: `SHAPE-${i}` } }); persisted.push(t.id);
+    const before = await db.truck.findUniqueOrThrow({ where: { id: t.id } });
+    await service.change(t.id, { ...input(periods), source: 'QUICKMANAGE_STATEMENT', sourceReference: `Synthetic statements ${i}` }, owner.id);
+    assert.deepEqual(await db.truck.findUniqueOrThrow({ where: { id: t.id } }), before);
+    for (let j = 1; j < periods.length; j++) {
+      if (periods[j - 1].companyId !== periods[j].companyId) {
+        if (periods[j - 1].effectiveTo === periods[j].effectiveFrom) adjacent++; else {
+          gapped++;
+          assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, periods[j - 1].effectiveTo!, owner.id), { status: 'UNKNOWN' });
+        }
+      }
+    }
+    if (i < 6) {
+      assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-09-05', owner.id), { status: 'EXACT', companyId: a });
+      assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-09-06', owner.id), { status: 'EXACT', companyId: b });
+      assert.deepEqual(await service.resolveRange(t.id, '2026-09-05', '2026-09-07', owner.id), { status: 'SPLIT_PERIOD' });
+      assert.deepEqual(await service.resolveTruckOperatingCompanyAt(t.id, '2026-09-13', owner.id), { status: 'UNKNOWN' });
+    }
+  }
+  assert.equal(adjacent, 24); assert.equal(gapped, 13);
+  assert.equal(await db.truckCompanyAffiliation.count({ where: { truckId: { in: persisted }, effectiveTo: null } }), 0);
+  // Read-only event-shape regression; production counts never enter business logic.
+  const history = await service.history(persisted[0], owner.id);
+  const events = Array.from({ length: 698 }, (_, i) => ({ date: i < 670 ? '2026-09-06' : '2026-09-13', postedCompany: i < 31 ? a : b }));
+  const snapshot = structuredClone(events); const counts = { EXACT: 0, UNKNOWN: 0 }; let differences = 0;
+  for (const e of events) {
+    const end = historyDate(e.date); end.setUTCDate(end.getUTCDate() + 1);
+    const result = resolveCompanyRange(history.periods, e.date, end.toISOString().slice(0, 10));
+    assert.ok(result.status === 'EXACT' || result.status === 'UNKNOWN'); counts[result.status]++;
+    if (result.status === 'EXACT' && result.companyId !== e.postedCompany) differences++;
+  }
+  assert.deepEqual(counts, { EXACT: 670, UNKNOWN: 28 }); assert.equal(differences, 31); assert.deepEqual(events, snapshot);
+  const truckCount = await db.truck.count();
+  assert.deepEqual(await service.resolveStatementTruck('SYNTHETIC_MISSING_UNIT_211', a, '2026-07-01', '2026-07-08', owner.id), { status: 'UNKNOWN' });
+  assert.equal(await db.truck.count(), truckCount);
 });

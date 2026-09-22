@@ -47,13 +47,14 @@ function validatePeriods(periods: CompanyPeriod[]) {
     if (p.effectiveTo === null) open++;
     if (i && (!sorted[i - 1].effectiveTo || sorted[i - 1].effectiveTo! > p.effectiveFrom)) throw new TruckHistoryError('Operating periods cannot overlap.');
   }
-  if (open !== 1 || sorted.at(-1)!.effectiveTo !== null || sorted.at(-1)!.effectiveFrom > day(new Date())) throw new TruckHistoryError('One current open period is required. Future movements are not supported.');
+  if (open > 1) throw new TruckHistoryError('At most one open period is allowed.');
+  if (sorted.at(-1)!.effectiveFrom > day(new Date())) throw new TruckHistoryError('Future movements and future history starts are not supported.');
   return sorted;
 }
 
 export type HistoryChange = {
   action: 'CONFIRM' | 'MOVE' | 'CORRECT'; expectedRevisionId: string | null;
-  source: 'MANUAL_CONFIRMATION' | 'PROVIDER_HISTORY'; sourceReference: string; reason: string;
+  source: 'MANUAL_CONFIRMATION' | 'PROVIDER_HISTORY' | 'QUICKMANAGE_STATEMENT'; sourceReference: string; reason: string;
   periods?: CompanyPeriod[]; destinationCompanyId?: string; effectiveDate?: string;
 };
 
@@ -112,7 +113,7 @@ export class TruckCompanyHistoryService {
   }
 
   async change(truckId: string, input: HistoryChange, actorId: string) {
-    if (!['CONFIRM', 'MOVE', 'CORRECT'].includes(input.action) || !['MANUAL_CONFIRMATION', 'PROVIDER_HISTORY'].includes(input.source)) throw new TruckHistoryError('Unsupported history action/source.');
+    if (!['CONFIRM', 'MOVE', 'CORRECT'].includes(input.action) || !['MANUAL_CONFIRMATION', 'PROVIDER_HISTORY', 'QUICKMANAGE_STATEMENT'].includes(input.source)) throw new TruckHistoryError('Unsupported history action/source.');
     if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 2000 || typeof input.sourceReference !== 'string' || !input.sourceReference.trim() || input.sourceReference.length > 2000) throw new TruckHistoryError('A reason and evidence reference are required (maximum 2000 characters each).');
     return this.database.$transaction(async tx => {
       // Lock the physical Truck before reading its current Company or timeline. All competing moves serialize.
@@ -125,33 +126,37 @@ export class TruckCompanyHistoryService {
       const previous = await tx.truckCompanyHistoryRevision.findFirst({ where: { truckId, nextRevision: { is: null } } });
       if ((previous?.id ?? null) !== input.expectedRevisionId) throw new TruckHistoryError('History changed. Reload before submitting.');
       if (input.action === 'CONFIRM' && previous) throw new TruckHistoryError('Use a reviewed correction for existing history.');
-      if (input.action !== 'CONFIRM' && !previous) throw new TruckHistoryError('Confirm a known current start date before movement; do not guess past history.');
+      if (input.action === 'CORRECT' && !previous) throw new TruckHistoryError('There is no confirmed history to correct.');
       let periods = input.periods;
       if (input.action === 'MOVE') {
         const open = existing.find(p => p.effectiveTo === null);
-        if (!open || !input.effectiveDate || !input.destinationCompanyId || input.destinationCompanyId === truck.companyId) throw new TruckHistoryError('A different destination Company and effective date are required.');
-        if (historyDate(input.effectiveDate) <= open.effectiveFrom) throw new TruckHistoryError('Move must follow the current period start. Use correction for an incorrect boundary.');
+        if (!input.effectiveDate || !input.destinationCompanyId || input.destinationCompanyId === truck.companyId) throw new TruckHistoryError('A different destination Company and effective date are required.');
+        if (open && historyDate(input.effectiveDate) <= open.effectiveFrom) throw new TruckHistoryError('Move must follow the current period start. Use correction for an incorrect boundary.');
         periods = existing.map(p => ({ companyId: p.companyId, effectiveFrom: day(p.effectiveFrom), effectiveTo: p.effectiveTo ? day(p.effectiveTo) : input.effectiveDate! }));
         periods.push({ companyId: input.destinationCompanyId, effectiveFrom: input.effectiveDate, effectiveTo: null });
       }
       const confirmed = validatePeriods(periods ?? []);
       if (confirmed.some(p => !allowed.includes(p.companyId))) throw new AuthorizationDeniedError();
-      const current = confirmed.at(-1)!;
-      if (input.action === 'CONFIRM' && current.companyId !== truck.companyId) throw new TruckHistoryError('Initial history must agree with the current Company. Use an explicit move afterward.');
-      if (current.companyId !== truck.companyId) {
+      const open = confirmed.find(p => p.effectiveTo === null);
+      // Bounded historical evidence never changes today's operational master.
+      const currentCompanyId = open?.companyId ?? truck.companyId;
+      if (input.action === 'CONFIRM' && currentCompanyId !== truck.companyId) throw new TruckHistoryError('Initial history must agree with the current Company. Use an explicit move afterward.');
+      if (currentCompanyId !== truck.companyId) {
         // These legacy resources derive authorization from today's Truck Company.
         // Fail closed until their own transfer/snapshot workflows are approved.
         const dependent = await tx.truck.findUniqueOrThrow({ where: { id: truckId }, select: { _count: { select: { drivers: true, settlements: true, truckInspections: true } } } });
         if (Object.values(dependent._count).some(count => count > 0)) throw new TruckHistoryError('Movement is blocked by Driver assignments or legacy settlement/inspection scope. Resolve those dependencies in a reviewed workflow first.');
       }
-      const destinationTrucks = await tx.truck.findMany({ where: { companyId: current.companyId, id: { not: truckId } }, select: { unitNumber: true } });
+      const destinationTrucks = await tx.truck.findMany({ where: { companyId: currentCompanyId, id: { not: truckId } }, select: { unitNumber: true } });
       if (destinationTrucks.some(t => normalizeTruckUnitNumber(t.unitNumber) === normalizeTruckUnitNumber(truck.unitNumber))) throw new TruckHistoryError('Destination Company already has this unit number. Resolve the collision without automatic renumbering.');
       const revision = await tx.truckCompanyHistoryRevision.create({ data: { truckId, actorUserId: actorId, previousRevisionId: previous?.id, action: input.action, source: input.source, sourceReference: input.sourceReference.trim(), reason: input.reason.trim(), vinSnapshot: truck.vin } });
       await tx.truckCompanyAffiliation.updateMany({ where: { truckId, supersededAt: null }, data: { supersededAt: new Date() } });
       await tx.truckCompanyAffiliation.createMany({ data: confirmed.map(p => ({ truckId, companyId: p.companyId, effectiveFrom: historyDate(p.effectiveFrom), effectiveTo: p.effectiveTo ? historyDate(p.effectiveTo) : null, revisionId: revision.id })) });
-      await tx.truck.update({ where: { id: truckId }, data: { companyId: current.companyId, unitNumberNormalized: normalizeTruckUnitNumber(truck.unitNumber) } });
-      await tx.truckLifecycleEvent.create({ data: { truckReference: truckId, unitNumber: truck.unitNumber, companyId: truck.companyId, actorUserId: actorId, action: `TRUCK_COMPANY_${input.action}`, before: { companyId: truck.companyId, revisionId: previous?.id ?? null }, after: { companyId: current.companyId, revisionId: revision.id }, metadata: { source: input.source, sourceReference: input.sourceReference, reason: input.reason, vin: truck.vin, periods: confirmed } } });
-      return { revisionId: revision.id, truckId, companyId: current.companyId };
+      if (currentCompanyId !== truck.companyId) {
+        await tx.truck.update({ where: { id: truckId }, data: { companyId: currentCompanyId, unitNumberNormalized: normalizeTruckUnitNumber(truck.unitNumber) } });
+      }
+      await tx.truckLifecycleEvent.create({ data: { truckReference: truckId, unitNumber: truck.unitNumber, companyId: truck.companyId, actorUserId: actorId, action: `TRUCK_COMPANY_${input.action}`, before: { companyId: truck.companyId, revisionId: previous?.id ?? null }, after: { companyId: currentCompanyId, revisionId: revision.id }, metadata: { source: input.source, sourceReference: input.sourceReference, reason: input.reason, vin: truck.vin, periods: confirmed } } });
+      return { revisionId: revision.id, truckId, companyId: currentCompanyId };
     });
   }
 }

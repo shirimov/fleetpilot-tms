@@ -14,6 +14,8 @@ export function TruckCompanyHistory({ truck, companies, onClose, onChanged }: {
   const [reference, setReference] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  const [firstMove, setFirstMove] = useState(false);
+  const isMove = !!history?.revisionId || firstMove;
   async function load() {
     const res = await fetch(`/api/trucks/${truck.id}/company-history`);
     const body = await res.json();
@@ -26,7 +28,7 @@ export function TruckCompanyHistory({ truck, companies, onClose, onChanged }: {
   async function save(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const input = history?.revisionId ? { action: 'MOVE', destinationCompanyId: destination, effectiveDate: date } : { action: 'CONFIRM', periods: [{ companyId: truck.companyId, effectiveFrom: date, effectiveTo: null }] };
+      const input = isMove ? { action: 'MOVE', destinationCompanyId: destination, effectiveDate: date } : { action: 'CONFIRM', periods: [{ companyId: history?.currentCompanyId ?? truck.companyId, effectiveFrom: date, effectiveTo: null }] };
       const response = await fetch(`/api/trucks/${truck.id}/company-history`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, expectedRevisionId: history?.revisionId ?? null, source: 'MANUAL_CONFIRMATION', sourceReference: reference, reason }) });
       const body = await response.json(); if (!response.ok) throw new Error(body.error);
       await load(); onChanged(); setDate(''); setReason(''); setReference('');
@@ -39,15 +41,18 @@ export function TruckCompanyHistory({ truck, companies, onClose, onChanged }: {
       <p className="my-3 text-sm text-gray-400">Current operating Company: {companies.find(c => c.id === history?.currentCompanyId)?.name ?? 'Not available in your scope'}. History records operation, not legal ownership or fuel policy.</p>
       {error && <p role="alert" className="my-3 text-red-300">{error}</p>}
       {!history ? <p>Loading history…</p> : <>
+        {!history.periods.some(p => p.effectiveTo === null) && <p className="my-3 text-sm text-gray-400">No confirmed open-ended affiliation in your authorized scope. Current Company is operational master data; it alone does not establish an effective start date. History covers only the confirmed dates shown.</p>}
         {!history.periods.length ? <p>No confirmed history in your authorized scope. Historical dates remain unknown.</p> : <table className="my-4 w-full text-left text-sm"><thead><tr>{['Company', 'From (inclusive)', 'To (exclusive)', 'Source', 'Status'].map(h => <th key={h} className="p-2">{h}</th>)}</tr></thead><tbody>{history.periods.map(p => <tr key={p.id}><td className="p-2">{p.companyName}</td><td>{p.effectiveFrom}</td><td>{p.effectiveTo ?? 'Present'}</td><td>{p.source.replaceAll('_', ' ')}</td><td>{p.status}</td></tr>)}</tbody></table>}
         {history.canManage && <form onSubmit={save} className="mt-5 space-y-3 border-t border-gray-700 pt-4">
-          <h4 className="font-semibold">{history.revisionId ? 'Move operating Company' : 'Confirm current affiliation'}</h4>
+          <h4 className="font-semibold">{isMove ? 'Move operating Company' : 'Confirm current affiliation'}</h4>
           <p className="text-sm text-gray-400">Enter an evidenced calendar date. Leave unknown history unrecorded. This action preserves the Truck ID, VIN, and historical evidence.</p>
-          {history.revisionId && <label className="block">Destination Company<select required aria-label="Destination Company" value={destination} onChange={e => setDestination(e.target.value)} className="ml-3 rounded bg-gray-800 p-2"><option value="">Select Company</option>{companies.filter(c => c.canManage && c.id !== history.currentCompanyId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
+          {!history.revisionId && <button type="button" onClick={() => setFirstMove(!firstMove)} className="text-sm text-blue-300">{firstMove ? 'Confirm current start instead' : 'Record first Company movement instead'}</button>}
+          {isMove && <p className="text-sm text-gray-400">A movement records the destination from your explicit date. Earlier unknown dates remain unknown. Scheduled future movements are not supported.</p>}
+          {isMove && <label className="block">Destination Company<select required aria-label="Destination Company" value={destination} onChange={e => setDestination(e.target.value)} className="ml-3 rounded bg-gray-800 p-2"><option value="">Select Company</option>{companies.filter(c => c.canManage && c.id !== history.currentCompanyId).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>}
           <label className="block">Effective date<input required type="date" aria-label="Effective date" value={date} onChange={e => setDate(e.target.value)} className="ml-3 rounded bg-gray-800 p-2" /></label>
           <label className="block">Evidence reference<input required maxLength={2000} value={reference} onChange={e => setReference(e.target.value)} className="mt-1 block w-full rounded bg-gray-800 p-2" /></label>
           <label className="block">Reason<input required maxLength={2000} value={reason} onChange={e => setReason(e.target.value)} className="mt-1 block w-full rounded bg-gray-800 p-2" /></label>
-          <button disabled={busy} className="rounded bg-blue-600 px-4 py-2 disabled:opacity-50">{busy ? 'Saving…' : history.revisionId ? 'Confirm Company movement' : 'Confirm evidenced start date'}</button>
+          <button disabled={busy} className="rounded bg-blue-600 px-4 py-2 disabled:opacity-50">{busy ? 'Saving…' : isMove ? 'Confirm Company movement' : 'Confirm evidenced start date'}</button>
         </form>}
       </>}
     </section>
