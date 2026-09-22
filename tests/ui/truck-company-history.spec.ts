@@ -54,3 +54,39 @@ test('history API is not public', async ({ request }) => {
   const response = await request.get('/api/trucks/unknown/company-history');
   expect(response.status()).toBe(401);
 });
+
+for (const bounded of [false, true]) {
+  test(`${bounded ? 'Bounded history' : 'First movement'} keeps dates explicit and prior unknown history unrecorded`, async ({ page }) => {
+    const companies = [{ id: 'turner', name: 'Turner', role: 'OWNER', canManage: true }, { id: 'rana', name: 'Rana', role: 'OWNER', canManage: true }];
+    await page.route('**/api/auth/company', route => route.fulfill({ json: { user: { displayName: 'Owner', email: 'owner@example.test' }, activeCompanyId: 'rana', companies } }));
+    await page.route('**/api/companies', route => route.fulfill({ json: companies }));
+    await page.route('**/api/trucks?**', route => route.fulfill({ json: { items: [{ id: 'bounded-truck', unitNumber: '025', companyId: 'rana', company: companies[1], status: 'ACTIVE', cabType: 'SLEEPER', canManage: true }], companies, activeCompanyId: 'rana', selectedCompany: 'rana', pagination: { page: 1, pageSize: 100, total: 1, totalPages: 1 } } }));
+    let submitted = false;
+    await page.route('**/api/trucks/bounded-truck/company-history', async route => {
+      if (route.request().method() === 'POST') {
+        expect(route.request().postDataJSON()).toEqual({ action: 'MOVE', destinationCompanyId: 'turner', effectiveDate: '2026-09-15', expectedRevisionId: bounded ? 'bounded-r1' : null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Explicit movement document', reason: 'Confirmed transition' });
+        submitted = true;
+        return route.fulfill({ json: { revisionId: 'moved' } });
+      }
+      return route.fulfill({ json: { currentCompanyId: submitted ? 'turner' : 'rana', canManage: true, revisionId: submitted ? 'moved' : bounded ? 'bounded-r1' : null, periods: bounded ? [
+        { id: 'a', companyName: 'Turner', effectiveFrom: '2026-08-30', effectiveTo: '2026-09-06', source: 'QUICKMANAGE_STATEMENT', status: 'CONFIRMED' },
+        { id: 'b', companyName: 'Rana', effectiveFrom: '2026-09-06', effectiveTo: '2026-09-13', source: 'QUICKMANAGE_STATEMENT', status: 'CONFIRMED' },
+      ] : [] } });
+    });
+    await page.goto('/trucks');
+    await page.getByRole('button', { name: 'Truck 025 history' }).click();
+    await expect(page.getByText('Current operating Company: Rana.', { exact: false })).toBeVisible();
+    await expect(page.getByText('Current Company is operational master data;', { exact: false })).toBeVisible();
+    await expect(page.getByLabel('Effective date')).toHaveValue('');
+    if (!bounded) await page.getByRole('button', { name: 'Record first Company movement instead' }).click();
+    else await expect(page.getByRole('row', { name: 'Rana 2026-09-06 2026-09-13 QUICKMANAGE STATEMENT CONFIRMED', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Effective date')).toHaveValue('');
+    await page.getByLabel('Destination Company').selectOption('turner');
+    await page.getByLabel('Effective date').fill('2026-09-15');
+    await page.getByLabel('Evidence reference').fill('Explicit movement document');
+    await page.getByLabel('Reason', { exact: true }).fill('Confirmed transition');
+    await page.getByRole('button', { name: 'Confirm Company movement' }).click();
+    await expect(page.getByText('Current operating Company: Turner.', { exact: false })).toBeVisible();
+    expect(submitted).toBe(true);
+  });
+}
