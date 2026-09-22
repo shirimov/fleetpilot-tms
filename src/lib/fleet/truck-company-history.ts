@@ -8,6 +8,17 @@ import { normalizeTruckUnitNumber } from './truck-normalization';
 export class TruckHistoryError extends Error {}
 export type CompanyPeriod = { companyId: string; effectiveFrom: string; effectiveTo: string | null };
 export type HistoryResolution = { status: 'EXACT'; companyId: string } | { status: 'UNKNOWN' | 'AMBIGUOUS' | 'SPLIT_PERIOD' };
+export type BatchHistoryRequest = { key: string; truckId: string; timestamp: string };
+export type BatchHistoryResult =
+  | (BatchHistoryRequest & { status: 'EXACT'; companyId: string; affiliationId: string })
+  | (BatchHistoryRequest & { status: 'UNKNOWN'; reason: 'NO_CONFIRMED_HISTORY' | 'BEFORE_FIRST_CONFIRMED_PERIOD' | 'UNCONFIRMED_GAP' | 'AFTER_LAST_CONFIRMED_PERIOD' })
+  | (BatchHistoryRequest & { status: 'CONFLICT'; reason: 'OVERLAPPING_CONFIRMED_AFFILIATIONS' });
+
+type InstantPeriod = CompanyPeriod & { affiliationId?: string };
+type InstantResolution =
+  | { status: 'EXACT'; companyId: string; affiliationId?: string }
+  | { status: 'UNKNOWN'; reason: 'NO_CONFIRMED_HISTORY' | 'BEFORE_FIRST_CONFIRMED_PERIOD' | 'UNCONFIRMED_GAP' | 'AFTER_LAST_CONFIRMED_PERIOD' }
+  | { status: 'AMBIGUOUS'; reason: 'OVERLAPPING_CONFIRMED_AFFILIATIONS' };
 
 // Calendar labels only. No local timezone conversion or invented time-of-day precision.
 export function historyDate(value: string): Date {
@@ -17,6 +28,29 @@ export function historyDate(value: string): Date {
   return date;
 }
 const day = (date: Date) => date.toISOString().slice(0, 10);
+
+export function resolveCompanyAt(periods: InstantPeriod[], date: string): InstantResolution {
+  historyDate(date);
+  const ordered = [...periods].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  const matches = ordered.filter(period => period.effectiveFrom <= date && (!period.effectiveTo || period.effectiveTo > date));
+  if (matches.length > 1) return { status: 'AMBIGUOUS', reason: 'OVERLAPPING_CONFIRMED_AFFILIATIONS' };
+  if (matches.length === 1) return { status: 'EXACT', companyId: matches[0].companyId, affiliationId: matches[0].affiliationId };
+  if (!ordered.length) return { status: 'UNKNOWN', reason: 'NO_CONFIRMED_HISTORY' };
+  if (date < ordered[0].effectiveFrom) return { status: 'UNKNOWN', reason: 'BEFORE_FIRST_CONFIRMED_PERIOD' };
+  const final = ordered.at(-1)!;
+  if (final.effectiveTo && date >= final.effectiveTo) return { status: 'UNKNOWN', reason: 'AFTER_LAST_CONFIRMED_PERIOD' };
+  return { status: 'UNKNOWN', reason: 'UNCONFIRMED_GAP' };
+}
+
+export function resolveBatchHistoryItem(request: BatchHistoryRequest, periods: InstantPeriod[]): BatchHistoryResult {
+  const resolution = resolveCompanyAt(periods, request.timestamp);
+  if (resolution.status === 'EXACT') {
+    if (!resolution.affiliationId) throw new TruckHistoryError('Confirmed affiliation reference is required.');
+    return { ...request, status: 'EXACT', companyId: resolution.companyId, affiliationId: resolution.affiliationId };
+  }
+  if (resolution.status === 'AMBIGUOUS') return { ...request, status: 'CONFLICT', reason: resolution.reason };
+  return { ...request, status: 'UNKNOWN', reason: resolution.reason };
+}
 
 export function resolveCompanyRange(periods: CompanyPeriod[], from: string, toExclusive: string): HistoryResolution {
   if (historyDate(from) >= historyDate(toExclusive)) throw new TruckHistoryError('Range end must follow start.');
@@ -92,8 +126,44 @@ export class TruckCompanyHistoryService {
   }
 
   async resolveTruckOperatingCompanyAt(truckId: string, date: string, actorId: string): Promise<HistoryResolution> {
-    const end = historyDate(date); end.setUTCDate(end.getUTCDate() + 1);
-    return this.resolveRange(truckId, date, day(end), actorId);
+    const history = await this.history(truckId, actorId);
+    const result = resolveCompanyAt(history.periods.map(period => ({ companyId: period.companyId, effectiveFrom: period.effectiveFrom, effectiveTo: period.effectiveTo })), date);
+    return result.status === 'EXACT' ? { status: 'EXACT', companyId: result.companyId } : { status: result.status };
+  }
+
+  // Internal authorized batch API. Calendar labels follow the same YYYY-MM-DD contract as the single resolver.
+  async resolveTruckOperatingCompaniesAt(requests: BatchHistoryRequest[], actorId: string): Promise<BatchHistoryResult[]> {
+    if (!Array.isArray(requests) || requests.length > 10_000) throw new TruckHistoryError('Supply at most 10,000 historical resolution requests.');
+    if (!requests.length) return [];
+    const keys = new Set<string>();
+    for (const request of requests) {
+      if (!request || typeof request.key !== 'string' || !request.key.trim() || request.key.length > 200 || typeof request.truckId !== 'string' || !request.truckId || typeof request.timestamp !== 'string') throw new TruckHistoryError('Each request requires a key, Truck ID, and calendar timestamp.');
+      if (keys.has(request.key)) throw new TruckHistoryError('Batch request keys must be unique.');
+      keys.add(request.key); historyDate(request.timestamp);
+    }
+    const truckIds = [...new Set(requests.map(request => request.truckId))];
+    return this.database.$transaction(async tx => {
+      const allowed = await this.companies(tx, actorId);
+      const trucks = await tx.truck.findMany({
+        where: { id: { in: truckIds }, OR: [{ companyId: { in: allowed } }, { operatingAffiliations: { some: { companyId: { in: allowed }, supersededAt: null } } }] },
+        select: { id: true },
+      });
+      if (trucks.length !== truckIds.length) throw new FleetResourceNotFoundError();
+      const affiliations = await tx.truckCompanyAffiliation.findMany({
+        where: {
+          truckId: { in: truckIds }, companyId: { in: allowed }, supersededAt: null,
+        },
+        select: { id: true, truckId: true, companyId: true, effectiveFrom: true, effectiveTo: true },
+        orderBy: [{ truckId: 'asc' }, { effectiveFrom: 'asc' }],
+      });
+      const byTruck = new Map<string, InstantPeriod[]>();
+      for (const affiliation of affiliations) {
+        const periods = byTruck.get(affiliation.truckId) ?? [];
+        periods.push({ affiliationId: affiliation.id, companyId: affiliation.companyId, effectiveFrom: day(affiliation.effectiveFrom), effectiveTo: affiliation.effectiveTo ? day(affiliation.effectiveTo) : null });
+        byTruck.set(affiliation.truckId, periods);
+      }
+      return requests.map(request => resolveBatchHistoryItem(request, byTruck.get(request.truckId) ?? []));
+    });
   }
 
   // Read-only future archive adapter: physical VIN and confirmed period, not current Company.

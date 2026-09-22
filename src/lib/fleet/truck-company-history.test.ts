@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { boundedHistoryShape } from '../../../tests/fixtures/truck-history-bounded';
+import { batchHistoryShape, batchReconciliationRequests } from '../../../tests/fixtures/truck-history-batch';
 import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
-import { TruckCompanyHistoryService, resolveCompanyRange, historyDate, type HistoryChange } from './truck-company-history';
+import { TruckCompanyHistoryService, resolveBatchHistoryItem, resolveCompanyAt, resolveCompanyRange, historyDate, type HistoryChange } from './truck-company-history';
 
 // Dedicated database: immutable audit rows must not be deleted to clean a shared test DB.
 const url = new URL(process.env.DATABASE_URL!);
@@ -39,6 +40,20 @@ test('calendar boundaries, unknown and conflicting intervals, full period and We
   assert.deepEqual(resolveCompanyRange(p, '2026-07-05', '2026-07-12'), { status: 'SPLIT_PERIOD' });
   assert.deepEqual(resolveCompanyRange(p, '2026-07-01', '2026-07-12'), { status: 'UNKNOWN' });
   assert.deepEqual(resolveCompanyRange([...p, period('C', '2026-07-07')], '2026-07-05', '2026-07-12'), { status: 'AMBIGUOUS' });
+});
+
+test('point resolver explains uncovered dates and treats every overlap as ambiguous', () => {
+  const p = [period('A', '2026-01-08', '2026-01-15'), period('B', '2026-01-22', '2026-01-29')];
+  assert.deepEqual(resolveCompanyAt([], '2026-01-01'), { status: 'UNKNOWN', reason: 'NO_CONFIRMED_HISTORY' });
+  assert.deepEqual(resolveCompanyAt(p, '2026-01-01'), { status: 'UNKNOWN', reason: 'BEFORE_FIRST_CONFIRMED_PERIOD' });
+  assert.deepEqual(resolveCompanyAt(p, '2026-01-15'), { status: 'UNKNOWN', reason: 'UNCONFIRMED_GAP' });
+  assert.deepEqual(resolveCompanyAt(p, '2026-01-29'), { status: 'UNKNOWN', reason: 'AFTER_LAST_CONFIRMED_PERIOD' });
+  assert.deepEqual(resolveCompanyAt([period('A', '2026-01-01', '2026-02-01'), period('A', '2026-01-15', '2026-03-01')], '2026-01-20'), { status: 'AMBIGUOUS', reason: 'OVERLAPPING_CONFIRMED_AFFILIATIONS' });
+  assert.deepEqual(resolveCompanyAt([period('A', '2026-01-01', '2026-02-01'), period('B', '2026-02-01')], '2026-02-01'), { status: 'EXACT', companyId: 'B', affiliationId: undefined });
+  assert.deepEqual(resolveBatchHistoryItem({ key: 'conflict', truckId: 'synthetic', timestamp: '2026-01-20' }, [
+    { ...period('A', '2026-01-01', '2026-02-01'), affiliationId: 'first' },
+    { ...period('B', '2026-01-15', '2026-03-01'), affiliationId: 'second' },
+  ]), { key: 'conflict', truckId: 'synthetic', timestamp: '2026-01-20', status: 'CONFLICT', reason: 'OVERLAPPING_CONFIRMED_AFFILIATIONS' });
 });
 
 test('one physical Truck: A→B→A, immutable correction revisions, inactive historical resolution', async () => {
@@ -323,4 +338,89 @@ test('78 synthetic bounded blocks preserve 24 adjacent/13 gapped transitions and
   const truckCount = await db.truck.count();
   assert.deepEqual(await service.resolveStatementTruck('SYNTHETIC_MISSING_UNIT_211', a, '2026-07-01', '2026-07-08', owner.id), { status: 'UNKNOWN' });
   assert.equal(await db.truck.count(), truckCount);
+});
+
+test('batch resolver preserves order, duplicate requests, scope, identity, and all-or-nothing input errors', async () => {
+  const owner = await authorizedUser('Batch owner', [a, b]);
+  const t = await truck('BATCH-BASIC');
+  await service.change(t.id, input([period(a, '2026-01-01', '2026-02-01'), period(b, '2026-02-08', '2026-03-01')]), owner.id);
+  const requests = [
+    { key: 'second', truckId: t.id, timestamp: '2026-02-08' },
+    { key: 'duplicate', truckId: t.id, timestamp: '2026-02-08' },
+    { key: 'gap', truckId: t.id, timestamp: '2026-02-01' },
+  ];
+  const results = await service.resolveTruckOperatingCompaniesAt(requests, owner.id);
+  assert.deepEqual(results.map(result => result.key), requests.map(request => request.key));
+  assert.equal(results[0].status, 'EXACT'); assert.equal(results[1].status, 'EXACT');
+  assert.deepEqual(results[2], { ...requests[2], status: 'UNKNOWN', reason: 'UNCONFIRMED_GAP' });
+  if (results[0].status === 'EXACT' && results[1].status === 'EXACT') {
+    assert.equal(results[0].companyId, b); assert.equal(results[0].affiliationId, results[1].affiliationId);
+  }
+  for (const request of requests) {
+    const single = await service.resolveTruckOperatingCompanyAt(request.truckId, request.timestamp, owner.id);
+    const batch = results.find(result => result.key === request.key)!;
+    assert.equal(batch.status === 'CONFLICT' ? 'AMBIGUOUS' : batch.status, single.status);
+    if (batch.status === 'EXACT' && single.status === 'EXACT') assert.equal(batch.companyId, single.companyId);
+  }
+  const noHistory = await truck('BATCH-ZERO-HISTORY');
+  assert.equal((await service.resolveTruckOperatingCompaniesAt([{ key: 'zero', truckId: noHistory.id, timestamp: '2026-01-01' }], owner.id))[0].status, 'UNKNOWN');
+  const open = await truck('BATCH-OPEN');
+  await service.change(open.id, input([period(a, '2026-03-01')]), owner.id);
+  const openResults = await service.resolveTruckOperatingCompaniesAt([{ key: 'before-open', truckId: open.id, timestamp: '2026-02-28' }, { key: 'inside-open', truckId: open.id, timestamp: '2026-03-01' }], owner.id);
+  assert.equal(openResults[0].status, 'UNKNOWN'); assert.equal(openResults[1].status, 'EXACT');
+  const scoped = await service.resolveTruckOperatingCompaniesAt([{ key: 'hidden', truckId: t.id, timestamp: '2026-02-08' }], reader);
+  assert.equal(scoped[0].status, 'UNKNOWN');
+  const before = await db.truck.count();
+  await assert.rejects(service.resolveTruckOperatingCompaniesAt([{ key: 'missing', truckId: 'synthetic-unit-211', timestamp: '2026-01-01' }], owner.id));
+  assert.equal(await db.truck.count(), before);
+  await assert.rejects(service.resolveTruckOperatingCompaniesAt([{ key: 'same', truckId: t.id, timestamp: '2026-01-01' }, { key: 'same', truckId: t.id, timestamp: '2026-01-02' }], owner.id), /unique/);
+  await assert.rejects(service.resolveTruckOperatingCompaniesAt([{ key: 'offset', truckId: t.id, timestamp: '2026-01-01T00:00:00Z' }], owner.id), /calendar date/);
+  await assert.rejects(service.resolveTruckOperatingCompaniesAt(Array.from({ length: 10_001 }, (_, index) => ({ key: String(index), truckId: t.id, timestamp: '2026-01-01' })), owner.id), /10,000/);
+});
+
+test('58-Truck batch shape resolves 698 and 10,000 inputs with four constant reads and no writes', async testContext => {
+  const owner = await authorizedUser('Batch shape owner', [a, b, c]);
+  const histories = batchHistoryShape(a, b);
+  assert.equal(histories.length, 58); assert.equal(histories.flat().length, 113);
+  const truckIds: string[] = [];
+  for (const [index, periods] of histories.entries()) {
+    const t = await db.truck.create({ data: { companyId: c, unitNumber: `BATCH-SHAPE-${index}` } });
+    truckIds.push(t.id);
+    await service.change(t.id, { ...input(periods), source: 'QUICKMANAGE_STATEMENT', sourceReference: `Synthetic batch evidence ${index}` }, owner.id);
+  }
+  const before = {
+    trucks: await db.truck.count(), affiliations: await db.truckCompanyAffiliation.count(),
+    transactions: await db.financialTransaction.count(), allocations: await db.financialAllocation.count(),
+    archiveVersions: await db.archiveVersion.count(), archiveLines: await db.archiveLine.count(),
+  };
+  let reads = 0;
+  const measured = db.$extends({ query: { $allModels: { $allOperations({ operation, args, query }) {
+    if (operation === 'findMany' || operation === 'findUnique') reads++;
+    return query(args);
+  } } } });
+  const measuredService = new TruckCompanyHistoryService(measured as unknown as PrismaClient);
+  const requests = batchReconciliationRequests(truckIds, histories);
+  const posted = requests.map((request, index) => ({ ...request, postedCompanyId: index < 31 ? (histories[index % 58][0].companyId === a ? b : a) : histories[index % 58][0].companyId }));
+  const postedSnapshot = structuredClone(posted);
+  const batchStarted = performance.now();
+  const results = await measuredService.resolveTruckOperatingCompaniesAt(requests, owner.id);
+  const batchMilliseconds = performance.now() - batchStarted;
+  assert.equal(reads, 4);
+  assert.deepEqual(results.reduce((counts, result) => ({ ...counts, [result.status]: counts[result.status] + 1 }), { EXACT: 0, UNKNOWN: 0, CONFLICT: 0 }), { EXACT: 670, UNKNOWN: 28, CONFLICT: 0 });
+  assert.equal(results.filter((result, index) => result.status === 'EXACT' && result.companyId !== posted[index].postedCompanyId).length, 31);
+  assert.deepEqual(posted, postedSnapshot);
+  const large = Array.from({ length: 10_000 }, (_, index) => ({ ...requests[index % requests.length], key: `large-${index}` }));
+  reads = 0;
+  const heapBefore = process.memoryUsage().heapUsed; const started = performance.now();
+  const largeResults = await measuredService.resolveTruckOperatingCompaniesAt(large, owner.id);
+  const largeMilliseconds = performance.now() - started; const heapDelta = process.memoryUsage().heapUsed - heapBefore;
+  assert.equal(reads, 4); assert.equal(largeResults.length, 10_000);
+  assert.deepEqual(largeResults.map(result => result.key), large.map(request => request.key));
+  assert.ok(largeMilliseconds < 10_000);
+  testContext.diagnostic(`batch metrics: 698 requests / 58 Trucks / 4 reads / ${batchMilliseconds.toFixed(1)} ms; 10,000 requests / 4 reads / ${largeMilliseconds.toFixed(1)} ms / ${(heapDelta / 1024 / 1024).toFixed(1)} MiB heap delta`);
+  assert.deepEqual({
+    trucks: await db.truck.count(), affiliations: await db.truckCompanyAffiliation.count(),
+    transactions: await db.financialTransaction.count(), allocations: await db.financialAllocation.count(),
+    archiveVersions: await db.archiveVersion.count(), archiveLines: await db.archiveLine.count(),
+  }, before);
 });

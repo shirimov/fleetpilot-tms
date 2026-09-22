@@ -10,6 +10,7 @@ on:
       - prisma/**
       - tests/ui/truck-company-history.spec.ts
       - tests/fixtures/truck-history-bounded.ts
+      - tests/fixtures/truck-history-batch.ts
   workflow_dispatch:
 permissions:
   contents: read
@@ -57,6 +58,7 @@ jobs:
           src/app/api/trucks/\[id\]/company-history/route.ts
           src/components/fleet/TruckCompanyHistory.tsx src/app/trucks/page.tsx
           tests/ui/truck-company-history.spec.ts tests/fixtures/truck-history-bounded.ts
+          tests/fixtures/truck-history-batch.ts
       - run: npx playwright install --with-deps chromium
       - name: Fleet, Accounting, Pilot and archive browser regressions
         run: >-
