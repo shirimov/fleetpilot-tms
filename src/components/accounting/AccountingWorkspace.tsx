@@ -14,6 +14,7 @@ type Tab = 'overview' | 'audit' | 'transactions' | 'fuel' | 'statements' | 'sett
 type Row = Record<string, unknown>;
 type Dimensions = { companies: Row[]; trucks: Row[]; pilotTrucks: Row[]; trailers: Row[]; drivers: Row[]; employees: Row[]; loads: Row[]; customers: Row[]; parties: Row[]; programs: Row[] };
 type Overview = { currency: string; otherCurrencyCount: number; business: { incomeMinor: string; grossExpensesMinor: string; expenseCreditsMinor: string; netExpensesMinor: string; recordedNetMinor: string; otherNetMinor: string }; payments: { total: number; settled: number; open: number; remainingMinor: string; bankMatchedMinor: string }; inflowMinor: string; outflowMinor: string; operatingNetMinor: string; reconciledMinor: string; unresolvedMinor: string; reconciliationBasisPoints: number | null; completenessBasisPoints: number | null; unresolvedTransactionCount: number; statementsRegistered: number; statementsImportedSuccessfully: number; statementsImportFailed: number; statementsPending: number; rawRecordsImported: number; transactionsNeedingReview: number; fullyReconciledCount: number; transferCount: number; exceptions: Record<string, number> };
+type FuelAudit = { byStatus: Record<string, { count: number; differenceMinor: string }>; summary: { historicalPostedDifferences: number } };
 const tabs: Array<[Tab, string]> = [['overview', 'Overview'], ['audit', 'Audit Center'], ['transactions', 'Transactions'], ['fuel', 'Fuel'], ['statements', 'Statements'], ['settings', 'Settings']];
 const settingGroups = [['Organization', [['companies','Companies']]], ['Accounting setup', [['categories','Categories'],['sources','Sources'],['cost-centers','Cost centers']]], ['Rules', [['fuel-rules','Fuel product rules'],['settlement-rules','Settlement rules']]]] as const;
 const input = 'rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm';
@@ -66,6 +67,7 @@ export default function AccountingWorkspace() {
   const [transactions, setTransactions] = useState<Row[]>([]);
   const [records, setRecords] = useState<Row[]>([]);
   const [expectations, setExpectations] = useState<Row[]>([]);
+  const [fuelAudit, setFuelAudit] = useState<FuelAudit | null>(null);
   const [dimensions, setDimensions] = useState<Dimensions>({ companies: [], trucks: [], pilotTrucks: [], trailers: [], drivers: [], employees: [], loads: [], customers: [], parties: [], programs: [] });
   const [programs, setPrograms] = useState<Row[]>([]);
   const [adminFees, setAdminFees] = useState<Row[]>([]);
@@ -82,14 +84,13 @@ export default function AccountingWorkspace() {
       const load = async <T,>(path: string, setter: (value: T) => void) => setter(await api<T>(`/api/finance/${path}`, { signal }));
       const jobs: Promise<void>[] = [];
       if (tab === 'overview' || tab === 'audit') jobs.push(load('overview', setOverview));
-      if (tab === 'audit') jobs.push(load('expectations', setExpectations));
+      if (tab === 'audit') { jobs.push(load('expectations', setExpectations)); jobs.push(load('fuel-reconciliation', setFuelAudit)); }
       if (tab === 'transactions') jobs.push(load<{ rows: Row[]; page: number; total: number; pageSize: number }>(`transactions?${new URLSearchParams({ queue: exceptionFilter, page })}`, value => { setTransactions(value.rows); setPagination(value); }));
       if (tab === 'transactions' || tab === 'statements' && params.get('archive') === 'documents' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'sources') jobs.push(load('sources', setSources));
       if (tab === 'transactions' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && ['categories','fuel-rules'].includes(setting)) jobs.push(load('categories', setCategories));
-      if (tab === 'transactions' || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'settlement-rules') jobs.push(load('dimensions', setDimensions));
+      if (tab === 'transactions' || tab === 'statements' && ['capture','reconciliation'].includes(params.get('archive') ?? '') || tab === 'fuel' && ['imports','invoices'].includes(params.get('section') ?? '') || tab === 'settings' && setting === 'settlement-rules') jobs.push(load('dimensions', setDimensions));
       if (tab === 'transactions') jobs.push(load('import-records', setRecords));
       if (tab === 'statements' && params.get('archive') === 'documents') jobs.push(load('statements', setStatements));
-      if (tab === 'statements' && params.get('archive') === 'capture') jobs.push(load('dimensions', setDimensions));
       if (tab === 'settings' && setting === 'cost-centers') jobs.push(load('programs', setPrograms));
       if (tab === 'settings' && setting === 'settlement-rules') jobs.push(load('admin-fee-agreements', setAdminFees));
       await Promise.all(jobs);
@@ -120,8 +121,8 @@ export default function AccountingWorkspace() {
     {error && <p role="alert" className="rounded-lg bg-red-950/60 p-3 text-red-200">{error}</p>}
     {loading ? <p role="status">Loading section…</p> : <>
     {tab === 'overview' && overview && <OverviewView overview={overview} />}
-    {tab === 'audit' && overview && <AuditView overview={overview} expectations={expectations.filter(row => params.get('expectation') ? row.id === params.get('expectation') : exceptionFilter === 'payments' ? ['OPEN','PARTIALLY_MATCHED','MISSING'].includes(String(row.status)) : true)} busy={busy} submit={submit} refresh={reload} onDrill={filter => filter === 'missingExpected' ? navigate('audit', { queue: 'payments' }) : navigate('transactions', { queue: filter })} />}
-    {tab === 'statements' && <StatementArchiveWorkspace companies={dimensions.companies.map(c => ({ id: String(c.id), name: String(c.name) }))} documents={<><h2 className="text-xl font-semibold">Statement documents</h2><StatementView rows={statements} sources={sources} busy={busy} submit={submit} /></>} />}
+    {tab === 'audit' && overview && <><AuditView overview={overview} expectations={expectations.filter(row => params.get('expectation') ? row.id === params.get('expectation') : exceptionFilter === 'payments' ? ['OPEN','PARTIALLY_MATCHED','MISSING'].includes(String(row.status)) : true)} busy={busy} submit={submit} refresh={reload} onDrill={filter => filter === 'missingExpected' ? navigate('audit', { queue: 'payments' }) : navigate('transactions', { queue: filter })} />{fuelAudit && <FuelReconciliationAudit audit={fuelAudit} />}</>}
+    {tab === 'statements' && <StatementArchiveWorkspace companies={dimensions.companies.map(c => ({ id: String(c.id), name: String(c.name) }))} trucks={dimensions.trucks.map(t => ({ id: String(t.id), unitNumber: String(t.unitNumber) }))} documents={<><h2 className="text-xl font-semibold">Statement documents</h2><StatementView rows={statements} sources={sources} busy={busy} submit={submit} /></>} />}
     {tab === 'fuel' && <FuelWorkspace sources={sources} categories={categories} trucks={dimensions.pilotTrucks} />}
     {tab === 'settings' && <section className="grid min-w-0 gap-5 md:grid-cols-[210px_minmax(0,1fr)]"><nav aria-label="Accounting settings" className="space-y-4">{settingGroups.map(([title,links]) => <div key={title}><h2 className="mb-2 text-xs uppercase text-slate-400">{title}</h2>{links.map(([key,label]) => <button className={`block w-full rounded-lg p-2 text-left text-sm ${setting === key ? 'bg-emerald-900' : 'hover:bg-slate-800'}`} aria-current={setting === key ? 'page' : undefined} onClick={() => navigate('settings', { section: key })} key={key}>{label}</button>)}</div>)}</nav><div className="min-w-0">
       {setting === 'companies' && <OperatingGroupCompanies groupName={String(group.name)} onChanged={reload} />}
@@ -150,6 +151,16 @@ function OverviewView({ overview }: { overview: Overview }) {
 function AuditView({ overview, expectations, busy, submit, refresh, onDrill }: { overview: Overview; expectations: Row[]; busy: boolean; submit: AccountingWorkspaceSubmit; refresh: () => Promise<void>; onDrill: (filter: string) => void }) {
   const labels: Record<string, string> = { ...reviewQueues, missingExpected: 'Open expected payments' };
   return <div className="space-y-4"><section className="space-y-2"><h2 className="text-lg font-semibold">Needs attention</h2>{Object.keys(labels).every(key => overview.exceptions[key] === 0) && <p>All checks clear.</p>}{Object.entries(labels).filter(([key]) => overview.exceptions[key] > 0).map(([key, label]) => <button key={key} onClick={() => onDrill(key)} className={`${panel} text-left hover:border-emerald-500`}><span>{label}</span><strong className="float-right text-xl">{overview.exceptions[key] ?? 0}</strong></button>)}</section><details className={panel}><summary>Completed checks</summary>{Object.entries(labels).filter(([key]) => !overview.exceptions[key]).map(([key,label]) => <p key={key}>✓ {label}: clear</p>)}</details><div className="grid gap-4 lg:grid-cols-[1fr_2fr]"><form className={`${panel} grid gap-3`} onSubmit={(event) => submit(event, '/api/finance/expectations')}><h2 className="font-semibold">Add expected payment</h2><input className={input} name="description" required placeholder="Expected settlement" /><input className={input} name="amount" required placeholder="Expected amount" /><select className={input} name="direction"><option>INFLOW</option><option>OUTFLOW</option></select><DateField name="expectedDateStart" label="Expected start date" /><DateField name="expectedDateEnd" label="Expected end date" /><input type="hidden" name="currency" value="USD" /><button disabled={busy} className="btn">Add expectation</button></form><ExpectationBankReconciliation expectations={expectations} refresh={refresh} /></div></div>;
+}
+
+function FuelReconciliationAudit({ audit }: { audit: FuelAudit }) {
+  const queues = [
+    ['UNDER_DEDUCTED', 'Under-deduction'], ['OVER_DEDUCTED', 'Over-deduction'], ['MISSING_DEDUCTION', 'Missing deduction'],
+    ['STATEMENT_ONLY', 'Statement-only within Pilot coverage'], ['NEEDS_POLICY', 'Needs policy'],
+    ['NEEDS_TRUCK_MAPPING', 'Needs Truck mapping'], ['NEEDS_RECIPIENT_MAPPING', 'Needs recipient mapping'],
+    ['NEEDS_COMPANY_HISTORY', 'Needs Company history'], ['NEEDS_REVIEW', 'Needs review'],
+  ];
+  return <section className={panel}><div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold">Fuel deduction controls</h2><p className="text-xs text-slate-400">Actionable reconciliation exceptions. Periods outside imported Pilot coverage are excluded.</p></div><a className="btn" href="/accounting?view=statements&archive=reconciliation">Open reconciliation</a></div><div className="mt-3 grid gap-2 sm:grid-cols-3">{queues.map(([status,label]) => <a className="rounded-lg bg-slate-950/60 p-3" href={`/accounting?view=statements&archive=reconciliation&status=${status}`} key={status}><span className="text-xs text-slate-300">{label}</span><strong className="block text-xl">{audit.byStatus[status]?.count ?? 0}</strong><span className="text-xs">{dollars(audit.byStatus[status]?.differenceMinor ?? '0')}</span></a>)}<a className="rounded-lg bg-slate-950/60 p-3" href="/accounting?view=statements&archive=reconciliation"><span className="text-xs text-slate-300">Historical ≠ posted Company</span><strong className="block text-xl">{audit.summary.historicalPostedDifferences}</strong></a></div></section>;
 }
 
 function SourceView({ rows, busy, submit, refresh, setError, canDelete }: { rows: Row[]; busy: boolean; submit: AccountingWorkspaceSubmit; refresh: () => Promise<void>; setError: (message: string) => void; canDelete: boolean }) {

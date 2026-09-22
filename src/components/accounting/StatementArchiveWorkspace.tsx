@@ -1,5 +1,6 @@
 "use client";
 import BrowserStatementCapture from "./BrowserStatementCapture";
+import FuelReconciliationWorkspace from "./FuelReconciliationWorkspace";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatMinorUnitsDecimal } from "@/lib/finance/money";
@@ -124,9 +125,12 @@ async function api(url: string, init?: RequestInit) {
 }
 export default function StatementArchiveWorkspace({
   documents,
+  companies,
+  trucks,
 }: {
   documents: ReactNode;
   companies: { id: string; name: string }[];
+  trucks: { id: string; unitNumber: string }[];
 }) {
   const router = useRouter(),
     params = useSearchParams(),
@@ -163,7 +167,7 @@ export default function StatementArchiveWorkspace({
     setError("");
     Promise.all([
       api("/api/finance/archive", { signal: controller.signal }),
-      view === "overview" || view === "capture" || view === "documents"
+      view === "overview" || view === "capture" || view === "documents" || view === "reconciliation"
         ? Promise.resolve(null)
         : api(`/api/finance/archive?${p}`, { signal: controller.signal }),
     ])
@@ -313,7 +317,7 @@ export default function StatementArchiveWorkspace({
         aria-label="Statement archive views"
         className="flex flex-wrap gap-3"
       >
-        {["overview", "statements", "completeness", "capture", "documents"].map(
+        {["overview", "statements", "reconciliation", "completeness", "capture", "documents"].map(
           (v) => (
             <button
               key={v}
@@ -356,6 +360,7 @@ export default function StatementArchiveWorkspace({
         </div>
       ) : null}
       {view === "capture" && <BrowserStatementCapture />}
+      {view === "reconciliation" && <FuelReconciliationWorkspace companies={companies} trucks={trucks} />}
       {(view === "statements" || view === "completeness") && filter}
       {view === "completeness" && data && (
         <>

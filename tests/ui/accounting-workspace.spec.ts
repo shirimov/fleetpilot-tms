@@ -43,6 +43,30 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(page.getByRole('heading',{name:invoices[1].invoiceNumber,exact:true})).toBeVisible();
     await page.goto('/accounting?view=statements&archive=documents');
     await expect(page.getByRole('heading',{name:'Statement documents'})).toBeVisible();
+    const reconciliation = {
+      coverage:{start:'2026-04-22',end:'2026-08-02'},
+      summary:{count:1,pilotActualMinor:'10000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',outsideCoverageStatementMinor:'0',comparablePilotMinor:'10000',reeferExcludedMinor:'500',providerCreditExcludedMinor:'-2859',historicalPostedDifferences:1},
+      byStatus:Object.fromEntries(['MATCHED','UNDER_DEDUCTED','OVER_DEDUCTED','MISSING_DEDUCTION','STATEMENT_ONLY','TIMING_DIFFERENCE','NO_PILOT_DATA_IMPORTED','NEEDS_COMPANY_HISTORY','NEEDS_TRUCK_MAPPING','NEEDS_RECIPIENT_MAPPING','NEEDS_POLICY','NEEDS_REVIEW'].map(status=>[status,{count:status==='TIMING_DIFFERENCE'?1:0,pilotActualMinor:status==='TIMING_DIFFERENCE'?'10000':'0',expectedMinor:status==='TIMING_DIFFERENCE'?'10000':'0',statementMinor:status==='TIMING_DIFFERENCE'?'11509':'0',differenceMinor:status==='TIMING_DIFFERENCE'?'1509':'0'}])),
+      byCompany:[],total:1,page:1,pageSize:50,
+      rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',matchMethod:'REFERENCE',pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
+    };
+    await page.route('**/api/finance/fuel-reconciliation**',async route=>{
+      const requestUrl=new URL(route.request().url());
+      if(route.request().method()==='POST') return route.fulfill({status:201,json:{id:'created-policy'}});
+      if(requestUrl.searchParams.get('view')==='policies') return route.fulfill({json:[]});
+      return route.fulfill({json:reconciliation});
+    });
+    await page.goto('/accounting?view=statements&archive=reconciliation');
+    await expect(page.getByText('Comparable Diesel + DEF')).toBeVisible();
+    await expect(page.getByText('$15.09',{exact:true}).first()).toBeVisible();
+    await expect(page.getByText('TIMING DIFFERENCE',{exact:true}).first()).toBeVisible();
+    await page.getByText('Evidence and calculation').click();
+    await expect(page.getByText(/invoice PILOT-1/)).toBeVisible();
+    await expect(page.getByText(/PID 30/)).toBeVisible();
+    await page.getByRole('button',{name:'Policies'}).click();
+    await expect(page.getByRole('heading',{name:'Add effective-dated fuel deduction policy'})).toBeVisible();
+    await expect(page.getByText(/never post expenses/)).toBeVisible();
+    await page.unroute('**/api/finance/fuel-reconciliation**');
     await page.route('**/api/finance/overview',async route=>{
       const response = await route.fetch(); const body = await response.json();
       // Legacy diagnostics do not create an empty actionable queue.
