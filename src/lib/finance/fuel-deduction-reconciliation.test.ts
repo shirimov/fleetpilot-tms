@@ -28,6 +28,14 @@ test('policy arithmetic is exact in integer minor units', () => {
   assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_999), false), discrepancyStatus(BigInt(10_000), BigInt(10_001), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
 });
 
+test('10% retention truncates fractional cents like the real April 22 Truck 024 deduction', () => {
+  const pilot = { amountMinor: BigInt(56_748), retailMinor: BigInt(71_847), savingsMinor: BigInt(15_099) };
+  assert.deepEqual(
+    expectedFuelDeduction(pilot, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }),
+    { expectedMinor: BigInt(58_257), retainedDiscountMinor: BigInt(1_509) },
+  );
+});
+
 const rootUrl = new URL(process.env.DATABASE_URL!);
 const dbName = `fuel_reconciliation_${randomUUID().replaceAll('-', '')}`;
 const admin = new Pool({ connectionString: rootUrl.toString() });

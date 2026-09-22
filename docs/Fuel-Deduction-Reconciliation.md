@@ -24,7 +24,7 @@ Statement lines whose work period does not overlap imported Pilot coverage are `
 
 The database rejects overlapping policies at the same exact scope. More specific Truck and recipient policies take precedence over Company-wide policies. Full pass-through requires zero retention. Company retention uses integer minor-unit arithmetic:
 
-`expected deduction = Pilot net + rounded(Pilot discount × retention basis points / 10,000)`
+`expected deduction = Pilot net + truncate-to-cents(Pilot discount × retention basis points / 10,000)`
 
 For example, Pilot net of $100.00 with a $20.00 discount and 10% Company retention produces a $102.00 expected deduction, a $2.00 Company-retained discount, and $18.00 of discount benefit passed to the recipient. Missing applicable policy is `NEEDS_POLICY`; the engine does not invent one.
 
@@ -62,6 +62,6 @@ The preview used a private disposable local restore of Alpha, then applied this 
 
 There are no configured fuel deduction policies in Alpha, so the real preview intentionally produces no `MATCHED`, `UNDER_DEDUCTED`, `OVER_DEDUCTED`, `MISSING_DEDUCTION`, or policy-dependent `TIMING_DIFFERENCE` conclusions. Synthetic integration fixtures exercise those calculations, including full pass-through, 10% retention, missing policy, exact/under/over/missing outcomes, paired evidence, Company-driver responsibility, coverage boundaries, and immutable control-only behavior.
 
-The known April 22 Truck 024 purchase links uniquely by canonical Truck and source purchase date to Turner PID 2026-30 for July 19–25. Because historical Company is uncovered on April 22, its controlling status remains `NEEDS_COMPANY_HISTORY`; its Pilot amount is $567.48, statement deduction is $582.57, and the preserved observed delta is $15.09. No current Company fallback or policy assumption is applied.
+The known April 22 Truck 024 purchase links to Turner PID 2026-30 for July 19–25 by canonical Truck/VIN, source date, 135.59 gallons, Pilot card 879856, location 358 in Paducah, Kentucky, and product. Pilot retail is $718.47, net Company expense is $567.48, and savings are $150.99. QuickManage records a $135.89 recipient discount and deducts $582.57. The repeated settlement formula for this Truck and recipient is Pilot net plus the truncated 10% retained share: `$567.48 + truncate($150.99 × 10%) = $582.57`. Because historical Company is uncovered on April 22, its controlling status remains `NEEDS_COMPANY_HISTORY`; no policy is inferred or written, and no current Company fallback is applied.
 
 Private CSV reports generated from the full preview contain Company, Truck, and PID aggregates. They stay outside the repository with the private disposable data.

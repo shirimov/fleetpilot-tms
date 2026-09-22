@@ -34,7 +34,10 @@ export function expectedFuelDeduction(pilot: ComparablePilotAmount, policy: Pick
   if (policy.discountTreatment === 'FULL_PASS_THROUGH') return { expectedMinor: pilot.amountMinor, retainedDiscountMinor: BigInt(0) };
   const savings = pilot.savingsMinor ?? (pilot.retailMinor === null ? null : pilot.retailMinor - pilot.amountMinor);
   if (savings === null || savings < BigInt(0)) return null;
-  const retainedDiscountMinor = (savings * BigInt(policy.companyRetentionBasisPoints) + BigInt(5000)) / BigInt(10000);
+  // QuickManage settles fractional cents by truncating the retained share. Its
+  // displayed recipient discount is independently truncated, so deriving the
+  // charge as retail minus that display value can differ by one cent.
+  const retainedDiscountMinor = (savings * BigInt(policy.companyRetentionBasisPoints)) / BigInt(10000);
   return { expectedMinor: pilot.amountMinor + retainedDiscountMinor, retainedDiscountMinor };
 }
 
