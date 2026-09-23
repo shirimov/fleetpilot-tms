@@ -152,6 +152,7 @@ enum CompanyMembershipRole {
 
 model User {
   approvedFuelDeductionPolicies FuelDeductionPolicy[]         @relation("FuelDeductionPolicyApprover")
+  fuelDeductionPolicyRevisions  FuelDeductionPolicyRevision[] @relation("FuelDeductionPolicyRevisionActor")
   truckHistoryRevisions         TruckCompanyHistoryRevision[]
   archiveCaptureRuns            ArchiveCaptureRun[]
   archiveGrants                 ArchiveScopeGrant[]
@@ -1506,28 +1507,50 @@ model OperatingGroup {
 
 /// Effective-dated control policy. It determines expected recovery only and never posts economics.
 model FuelDeductionPolicy {
-  id                          String                     @id @default(cuid())
+  id                          String                        @id @default(cuid())
   operatingGroupId            String
   companyId                   String
   truckId                     String?
   providerRecipientId         String?
   responsibility              FuelRecoveryResponsibility
   discountTreatment           FuelDiscountTreatment
-  companyRetentionBasisPoints Int                        @default(0)
-  effectiveFrom               DateTime                   @db.Date
-  effectiveTo                 DateTime?                  @db.Date
+  companyRetentionBasisPoints Int                           @default(0)
+  effectiveFrom               DateTime                      @db.Date
+  effectiveTo                 DateTime?                     @db.Date
   sourceReference             String
   reason                      String
   approvedByUserId            String
-  approvedAt                  DateTime                   @default(now())
-  operatingGroup              OperatingGroup             @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company                     Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  truck                       Truck?                     @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  approvedBy                  User                       @relation("FuelDeductionPolicyApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  approvedAt                  DateTime                      @default(now())
+  revision                    Int                           @default(1)
+  updatedAt                   DateTime                      @default(now()) @updatedAt
+  operatingGroup              OperatingGroup                @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                     Company                       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  truck                       Truck?                        @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  approvedBy                  User                          @relation("FuelDeductionPolicyApprover", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  revisions                   FuelDeductionPolicyRevision[]
 
   @@index([operatingGroupId, companyId, effectiveFrom])
   @@index([truckId, effectiveFrom])
   @@index([providerRecipientId, effectiveFrom])
+}
+
+/// Immutable snapshots written for every successful fuel-policy range change.
+model FuelDeductionPolicyRevision {
+  id                 String              @id @default(cuid())
+  policyId           String
+  revision           Int
+  before             Json
+  after              Json
+  reason             String
+  evidenceReferences Json
+  actorUserId        String
+  changedAt          DateTime            @default(now())
+  policy             FuelDeductionPolicy @relation(fields: [policyId], references: [id], onDelete: Restrict)
+  actor              User                @relation("FuelDeductionPolicyRevisionActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([policyId, revision])
+  @@index([policyId, changedAt])
+  @@index([actorUserId, changedAt])
 }
 
 model OperatingGroupCompany {

@@ -26,7 +26,10 @@ type Result = {
   byStatus: Record<string, Totals>; byCompany: Array<Totals & { companyId: string; companyName: string }>;
   rows: Row[]; total: number; page: number; pageSize: number;
 };
-type Policy = { id: string; companyId: string; truckId: string | null; providerRecipientId: string | null; responsibility: string; discountTreatment: string; companyRetentionBasisPoints: number; effectiveFrom: string; effectiveTo: string | null; sourceReference: string; reason: string; company: { name: string }; truck: { unitNumber: string } | null; approvedBy: { displayName: string } };
+type EvidenceReference = { pilotEventId: string; purchaseDate: string; supportFrom: string; supportTo: string; statementVersionId: string; statementLineIds: string[] };
+type PolicyRevision = { id: string; revision: number; before: { effectiveFrom: string; effectiveTo: string | null }; after: { effectiveFrom: string; effectiveTo: string | null }; reason: string; evidenceReferences: EvidenceReference[]; changedAt: string; actor: { displayName: string } };
+type Policy = { id: string; companyId: string; truckId: string | null; providerRecipientId: string | null; responsibility: string; discountTreatment: string; companyRetentionBasisPoints: number; effectiveFrom: string; effectiveTo: string | null; sourceReference: string; reason: string; revision: number; company: { name: string }; truck: { unitNumber: string } | null; approvedBy: { displayName: string }; revisions: PolicyRevision[] };
+type RevisionPreview = { policyId: string; expectedRevision: number; current: { effectiveFrom: string; effectiveTo: string; coveredRows: number; pilotMinor: string }; proposed: { effectiveFrom: string; effectiveTo: string; coveredRows: number; pilotMinor: string }; newlyCovered: { rows: number; pilotMinor: string; dates: string[] }; evidenceReferences: EvidenceReference[] };
 
 const box = "rounded-xl border border-white/10 bg-slate-900/70 p-4";
 const input = "rounded border border-white/20 bg-slate-950 p-2 max-w-full";
@@ -50,6 +53,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export default function FuelReconciliationWorkspace({ companies, trucks }: { companies: Dimension[]; trucks: Dimension[] }) {
   const params = useSearchParams(), router = useRouter(), query = params.toString();
   const [result, setResult] = useState<Result | null>(null), [policies, setPolicies] = useState<Policy[]>([]), [error, setError] = useState(""), [busy, setBusy] = useState(false), [showPolicies, setShowPolicies] = useState(params.get("reconciliation") === "policies");
+  const [revising, setRevising] = useState<string | null>(null), [revisionPreview, setRevisionPreview] = useState<RevisionPreview | null>(null);
   const page = Number(params.get("page") ?? 1);
   const go = (updates: Record<string, string>) => { const next = new URLSearchParams(query); next.set("view", "statements"); next.set("archive", "reconciliation"); next.delete("page"); for (const [key, value] of Object.entries(updates)) { if (value) next.set(key, value); else next.delete(key); } router.push(`/accounting?${next}`); };
   useEffect(() => {
@@ -64,6 +68,19 @@ export default function FuelReconciliationWorkspace({ companies, trucks }: { com
     event.preventDefault(); setBusy(true); setError(""); const form = event.currentTarget;
     try { await request("/api/finance/fuel-reconciliation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); form.reset(); const configured = await request<Policy[]>("/api/finance/fuel-reconciliation?view=policies"); setPolicies(configured); }
     catch (caught) { setError(caught instanceof Error ? caught.message : "Policy could not be saved."); } finally { setBusy(false); }
+  }
+  async function previewRevision(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError(""); const form = event.currentTarget;
+    try { setRevisionPreview(await request<RevisionPreview>("/api/finance/fuel-reconciliation", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) })); }
+    catch (caught) { setRevisionPreview(null); setError(caught instanceof Error ? caught.message : "Revision could not be previewed."); } finally { setBusy(false); }
+  }
+  async function saveRevision(form: HTMLFormElement) {
+    if (!revisionPreview) return; setBusy(true); setError("");
+    try {
+      const body = { ...Object.fromEntries(new FormData(form)), expectedRevision: revisionPreview.expectedRevision, evidenceReferences: revisionPreview.evidenceReferences };
+      await request("/api/finance/fuel-reconciliation", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      setPolicies(await request<Policy[]>("/api/finance/fuel-reconciliation?view=policies")); setRevising(null); setRevisionPreview(null);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Policy revision could not be saved."); } finally { setBusy(false); }
   }
   if (!result) return <p role="status">Loading fuel deduction reconciliation…</p>;
   return <div className="min-w-0 max-w-full space-y-4 overflow-x-hidden">
@@ -81,7 +98,21 @@ export default function FuelReconciliationWorkspace({ companies, trucks }: { com
         <input className={input} name="sourceReference" required placeholder="Agreement/evidence reference" /><textarea className={input} name="reason" required placeholder="Reviewed business reason" />
         <p className="text-xs text-slate-400">Policies calculate control expectations only. They never post expenses, receivables, or recoveries.</p><button className="btn" disabled={busy}>{busy ? "Saving…" : "Save reviewed policy"}</button>
       </form>
-      <div className="space-y-2">{policies.map(policy => <article className={box} key={policy.id}><strong>{policy.company.name}{policy.truck ? ` · Truck ${policy.truck.unitNumber}` : " · Company scope"}</strong><p>{policy.providerRecipientId ?? "All recipients"} · {policy.responsibility} · {policy.discountTreatment} · {(policy.companyRetentionBasisPoints / 100).toFixed(2)}% retained</p><p className="text-xs text-slate-400">{policy.effectiveFrom.slice(0,10)} – {policy.effectiveTo?.slice(0,10) ?? "ongoing"} · {policy.sourceReference} · approved by {policy.approvedBy.displayName}</p><p className="text-xs">{policy.reason}</p></article>)}{!policies.length && <p>No fuel deduction policies are configured. Contractor recoveries remain NEEDS_POLICY.</p>}</div>
+      <div className="space-y-2">{policies.map(policy => <article className={box} key={policy.id}><strong>{policy.company.name}{policy.truck ? ` · Truck ${policy.truck.unitNumber}` : " · Company scope"}</strong><p>{policy.providerRecipientId ?? "All recipients"} · {policy.responsibility} · {policy.discountTreatment} · {(policy.companyRetentionBasisPoints / 100).toFixed(2)}% retained</p><p className="text-xs text-slate-400">Revision {policy.revision} · {policy.effectiveFrom.slice(0,10)} – {policy.effectiveTo?.slice(0,10) ?? "ongoing"} · {policy.sourceReference} · approved by {policy.approvedBy.displayName}</p><p className="text-xs">{policy.reason}</p>
+        <button className="mt-2" type="button" onClick={() => { setRevising(revising === policy.id ? null : policy.id); setRevisionPreview(null); }}>Review range revision</button>
+        {revising === policy.id && <form className="mt-3 grid gap-2 rounded border border-white/10 p-3" onSubmit={previewRevision}>
+          <input type="hidden" name="policyId" value={policy.id} /><p className="text-xs"><strong>Current:</strong> {policy.effectiveFrom.slice(0,10)} – {policy.effectiveTo?.slice(0,10) ?? "ongoing"}</p>
+          <label className="grid gap-1 text-xs">Proposed start<input className={input} name="effectiveFrom" type="date" defaultValue={policy.effectiveFrom.slice(0,10)} required onChange={() => setRevisionPreview(null)} /></label>
+          <label className="grid gap-1 text-xs">Proposed end (exclusive)<input className={input} name="effectiveTo" type="date" defaultValue={policy.effectiveTo?.slice(0,10)} required onChange={() => setRevisionPreview(null)} /></label>
+          <label className="grid gap-1 text-xs">Audited reason<textarea className={input} name="reason" minLength={10} required defaultValue="Extended effective range based on additional corroborated Pilot ↔ QuickManage fuel transactions." onChange={() => setRevisionPreview(null)} /></label>
+          <button className="btn" disabled={busy}>{busy ? "Validating…" : "Preview impact"}</button>
+          {revisionPreview?.policyId === policy.id && <section className="grid gap-2 rounded border border-emerald-400/30 p-3 text-sm" aria-label="Revision impact preview">
+            <p><strong>Current:</strong> {revisionPreview.current.coveredRows} rows · {money(revisionPreview.current.pilotMinor)}</p><p><strong>Proposed:</strong> {revisionPreview.proposed.coveredRows} rows · {money(revisionPreview.proposed.pilotMinor)}</p><p><strong>Newly covered:</strong> {revisionPreview.newlyCovered.rows} rows · {money(revisionPreview.newlyCovered.pilotMinor)} · {revisionPreview.newlyCovered.dates.join(", ")}</p><p>{revisionPreview.evidenceReferences.length} immutable Pilot/statement evidence references will be retained.</p>
+            <button className="btn" type="button" disabled={busy} onClick={event => saveRevision(event.currentTarget.closest("form")!)}>{busy ? "Saving…" : "Save audited revision"}</button>
+          </section>}
+        </form>}
+        {!!policy.revisions.length && <details className="mt-3 text-xs"><summary className="cursor-pointer text-emerald-300">Revision history ({policy.revisions.length})</summary><div className="mt-2 space-y-2">{policy.revisions.map(revision => <div className="border-l border-white/20 pl-3" key={revision.id}><strong>Revision {revision.revision}</strong> · {new Date(revision.changedAt).toLocaleString()} · {revision.actor.displayName}<p>{revision.before.effectiveFrom} – {revision.before.effectiveTo ?? "ongoing"} → {revision.after.effectiveFrom} – {revision.after.effectiveTo ?? "ongoing"}</p><p>{revision.reason}</p><p>{revision.evidenceReferences.length} evidence references</p></div>)}</div></details>}
+      </article>)}{!policies.length && <p>No fuel deduction policies are configured. Contractor recoveries remain NEEDS_POLICY.</p>}</div>
     </div> : <>
       <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">{[["Pilot coverage", `${result.coverage.start ?? "—"} – ${result.coverage.end ?? "—"}`],["Comparable Pilot Diesel + Reefer + DEF", money(result.summary.comparablePilotMinor)],["Comparable statement fuel in coverage", money(result.summary.comparableStatementMinor)],["Raw statement fuel evidence", money(result.summary.rawFuelStatementMinor)],["All raw statement deductions", money(result.summary.rawStatementDeductionMinor)],["Expected deductions", money(result.summary.expectedMinor)],["Difference", money(result.summary.differenceMinor)],["Outside Pilot coverage", money(result.summary.outsideCoverageStatementMinor)],["Unsupported statement fuel excluded", `${result.summary.unsupportedFuelStatementCount} · ${money(result.summary.unsupportedFuelStatementMinor)}`],["Supported reefer excluded", money(result.summary.reeferExcludedMinor)],["Provider credit excluded", money(result.summary.providerCreditExcludedMinor)],["Historical ≠ posted", result.summary.historicalPostedDifferences]].map(([label,value]) => <article className={box} key={String(label)}><p className="text-xs text-slate-400">{label}</p><strong>{value}</strong></article>)}</div>
       <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">{statuses.map(status => <button className={`${box} text-left`} key={status} onClick={() => go({ status })}><span className="text-xs">{status.replaceAll("_", " ")}</span><strong className="block text-lg">{result.byStatus[status]?.count ?? 0}</strong><span className="text-xs">{money(result.byStatus[status]?.differenceMinor ?? "0")}</span></button>)}</div>
