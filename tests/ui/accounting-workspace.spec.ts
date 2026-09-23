@@ -54,14 +54,17 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       {...reconciliation.rows[0],key:'pilot:weekend',status:'MATCHED',truckUnit:'7455',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'},
       {...reconciliation.rows[0],key:'pilot:historical-routing',status:'MATCHED',truckUnit:'7906',statementTruckUnit:'8154',statementRecipientName:'8154 Saas LLC',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'HISTORICAL_CROSS_RECIPIENT_RECOVERED'},
       {...reconciliation.rows[0],key:'pilot:recipient',status:'NEEDS_RECIPIENT_REVIEW',truckUnit:'7906',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'CROSS_RECIPIENT_STRUCTURED_IDENTITY'},
-      {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
+      {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',expectedMinor:'10000',statementMinor:'10001',differenceMinor:'1',matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
       {...reconciliation.rows[0],key:'pilot:product',status:'PRODUCT_CLASSIFICATION_REVIEW',truckUnit:'8479',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PRODUCT_CLASSIFICATION_CONFLICT'},
     );
     reconciliation.total = reconciliation.rows.length;
+    const policy = {id:'revision-policy',companyId:fixture.company.id,truckId:'truck',providerRecipientId:'contractor',responsibility:'RECIPIENT',discountTreatment:'COMPANY_RETENTION',companyRetentionBasisPoints:1000,effectiveFrom:'2026-07-01T00:00:00.000Z',effectiveTo:'2026-07-08T00:00:00.000Z',sourceReference:'Reviewed agreement',reason:'Initial range',revision:1,company:{name:fixture.company.name},truck:{unitNumber:'024'},approvedBy:{displayName:fixture.owner.displayName},revisions:[] as Array<Record<string,unknown>>};
     await page.route('**/api/finance/fuel-reconciliation**',async route=>{
       const requestUrl=new URL(route.request().url());
       if(route.request().method()==='POST') return route.fulfill({status:201,json:{id:'created-policy'}});
-      if(requestUrl.searchParams.get('view')==='policies') return route.fulfill({json:[]});
+      if(route.request().method()==='PUT') return route.fulfill({json:{policyId:policy.id,expectedRevision:policy.revision,current:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-08',coveredRows:3,pilotMinor:'120000'},proposed:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-09',coveredRows:4,pilotMinor:'165000'},newlyCovered:{rows:1,pilotMinor:'45000',dates:['2026-07-08']},evidenceReferences:[{pilotEventId:'event-1',purchaseDate:'2026-07-08',supportFrom:'2026-07-08',supportTo:'2026-07-09',statementVersionId:'version-1',statementLineIds:['line-1']}]}});
+      if(route.request().method()==='PATCH') { policy.revision=2; policy.effectiveTo='2026-07-09T00:00:00.000Z'; policy.revisions=[{id:'revision-2',revision:2,before:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-08'},after:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-09'},reason:'Extended effective range based on additional corroborated Pilot ↔ QuickManage fuel transactions.',evidenceReferences:[{pilotEventId:'event-1'}],changedAt:'2026-09-23T12:00:00.000Z',actor:{displayName:fixture.owner.displayName}}]; return route.fulfill({json:policy}); }
+      if(requestUrl.searchParams.get('view')==='policies') return route.fulfill({json:[policy]});
       return route.fulfill({json:reconciliation});
     });
     await page.goto('/accounting?view=statements&archive=reconciliation');
@@ -82,6 +85,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await historicalRouting.getByText('Evidence and calculation').click();
     await expect(historicalRouting.getByText(/historical cross-recipient settlement accepted/)).toBeVisible();
     const dieselReefer = page.getByRole('row').filter({hasText:'Different \/ informational'}).last();
+    await expect(dieselReefer.getByText('Within OWNER-approved $0.05 monetary tolerance')).toBeVisible();
     await dieselReefer.getByText('Evidence and calculation').click();
     await expect(dieselReefer.getByText(/same fuel purchase/)).toBeVisible();
     for (const viewport of [{width:1440,height:900},{width:900,height:900},{width:390,height:844}]) {
@@ -100,6 +104,14 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await page.getByRole('button',{name:'Policies'}).click();
     await expect(page.getByRole('heading',{name:'Add effective-dated fuel deduction policy'})).toBeVisible();
     await expect(page.getByText(/never post expenses/)).toBeVisible();
+    await page.getByRole('button',{name:'Review range revision'}).click();
+    await page.getByLabel('Proposed end (exclusive)').fill('2026-07-09');
+    await page.getByRole('button',{name:'Preview impact'}).click();
+    await expect(page.getByLabel('Revision impact preview')).toContainText('Newly covered: 1 rows · $450.00');
+    await page.getByRole('button',{name:'Save audited revision'}).click();
+    await expect(page.getByText(/Revision 2 · 2026-07-01 – 2026-07-09/).first()).toBeVisible();
+    await page.getByText('Revision history (1)').click();
+    await expect(page.getByText(/2026-07-08 → 2026-07-01 – 2026-07-09/)).toBeVisible();
     await page.unroute('**/api/finance/fuel-reconciliation**');
     await page.route('**/api/finance/overview',async route=>{
       const response = await route.fetch(); const body = await response.json();

@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
-import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy } from './fuel-deduction-reconciliation';
+import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
@@ -27,7 +27,25 @@ test('policy arithmetic is exact in integer minor units', () => {
   assert.deepEqual(expectedFuelDeduction(pilot, { responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0 }), { expectedMinor: BigInt(0), retainedDiscountMinor: BigInt(0) });
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: null, savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: BigInt(9_000), savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
-  assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_999), false), discrepancyStatus(BigInt(10_000), BigInt(10_001), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
+  assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_994), false), discrepancyStatus(BigInt(10_000), BigInt(10_006), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
+});
+
+test('OWNER fuel tolerance is five cents per total comparison and preserves the exact variance', () => {
+  const expected = BigInt(58_257);
+  assert.equal(fuelMonetaryToleranceMinor, BigInt(5));
+  for (const variance of [0, 1, 4, 5, -5]) {
+    const actual = expected + BigInt(variance);
+    assert.equal(fuelAmountsWithinOwnerTolerance(expected, actual), true);
+    assert.equal(discrepancyStatus(expected, actual, false), 'MATCHED');
+    assert.equal(actual - expected, BigInt(variance));
+  }
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected + BigInt(6)), false);
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected - BigInt(6)), false);
+  assert.equal(discrepancyStatus(expected, expected + BigInt(6), false), 'OVER_DEDUCTED');
+  assert.equal(discrepancyStatus(expected, expected - BigInt(6), false), 'UNDER_DEDUCTED');
+  assert.equal(discrepancyStatus(BigInt(5), BigInt(0), false), 'MISSING_DEDUCTION');
+  // The rule accepts only the two total amounts; gallons cannot multiply it.
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected + BigInt(6)), false);
 });
 
 test('10% retention truncates fractional cents like the real April 22 Truck 024 deduction', () => {
@@ -188,8 +206,8 @@ before(async () => {
     { operatingGroupId: groupId, companyId, truckId: truckIds.ambiguous, providerRecipientId: 'contractor-ambiguous', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic ambiguity policy', reason: 'Fixture', approvedByUserId: userId },
   ] });
   await addEvent({ key: 'exact', date: '2026-06-10', truckId: truckIds.exact, unit: 'UNIT-EXACT', product: 'TRUCK_DIESEL', amount: minor(10_000), retail: minor(12_000), savings: minor(2_000) });
-  await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_000), sourceDate: '2026-06-10', reference: 'paired-ref' });
-  await archiveVersion({ key: 'exact-contractor', pid: '10', recipientId: 'contractor-exact', recipientType: 'CONTRACTOR', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_000), sourceDate: '2026-06-10', reference: 'paired-ref' });
+  await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
+  await archiveVersion({ key: 'exact-contractor', pid: '10', recipientId: 'contractor-exact', recipientType: 'CONTRACTOR', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
   await addEvent({ key: 'driver', date: '2026-06-11', truckId: truckIds.driver, unit: 'UNIT-DRIVER', amount: minor(7_500) });
   await archiveVersion({ key: 'driver-assignment', pid: '11', recipientId: 'company-driver', recipientType: 'DRIVER', role: 'Company Driver', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.driver, unit: 'UNIT-DRIVER' });
   await addEvent({ key: 'timing', date: '2026-04-22', truckId: truckIds.timing, unit: 'UNIT-TIMING', amount: minor(10_000), reference: 'APR22-PID30' });
@@ -241,7 +259,7 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   assert.deepEqual(result.coverage, { start: '2026-04-22', end: '2026-09-23' });
   assert.equal(result.summary.reeferExcludedMinor, BigInt(0)); assert.equal(result.summary.providerCreditExcludedMinor, BigInt(-2859));
   const exact = result.rows.find(row => row.pilotEventId && row.truckId === truckIds.exact && row.purchaseDate === '2026-06-10')!;
-  assert.equal(exact.status, 'MATCHED'); assert.equal(exact.statementMinor, minor(10_000)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
+  assert.equal(exact.status, 'MATCHED'); assert.equal(exact.expectedMinor, minor(10_000)); assert.equal(exact.statementMinor, minor(10_005)); assert.equal(exact.differenceMinor, minor(5)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
   const driver = result.rows.find(row => row.truckId === truckIds.driver)!;
   assert.equal(driver.status, 'MATCHED'); assert.equal(driver.expectedMinor, minor(0)); assert.equal(driver.statementMinor, minor(0));
   const timing = result.rows.find(row => row.truckId === truckIds.timing)!;
@@ -294,4 +312,65 @@ test('policy creation requires Company authority, records audit evidence and dat
   await assert.rejects(service.createPolicy({ companyId, truckId: truckIds.driver, providerRecipientId: 'new-recipient', responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000, effectiveFrom: '2026-04-01', sourceReference: 'Overlap', reason: 'Must fail closed' }, context));
   const outsider = await db.user.create({ data: { email: `${dbName}-outsider@example.test`, displayName: 'Outsider' } });
   await assert.rejects(service.createPolicy({ companyId, responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: '2026-01-01', sourceReference: 'None', reason: 'Unauthorized' }, { ...context, userId: outsider.id }));
+});
+
+test('audited policy revision preserves identity/history, enforces authority and concurrency, and posts no economics', async () => {
+  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
+  const revisionService = new FuelDeductionReconciliationService(db);
+  const recipientId = 'revision-recipient';
+  const provenanceEvent = await db.pilotFuelingEvent.findFirstOrThrow();
+  const provenanceVersion = await db.archiveVersion.findFirstOrThrow({ where: { sealed: true, lines: { some: {} } }, include: { lines: { take: 1 } } });
+  const row = (date: string): FuelReconciliationRow => ({
+    key: `revision-${date}`, status: 'NEEDS_POLICY', companyId, companyName: 'Synthetic reconciliation Company', pid: 'revision', purchaseDate: date,
+    statementPeriod: date, truckId: truckIds.driver, truckUnit: 'UNIT-DRIVER', recipientId, recipientName: 'Revision recipient', responsibility: 'RECIPIENT',
+    pilotEventId: provenanceEvent.id, pilotInvoiceId: 'invoice', pilotInvoiceNumber: 'revision', pilotActualMinor: BigInt(1000), pilotRetailMinor: BigInt(1100), pilotSavingsMinor: BigInt(100),
+    expectedMinor: null, statementMinor: BigInt(1010), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null,
+    historicalCompanyId: companyId, postedCompanyId: companyId, postedCompanyName: 'Synthetic reconciliation Company', currentCompanyId: companyId, currentCompanyName: 'Synthetic reconciliation Company', historyDiffersFromPosted: false,
+    products: ['TRUCK_DIESEL'], gallons: '2.00', matchMethod: 'STRUCTURED_IDENTITY', statementTruckUnit: 'UNIT-DRIVER', statementRecipientId: recipientId, statementRecipientName: 'Revision recipient', statementProducts: ['TRUCK_DIESEL'], productClassification: 'SAME',
+    pilotEvidence: { eventId: provenanceEvent.id, invoiceId: 'invoice', invoiceNumber: 'revision', transactionId: null }, statementEvidence: { lineIds: [provenanceVersion.lines[0].id], versionId: provenanceVersion.id, pid: 'revision', statementNumber: 'revision', description: 'Fuel', reference: `reference-${date}` },
+  });
+  let evidenceRows = [row('2026-07-10'), row('2026-07-12')];
+  revisionService.preview = async () => ({ rows: evidenceRows } as Awaited<ReturnType<FuelDeductionReconciliationService['preview']>>);
+  const policy = await db.fuelDeductionPolicy.create({ data: { operatingGroupId: groupId, companyId, truckId: truckIds.driver, providerRecipientId: recipientId, responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000, effectiveFrom: historyDate('2026-07-10'), effectiveTo: historyDate('2026-07-12'), sourceReference: 'Revision fixture', reason: 'Initial reviewed range', approvedByUserId: userId } });
+  const economicsBefore = [await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()];
+  const preview = await revisionService.previewPolicyRevision(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-13' }, context);
+  assert.deepEqual(preview.newlyCovered, { rows: 1, pilotMinor: BigInt(1000), dates: ['2026-07-12'] });
+  const reason = 'Extended from exact Pilot and QuickManage evidence.';
+  const revised = await revisionService.revisePolicy(policy.id, { policyId: policy.id, effectiveFrom: '2026-07-10', effectiveTo: '2026-07-13', expectedRevision: 1, reason, evidenceReferences: preview.evidenceReferences }, context);
+  assert.equal(revised.id, policy.id); assert.equal(revised.revision, 2); assert.equal(revised.revisions.length, 1);
+  const history = revised.revisions[0];
+  assert.equal((history.before as { effectiveTo: string }).effectiveTo, '2026-07-12'); assert.equal((history.after as { effectiveTo: string }).effectiveTo, '2026-07-13');
+  assert.equal(history.reason, reason); assert.deepEqual(history.evidenceReferences, preview.evidenceReferences);
+  assert.equal(await db.financialAuditEvent.count({ where: { action: 'FUEL_DEDUCTION_POLICY_REVISED', actorUserId: userId } }), 1);
+  assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], economicsBefore);
+  const stored = await db.fuelDeductionPolicy.findUniqueOrThrow({ where: { id: policy.id } });
+  assert.equal(resolveApplicableFuelPolicy([stored], companyId, truckIds.driver, recipientId, '2026-07-12').policy?.id, policy.id);
+
+  const adminUser = await db.user.create({ data: { email: `${dbName}-admin@example.test`, displayName: 'Accounting admin', memberships: { create: { companyId, role: 'ADMIN' } } } });
+  evidenceRows = [...evidenceRows, row('2026-07-13')];
+  const adminPreview = await revisionService.previewPolicyRevision(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-14' }, { ...context, userId: adminUser.id, role: 'ADMIN' });
+  const adminRevision = await revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-14', expectedRevision: 2, reason, evidenceReferences: adminPreview.evidenceReferences }, { ...context, userId: adminUser.id, role: 'ADMIN' });
+  assert.equal(adminRevision.revision, 3);
+
+  const member = await db.user.create({ data: { email: `${dbName}-member@example.test`, displayName: 'Member', memberships: { create: { companyId, role: 'MEMBER' } } } });
+  evidenceRows = [...evidenceRows, row('2026-07-14')];
+  const memberPreview = await revisionService.previewPolicyRevision(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15' }, context);
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 3, reason, evidenceReferences: memberPreview.evidenceReferences }, { ...context, userId: member.id, role: 'MEMBER' }));
+  const revoked = await db.user.create({ data: { email: `${dbName}-revoked@example.test`, displayName: 'Revoked admin', memberships: { create: { companyId, role: 'ADMIN' } } } });
+  await db.companyMembership.delete({ where: { userId_companyId: { userId: revoked.id, companyId } } });
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 3, reason, evidenceReferences: memberPreview.evidenceReferences }, { ...context, userId: revoked.id }));
+  await assert.rejects(revisionService.previewPolicyRevision(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15' }, { ...context, operatingGroupId: 'foreign-group' }));
+  await db.user.update({ where: { id: adminUser.id }, data: { isActive: false } });
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 3, reason, evidenceReferences: memberPreview.evidenceReferences }, { ...context, userId: adminUser.id }));
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 2, reason, evidenceReferences: memberPreview.evidenceReferences }, context));
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 3, reason: '', evidenceReferences: memberPreview.evidenceReferences }, context));
+  await db.fuelDeductionPolicy.create({ data: { operatingGroupId: groupId, companyId, truckId: truckIds.driver, providerRecipientId: recipientId, responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000, effectiveFrom: historyDate('2026-07-16'), effectiveTo: historyDate('2026-07-20'), sourceReference: 'Adjacent fixture', reason: 'Separate reviewed period', approvedByUserId: userId } });
+  evidenceRows = [...evidenceRows, row('2026-07-15'), row('2026-07-16')];
+  const overlapPreview = await revisionService.previewPolicyRevision(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-17' }, context);
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-17', expectedRevision: 3, reason, evidenceReferences: overlapPreview.evidenceReferences }, context));
+  await assert.rejects(revisionService.revisePolicy(policy.id, { effectiveFrom: '2026-07-10', effectiveTo: '2026-07-15', expectedRevision: 3, reason, evidenceReferences: memberPreview.evidenceReferences.slice(1) }, context));
+  assert.equal(await db.fuelDeductionPolicyRevision.count({ where: { policyId: policy.id } }), 2);
+  await assert.rejects(db.fuelDeductionPolicyRevision.update({ where: { id: history.id }, data: { reason: 'Tampered history' } }));
+  await assert.rejects(db.fuelDeductionPolicyRevision.delete({ where: { id: history.id } }));
+  assert.equal(await db.fuelDeductionPolicyRevision.count({ where: { policyId: policy.id } }), 2);
 });

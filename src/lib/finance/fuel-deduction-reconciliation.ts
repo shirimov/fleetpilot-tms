@@ -3,7 +3,7 @@ import type { FuelDeductionPolicy, PrismaClient } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { historyDate, TruckCompanyHistoryService } from '@/lib/fleet/truck-company-history';
 import type { FinancialAuthorization } from './financial-control-authorization';
-import { FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
+import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
 
 export const reconciliationStatuses = [
   'MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'STATEMENT_ONLY',
@@ -51,14 +51,22 @@ export function expectedFuelDeductionForComponents(components: ComparablePilotAm
   };
 }
 
+export const fuelMonetaryToleranceMinor = BigInt(5);
+
+export function fuelAmountsWithinOwnerTolerance(expectedMinor: bigint, actualMinor: bigint) {
+  const difference = actualMinor - expectedMinor;
+  return (difference < BigInt(0) ? -difference : difference) <= fuelMonetaryToleranceMinor;
+}
+
 export function discrepancyStatus(expectedMinor: bigint, actualMinor: bigint, timing: boolean): FuelReconciliationStatus {
   if (timing) return 'TIMING_DIFFERENCE';
-  if (actualMinor === expectedMinor) return 'MATCHED';
   if (actualMinor === BigInt(0) && expectedMinor > BigInt(0)) return 'MISSING_DEDUCTION';
+  if (fuelAmountsWithinOwnerTolerance(expectedMinor, actualMinor)) return 'MATCHED';
   return actualMinor < expectedMinor ? 'UNDER_DEDUCTED' : 'OVER_DEDUCTED';
 }
 
 const day = (value: Date) => value.toISOString().slice(0, 10);
+const nextDay = (value: string) => { const date = historyDate(value); date.setUTCDate(date.getUTCDate() + 1); return day(date); };
 const pilotReferenceHash = (value: string) => createHash('sha256').update(value).digest('hex');
 const absolute = (value: bigint) => value < BigInt(0) ? -value : value;
 const validDate = (value: string | null) => {
@@ -183,6 +191,64 @@ export type FuelReconciliationRow = {
 };
 
 type Filters = { page?: number; pageSize?: number; companyId?: string; pid?: string; date?: string; truck?: string; recipient?: string; responsibility?: string; status?: string; policy?: string };
+
+export type FuelPolicyEvidenceReference = {
+  pilotEventId: string;
+  purchaseDate: string;
+  supportFrom: string;
+  supportTo: string;
+  statementVersionId: string;
+  statementLineIds: string[];
+};
+
+type RevisionRange = { effectiveFrom: string; effectiveTo: string };
+
+const policyState = (policy: Pick<FuelDeductionPolicy, 'id' | 'operatingGroupId' | 'companyId' | 'truckId' | 'providerRecipientId' | 'responsibility' | 'discountTreatment' | 'companyRetentionBasisPoints' | 'effectiveFrom' | 'effectiveTo' | 'sourceReference' | 'reason' | 'approvedByUserId' | 'approvedAt' | 'revision' | 'updatedAt'>, range?: RevisionRange, revision = policy.revision) => ({
+  policyId: policy.id,
+  operatingGroupId: policy.operatingGroupId,
+  companyId: policy.companyId,
+  truckId: policy.truckId,
+  providerRecipientId: policy.providerRecipientId,
+  responsibility: policy.responsibility,
+  discountTreatment: policy.discountTreatment,
+  companyRetentionBasisPoints: policy.companyRetentionBasisPoints,
+  effectiveFrom: range?.effectiveFrom ?? day(policy.effectiveFrom),
+  effectiveTo: range?.effectiveTo ?? (policy.effectiveTo ? day(policy.effectiveTo) : null),
+  sourceReference: policy.sourceReference,
+  reason: policy.reason,
+  approvedByUserId: policy.approvedByUserId,
+  approvedAt: policy.approvedAt.toISOString(),
+  updatedAt: policy.updatedAt.toISOString(),
+  revision,
+});
+
+function parseRevisionRange(input: Record<string, unknown>, policy: Pick<FuelDeductionPolicy, 'effectiveFrom' | 'effectiveTo'>) {
+  const effectiveFrom = typeof input.effectiveFrom === 'string' ? input.effectiveFrom : '';
+  const effectiveTo = typeof input.effectiveTo === 'string' ? input.effectiveTo : '';
+  const from = historyDate(effectiveFrom), to = historyDate(effectiveTo);
+  if (to <= from) throw new FinancialValidationError('Policy end must follow start.');
+  const currentFrom = day(policy.effectiveFrom), currentTo = policy.effectiveTo ? day(policy.effectiveTo) : null;
+  if (!currentTo) throw new FinancialValidationError('Open-ended policies cannot be range-extended.');
+  if (effectiveFrom > currentFrom || effectiveTo < currentTo) throw new FinancialValidationError('A range revision may only extend the current evidence-bounded range.');
+  if (effectiveFrom === currentFrom && effectiveTo === currentTo) throw new FinancialValidationError('The proposed range does not change the policy.');
+  return { effectiveFrom, effectiveTo, from, to, currentFrom, currentTo };
+}
+
+const evidenceKey = (reference: FuelPolicyEvidenceReference) => `${reference.pilotEventId}:${reference.purchaseDate}:${reference.supportFrom}:${reference.supportTo}:${reference.statementVersionId}:${[...reference.statementLineIds].sort().join(',')}`;
+
+const evidenceSupport = (row: Pick<FuelReconciliationRow, 'purchaseDate' | 'statementPeriod'>) => {
+  const purchaseDate = row.purchaseDate!;
+  const period = row.statementPeriod?.match(/^(\d{4}-\d{2}-\d{2})–(\d{4}-\d{2}-\d{2})$/);
+  const periodFrom = period?.[1] ?? purchaseDate, periodTo = period?.[2] ? nextDay(period[2]) : nextDay(purchaseDate);
+  return { supportFrom: periodFrom < purchaseDate ? periodFrom : purchaseDate, supportTo: periodTo > nextDay(purchaseDate) ? periodTo : nextDay(purchaseDate) };
+};
+
+export function validateFuelPolicyRevisionEvidence(range: { currentFrom: string; currentTo: string; effectiveFrom: string; effectiveTo: string }, support: Array<{ supportFrom: string; supportTo: string }>, unsupportedNewRows: number) {
+  if (unsupportedNewRows) throw new FinancialConflictError('Observed statement evidence contradicts the unchanged policy formula.');
+  if (!support.some(item => item.supportFrom < range.currentTo && item.supportTo > range.currentFrom)) throw new FinancialConflictError('Supporting evidence is disjoint from the current policy range; create a separate policy after review.');
+  if (range.effectiveFrom < range.currentFrom && !support.some(item => item.supportFrom <= range.effectiveFrom && item.supportTo > range.effectiveFrom)) throw new FinancialConflictError('The proposed start is not bounded by exact corroborated evidence.');
+  if (range.effectiveTo > range.currentTo && !support.some(item => item.supportFrom < range.effectiveTo && item.supportTo >= range.effectiveTo)) throw new FinancialConflictError('The proposed end is not bounded by exact corroborated evidence.');
+}
 
 export class FuelDeductionReconciliationService {
   private readonly history: TruckCompanyHistoryService;
@@ -401,9 +467,9 @@ export class FuelDeductionReconciliationService {
         pilotIdentity,
         { cardLastFour: matched.cardLastFour, locationNumber: matched.locationNumber, city: matched.city, state: matched.state },
       ));
-      if (matched && matchedProductDifference && matchedProductIdentityIsStrong && corroboratesFuelProducts(pilotProducts, matched.products) && matched.amountMinor === calculation.expectedMinor) {
+      if (matched && matchedProductDifference && matchedProductIdentityIsStrong && corroboratesFuelProducts(pilotProducts, matched.products) && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, matched.amountMinor)) {
         consume([matched]);
-        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: matchedEvidence });
+        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: matched.amountMinor - calculation.expectedMinor, observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: matchedEvidence });
         continue;
       }
       if (matched && !corroboratesFuelProducts(pilotProducts, matched.products)) {
@@ -415,13 +481,14 @@ export class FuelDeductionReconciliationService {
         const exceptionCandidates = (byCompanyCandidateDate.get(`${history.companyId}|${purchaseDate}`) ?? []).filter(line => !consumed.has(line.id)
           && quickManageDateRelation(purchaseDate, line.sourceTimestamp)
           && corroboratesFuelIdentityStrict(pilotIdentity, { cardLastFour: line.cardLastFour, locationNumber: line.locationNumber, city: line.city, state: line.state }));
-        const crossRecipient = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
-          && line.amountMinor === calculation.expectedMinor && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+        const crossRecipientIdentity = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
+          && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+        const crossRecipient = crossRecipientIdentity.length === 1 && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, crossRecipientIdentity[0].amountMinor) ? crossRecipientIdentity : [];
         if (crossRecipient.length === 1) {
           const review = crossRecipient[0]; consume([review]);
           const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate);
           const crossProductDifference = isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications);
-          rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? BigInt(0) : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
+          rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? review.amountMinor - calculation.expectedMinor : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
           continue;
         }
         const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientId === assignment.recipientId);
@@ -439,12 +506,12 @@ export class FuelDeductionReconciliationService {
           const statementMinor = group.reduce((sum, line) => sum + line.amountMinor, BigInt(0));
           return corroboratesFuelProducts(pilotProducts, groupProducts(group))
             && isDieselReeferClassificationDifference(pilotProductClassifications, statementProducts)
-            && statementMinor === calculation.expectedMinor;
+            && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, statementMinor);
         });
         if (acceptedProductGroups.length === 1 && candidateProductGroups.size === 1) {
           const accepted = acceptedProductGroups[0];
           const statementMinor = accepted.reduce((sum, line) => sum + line.amountMinor, BigInt(0)); consume(accepted);
-          rows.push({ ...base, ...statementAudit(accepted), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: accepted[0].pid, statementPeriod: `${accepted[0].workStart}–${accepted[0].workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: statementEvidence(accepted) });
+          rows.push({ ...base, ...statementAudit(accepted), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: statementMinor - calculation.expectedMinor, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: accepted[0].pid, statementPeriod: `${accepted[0].workStart}–${accepted[0].workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: statementEvidence(accepted) });
           continue;
         }
         const productGroups = new Map([...candidateProductGroups].filter(([, group]) => !corroboratesFuelProducts(pilotProducts, groupProducts(group))));
@@ -516,7 +583,103 @@ export class FuelDeductionReconciliationService {
   }
 
   async policies(context: FinancialAuthorization) {
-    return this.database.fuelDeductionPolicy.findMany({ where: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } }, include: { company: { select: { name: true } }, truck: { select: { unitNumber: true } }, approvedBy: { select: { displayName: true } } }, orderBy: [{ effectiveFrom: 'desc' }, { approvedAt: 'desc' }] });
+    return this.database.fuelDeductionPolicy.findMany({ where: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } }, include: { company: { select: { name: true } }, truck: { select: { unitNumber: true } }, approvedBy: { select: { displayName: true } }, revisions: { include: { actor: { select: { displayName: true } } }, orderBy: [{ revision: 'desc' }] } }, orderBy: [{ effectiveFrom: 'desc' }, { approvedAt: 'desc' }] });
+  }
+
+  async previewPolicyRevision(policyId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    const policy = await this.database.fuelDeductionPolicy.findFirst({ where: { id: policyId, operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } });
+    if (!policy) throw new FinancialNotFoundError();
+    const range = parseRevisionRange(input, policy);
+    const result = await this.preview(context, { companyId: policy.companyId, pageSize: 10000 });
+    const scoped = result.rows.filter(row => row.pilotEventId && row.purchaseDate && row.companyId === policy.companyId
+      && (!policy.truckId || row.truckId === policy.truckId)
+      && (!policy.providerRecipientId || row.recipientId === policy.providerRecipientId));
+    const proposed = scoped.filter(row => row.purchaseDate! >= range.effectiveFrom && row.purchaseDate! < range.effectiveTo);
+    const current = scoped.filter(row => row.purchaseDate! >= range.currentFrom && row.purchaseDate! < range.currentTo);
+    const newlyCovered = proposed.filter(row => row.purchaseDate! < range.currentFrom || row.purchaseDate! >= range.currentTo);
+    const reeferEventIds = proposed.filter(row => row.products.includes('REEFER_FUEL')).map(row => row.pilotEventId!);
+    const reeferEvents = reeferEventIds.length ? await this.database.pilotFuelingEvent.findMany({
+      where: { id: { in: reeferEventIds }, invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
+      select: { id: true, productLines: { where: { productType: { in: ['TRUCK_DIESEL', 'REEFER_FUEL', 'DEF'] } }, select: { amountMinor: true, retailAmountMinor: true, savingsMinor: true, discountMinor: true } } },
+    }) : [];
+    const reeferComponents = new Map(reeferEvents.map(event => [event.id, event.productLines.map(line => ({ amountMinor: line.amountMinor, retailMinor: line.retailAmountMinor, savingsMinor: line.savingsMinor ?? line.discountMinor }))]));
+    const clean = proposed.filter(row => {
+      if (!row.statementEvidence || !row.pilotEventId || !row.purchaseDate) return false;
+      const components = reeferComponents.get(row.pilotEventId);
+      const calculated = components
+        ? expectedFuelDeductionForComponents(components, policy)
+        : expectedFuelDeduction({ amountMinor: row.pilotActualMinor, retailMinor: row.pilotRetailMinor, savingsMinor: row.pilotSavingsMinor }, policy);
+      return calculated !== null && fuelAmountsWithinOwnerTolerance(calculated.expectedMinor, row.statementMinor);
+    });
+    const cleanIds = new Set(clean.map(row => row.pilotEventId));
+    const contradictions = newlyCovered.filter(row => row.statementEvidence && !cleanIds.has(row.pilotEventId!));
+    validateFuelPolicyRevisionEvidence(range, clean.map(evidenceSupport), contradictions.length);
+    const evidenceReferences = clean.map(row => ({
+      pilotEventId: row.pilotEventId!, purchaseDate: row.purchaseDate!, ...evidenceSupport(row), statementVersionId: row.statementEvidence!.versionId,
+      statementLineIds: [...row.statementEvidence!.lineIds].sort(),
+    })).sort((left, right) => evidenceKey(left).localeCompare(evidenceKey(right)));
+    return {
+      policyId: policy.id, expectedRevision: policy.revision,
+      current: { effectiveFrom: range.currentFrom, effectiveTo: range.currentTo, coveredRows: current.length, pilotMinor: current.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)) },
+      proposed: { effectiveFrom: range.effectiveFrom, effectiveTo: range.effectiveTo, coveredRows: proposed.length, pilotMinor: proposed.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)) },
+      newlyCovered: { rows: newlyCovered.length, pilotMinor: newlyCovered.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)), dates: [...new Set(newlyCovered.map(row => row.purchaseDate!))].sort() },
+      evidenceReferences,
+    };
+  }
+
+  async revisePolicy(policyId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    const expectedRevision = Number(input.expectedRevision);
+    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new FinancialValidationError('Expected policy revision is required.');
+    if (reason.length < 10 || reason.length > 2000) throw new FinancialValidationError('A meaningful revision reason is required.');
+    if (!Array.isArray(input.evidenceReferences) || !input.evidenceReferences.length) throw new FinancialValidationError('Supporting evidence references are required.');
+    const preview = await this.previewPolicyRevision(policyId, input, context);
+    const supplied = input.evidenceReferences.map(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new FinancialValidationError('Invalid supporting evidence reference.');
+      const candidate = value as Record<string, unknown>;
+      if (typeof candidate.pilotEventId !== 'string' || typeof candidate.purchaseDate !== 'string' || typeof candidate.supportFrom !== 'string' || typeof candidate.supportTo !== 'string' || typeof candidate.statementVersionId !== 'string' || !Array.isArray(candidate.statementLineIds) || !candidate.statementLineIds.length || !candidate.statementLineIds.every(id => typeof id === 'string')) throw new FinancialValidationError('Invalid supporting evidence reference.');
+      historyDate(candidate.purchaseDate); historyDate(candidate.supportFrom); historyDate(candidate.supportTo);
+      return { pilotEventId: candidate.pilotEventId, purchaseDate: candidate.purchaseDate, supportFrom: candidate.supportFrom, supportTo: candidate.supportTo, statementVersionId: candidate.statementVersionId, statementLineIds: [...candidate.statementLineIds].sort() } as FuelPolicyEvidenceReference;
+    }).sort((left, right) => evidenceKey(left).localeCompare(evidenceKey(right)));
+    if (supplied.map(evidenceKey).join('|') !== preview.evidenceReferences.map(evidenceKey).join('|')) throw new FinancialConflictError('Supporting evidence changed; run the revision preview again.');
+    try {
+      return await this.database.$transaction(async tx => {
+        const policy = await tx.fuelDeductionPolicy.findFirst({ where: { id: policyId, operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } });
+        if (!policy) throw new FinancialNotFoundError();
+        const actor = await tx.user.findFirst({ where: { id: context.userId, isActive: true, memberships: { some: { companyId: policy.companyId, role: { in: ['OWNER', 'ADMIN'] } } } }, select: { id: true } });
+        if (!actor) throw new FinancialNotFoundError();
+        if (policy.revision !== expectedRevision || preview.expectedRevision !== expectedRevision) throw new FinancialConflictError('This policy was revised by another user. Refresh and preview again.');
+        const range = parseRevisionRange(input, policy);
+        const pilotIds = [...new Set(supplied.map(reference => reference.pilotEventId))];
+        const versionIds = [...new Set(supplied.map(reference => reference.statementVersionId))];
+        const [pilotCount, versions] = await Promise.all([
+          tx.pilotFuelingEvent.count({ where: { id: { in: pilotIds }, invoice: { operatingGroupId: policy.operatingGroupId, status: 'POSTED' } } }),
+          tx.archiveVersion.findMany({ where: { id: { in: versionIds }, sealed: true, statement: { company: { operatingGroupId: policy.operatingGroupId, companyId: policy.companyId } } }, select: { id: true, lines: { select: { id: true } } } }),
+        ]);
+        const linesByVersion = new Map(versions.map(version => [version.id, new Set(version.lines.map(line => line.id))]));
+        if (pilotCount !== pilotIds.length || versions.length !== versionIds.length || supplied.some(reference => reference.statementLineIds.some(lineId => !linesByVersion.get(reference.statementVersionId)?.has(lineId)))) throw new FinancialConflictError('Supporting evidence is no longer available in the immutable source record.');
+        const overlap = await tx.fuelDeductionPolicy.findFirst({ where: {
+          id: { not: policy.id }, operatingGroupId: policy.operatingGroupId, companyId: policy.companyId,
+          truckId: policy.truckId, providerRecipientId: policy.providerRecipientId,
+          effectiveFrom: { lt: range.to }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: range.from } }],
+        }, select: { id: true } });
+        if (overlap) throw new FinancialConflictError('The revised range overlaps another policy at the same scope.');
+        const before = policyState(policy);
+        const nextRevision = policy.revision + 1;
+        const updated = await tx.fuelDeductionPolicy.updateMany({ where: { id: policy.id, revision: expectedRevision }, data: { effectiveFrom: range.from, effectiveTo: range.to, revision: nextRevision } });
+        if (updated.count !== 1) throw new FinancialConflictError('This policy was revised by another user. Refresh and preview again.');
+        const active = await tx.fuelDeductionPolicy.findUniqueOrThrow({ where: { id: policy.id } });
+        const after = policyState(active, { effectiveFrom: range.effectiveFrom, effectiveTo: range.effectiveTo }, nextRevision);
+        const history = await tx.fuelDeductionPolicyRevision.create({ data: { policyId: policy.id, revision: nextRevision, before, after, reason, evidenceReferences: supplied, actorUserId: context.userId } });
+        await tx.financialAuditEvent.create({ data: { operatingGroupId: policy.operatingGroupId, companyId: policy.companyId, actorUserId: context.userId, action: 'FUEL_DEDUCTION_POLICY_REVISED', before, after, metadata: { policyRevisionId: history.id, reason, evidenceReferences: supplied } } });
+        return tx.fuelDeductionPolicy.findUniqueOrThrow({ where: { id: policy.id }, include: { revisions: { include: { actor: { select: { displayName: true } } }, orderBy: { revision: 'desc' } } } });
+      }, { isolationLevel: 'Serializable' });
+    } catch (error) {
+      if (error instanceof FinancialConflictError || error instanceof FinancialNotFoundError || error instanceof FinancialValidationError) throw error;
+      const code = (error as { code?: string; meta?: { code?: string } }).code ?? (error as { meta?: { code?: string } }).meta?.code;
+      if (code === 'P2034' || code === '23P01') throw new FinancialConflictError('The policy changed or overlaps another policy; refresh and preview again.');
+      throw error;
+    }
   }
 
   async createPolicy(input: Record<string, unknown>, context: FinancialAuthorization) {

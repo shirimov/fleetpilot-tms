@@ -27,3 +27,21 @@ export async function POST(request: Request) {
     return reply(await fuelDeductionReconciliation.createPolicy(body, context), 201);
   } catch (error) { return financialRouteError(error); }
 }
+
+export async function PUT(request: Request) {
+  try {
+    const context = await financialControlAuthorization.requireContext('ADMIN');
+    const body = await request.json();
+    const policyId = typeof body.policyId === 'string' ? body.policyId : '';
+    return reply(await fuelDeductionReconciliation.previewPolicyRevision(policyId, body, context));
+  } catch (error) { return financialRouteError(error); }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const context = await financialControlAuthorization.requireContext('ADMIN');
+    const body = await request.json();
+    const policyId = typeof body.policyId === 'string' ? body.policyId : '';
+    return reply(await fuelDeductionReconciliation.revisePolicy(policyId, body, context));
+  } catch (error) { return financialRouteError(error); }
+}
