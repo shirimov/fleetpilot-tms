@@ -54,7 +54,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       {...reconciliation.rows[0],key:'pilot:weekend',status:'MATCHED',truckUnit:'7455',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'},
       {...reconciliation.rows[0],key:'pilot:historical-routing',status:'MATCHED',truckUnit:'7906',statementTruckUnit:'8154',statementRecipientName:'8154 Saas LLC',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'HISTORICAL_CROSS_RECIPIENT_RECOVERED'},
       {...reconciliation.rows[0],key:'pilot:recipient',status:'NEEDS_RECIPIENT_REVIEW',truckUnit:'7906',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'CROSS_RECIPIENT_STRUCTURED_IDENTITY'},
-      {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
+      {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',expectedMinor:'10000',statementMinor:'10001',differenceMinor:'1',matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
       {...reconciliation.rows[0],key:'pilot:product',status:'PRODUCT_CLASSIFICATION_REVIEW',truckUnit:'8479',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PRODUCT_CLASSIFICATION_CONFLICT'},
     );
     reconciliation.total = reconciliation.rows.length;
@@ -85,6 +85,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await historicalRouting.getByText('Evidence and calculation').click();
     await expect(historicalRouting.getByText(/historical cross-recipient settlement accepted/)).toBeVisible();
     const dieselReefer = page.getByRole('row').filter({hasText:'Different \/ informational'}).last();
+    await expect(dieselReefer.getByText('Within OWNER-approved $0.05 monetary tolerance')).toBeVisible();
     await dieselReefer.getByText('Evidence and calculation').click();
     await expect(dieselReefer.getByText(/same fuel purchase/)).toBeVisible();
     for (const viewport of [{width:1440,height:900},{width:900,height:900},{width:390,height:844}]) {

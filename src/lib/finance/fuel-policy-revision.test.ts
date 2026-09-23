@@ -2,25 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { FinancialConflictError } from './financial-control-errors';
 import { validateFuelPolicyRevisionEvidence } from './fuel-deduction-reconciliation';
-import { fuelPolicyRevisionCases, heldFuelPolicyScopes } from '../../../tests/fixtures/fuel-policy-revision-cases';
+import { fuelPolicyRevisionCases, heldFuelPolicyScopes, toleranceReviewedHeldScopes } from '../../../tests/fixtures/fuel-policy-revision-cases';
 
-test('21 audited real-shape scopes are evidence-bounded extensions totaling 36 rows and $21,569.26', () => {
+test('23 audited real-shape scopes are evidence-bounded extensions totaling 41 rows and $23,613.62', () => {
   const extensions = fuelPolicyRevisionCases.filter(item => item.classification === 'SAME_RULE_EXTENSION');
-  assert.equal(extensions.length, 21);
-  assert.equal(extensions.reduce((sum, item) => sum + item.pendingRows, 0), 36);
-  assert.equal(extensions.reduce((sum, item) => sum + BigInt(item.pendingPilotMinor), BigInt(0)), BigInt(2_156_926));
+  assert.equal(extensions.length, 23);
+  assert.equal(extensions.reduce((sum, item) => sum + item.pendingRows, 0), 41);
+  assert.equal(extensions.reduce((sum, item) => sum + BigInt(item.pendingPilotMinor), BigInt(0)), BigInt(2_361_362));
   for (const item of extensions) {
     assert.equal(item.contradictions, 0);
     assert.doesNotThrow(() => validateFuelPolicyRevisionEvidence({ currentFrom: item.currentFrom, currentTo: item.currentTo, effectiveFrom: item.proposedFrom, effectiveTo: item.proposedTo }, [...item.support], 0), `${item.company} Truck ${item.truck}`);
   }
 });
 
-test('the two exact-cent conflicts stay blocked and nine held scopes stay outside the plan', () => {
-  const conflicts = fuelPolicyRevisionCases.filter(item => item.classification === 'CONFLICTING_RULE');
-  assert.deepEqual(conflicts.map(item => item.truck), ['7773', '8479']);
-  assert.equal(conflicts.reduce((sum, item) => sum + item.pendingRows, 0), 5);
-  assert.equal(conflicts.reduce((sum, item) => sum + BigInt(item.pendingPilotMinor), BigInt(0)), BigInt(204_436));
-  for (const item of conflicts) assert.throws(() => validateFuelPolicyRevisionEvidence({ currentFrom: item.currentFrom, currentTo: item.currentTo, effectiveFrom: item.proposedFrom, effectiveTo: item.proposedTo }, [...item.support], item.contradictions), FinancialConflictError);
+test('7773 and 8479 are accepted only for their one-cent variance while reviewed held scopes remain outside the extension plan', () => {
+  const toleranceCases = fuelPolicyRevisionCases.filter(item => item.truck === '7773' || item.truck === '8479');
+  assert.deepEqual(toleranceCases.map(item => [item.truck, item.classification, item.acceptedVarianceMinor]), [['7773', 'SAME_RULE_EXTENSION', '-1'], ['8479', 'SAME_RULE_EXTENSION', '-1']]);
+  for (const item of toleranceCases) assert.doesNotThrow(() => validateFuelPolicyRevisionEvidence({ currentFrom: item.currentFrom, currentTo: item.currentTo, effectiveFrom: item.proposedFrom, effectiveTo: item.proposedTo }, [...item.support], item.contradictions));
+  assert.equal(toleranceReviewedHeldScopes.truck9115.classification, 'POTENTIALLY_POLICY_SUPPORTABLE');
+  assert.equal(toleranceReviewedHeldScopes.truck9115.extensionEligible, false);
+  assert.equal(toleranceReviewedHeldScopes.truck8158.classification, 'HELD');
+  assert.match(toleranceReviewedHeldScopes.truck8158.reason, /\+\$67\.01/);
   assert.deepEqual(heldFuelPolicyScopes, { scopes: 9, rows: 67, pilotMinor: '3045669' });
 });
 

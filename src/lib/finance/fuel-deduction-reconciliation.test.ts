@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
-import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
+import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
@@ -27,7 +27,25 @@ test('policy arithmetic is exact in integer minor units', () => {
   assert.deepEqual(expectedFuelDeduction(pilot, { responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0 }), { expectedMinor: BigInt(0), retainedDiscountMinor: BigInt(0) });
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: null, savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: BigInt(9_000), savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
-  assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_999), false), discrepancyStatus(BigInt(10_000), BigInt(10_001), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
+  assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_994), false), discrepancyStatus(BigInt(10_000), BigInt(10_006), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
+});
+
+test('OWNER fuel tolerance is five cents per total comparison and preserves the exact variance', () => {
+  const expected = BigInt(58_257);
+  assert.equal(fuelMonetaryToleranceMinor, BigInt(5));
+  for (const variance of [0, 1, 4, 5, -5]) {
+    const actual = expected + BigInt(variance);
+    assert.equal(fuelAmountsWithinOwnerTolerance(expected, actual), true);
+    assert.equal(discrepancyStatus(expected, actual, false), 'MATCHED');
+    assert.equal(actual - expected, BigInt(variance));
+  }
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected + BigInt(6)), false);
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected - BigInt(6)), false);
+  assert.equal(discrepancyStatus(expected, expected + BigInt(6), false), 'OVER_DEDUCTED');
+  assert.equal(discrepancyStatus(expected, expected - BigInt(6), false), 'UNDER_DEDUCTED');
+  assert.equal(discrepancyStatus(BigInt(5), BigInt(0), false), 'MISSING_DEDUCTION');
+  // The rule accepts only the two total amounts; gallons cannot multiply it.
+  assert.equal(fuelAmountsWithinOwnerTolerance(expected, expected + BigInt(6)), false);
 });
 
 test('10% retention truncates fractional cents like the real April 22 Truck 024 deduction', () => {
@@ -188,8 +206,8 @@ before(async () => {
     { operatingGroupId: groupId, companyId, truckId: truckIds.ambiguous, providerRecipientId: 'contractor-ambiguous', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic ambiguity policy', reason: 'Fixture', approvedByUserId: userId },
   ] });
   await addEvent({ key: 'exact', date: '2026-06-10', truckId: truckIds.exact, unit: 'UNIT-EXACT', product: 'TRUCK_DIESEL', amount: minor(10_000), retail: minor(12_000), savings: minor(2_000) });
-  await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_000), sourceDate: '2026-06-10', reference: 'paired-ref' });
-  await archiveVersion({ key: 'exact-contractor', pid: '10', recipientId: 'contractor-exact', recipientType: 'CONTRACTOR', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_000), sourceDate: '2026-06-10', reference: 'paired-ref' });
+  await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
+  await archiveVersion({ key: 'exact-contractor', pid: '10', recipientId: 'contractor-exact', recipientType: 'CONTRACTOR', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
   await addEvent({ key: 'driver', date: '2026-06-11', truckId: truckIds.driver, unit: 'UNIT-DRIVER', amount: minor(7_500) });
   await archiveVersion({ key: 'driver-assignment', pid: '11', recipientId: 'company-driver', recipientType: 'DRIVER', role: 'Company Driver', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.driver, unit: 'UNIT-DRIVER' });
   await addEvent({ key: 'timing', date: '2026-04-22', truckId: truckIds.timing, unit: 'UNIT-TIMING', amount: minor(10_000), reference: 'APR22-PID30' });
@@ -241,7 +259,7 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   assert.deepEqual(result.coverage, { start: '2026-04-22', end: '2026-09-23' });
   assert.equal(result.summary.reeferExcludedMinor, BigInt(0)); assert.equal(result.summary.providerCreditExcludedMinor, BigInt(-2859));
   const exact = result.rows.find(row => row.pilotEventId && row.truckId === truckIds.exact && row.purchaseDate === '2026-06-10')!;
-  assert.equal(exact.status, 'MATCHED'); assert.equal(exact.statementMinor, minor(10_000)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
+  assert.equal(exact.status, 'MATCHED'); assert.equal(exact.expectedMinor, minor(10_000)); assert.equal(exact.statementMinor, minor(10_005)); assert.equal(exact.differenceMinor, minor(5)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
   const driver = result.rows.find(row => row.truckId === truckIds.driver)!;
   assert.equal(driver.status, 'MATCHED'); assert.equal(driver.expectedMinor, minor(0)); assert.equal(driver.statementMinor, minor(0));
   const timing = result.rows.find(row => row.truckId === truckIds.timing)!;

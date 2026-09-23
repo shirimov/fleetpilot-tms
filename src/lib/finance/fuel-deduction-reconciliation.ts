@@ -51,10 +51,17 @@ export function expectedFuelDeductionForComponents(components: ComparablePilotAm
   };
 }
 
+export const fuelMonetaryToleranceMinor = BigInt(5);
+
+export function fuelAmountsWithinOwnerTolerance(expectedMinor: bigint, actualMinor: bigint) {
+  const difference = actualMinor - expectedMinor;
+  return (difference < BigInt(0) ? -difference : difference) <= fuelMonetaryToleranceMinor;
+}
+
 export function discrepancyStatus(expectedMinor: bigint, actualMinor: bigint, timing: boolean): FuelReconciliationStatus {
   if (timing) return 'TIMING_DIFFERENCE';
-  if (actualMinor === expectedMinor) return 'MATCHED';
   if (actualMinor === BigInt(0) && expectedMinor > BigInt(0)) return 'MISSING_DEDUCTION';
+  if (fuelAmountsWithinOwnerTolerance(expectedMinor, actualMinor)) return 'MATCHED';
   return actualMinor < expectedMinor ? 'UNDER_DEDUCTED' : 'OVER_DEDUCTED';
 }
 
@@ -460,9 +467,9 @@ export class FuelDeductionReconciliationService {
         pilotIdentity,
         { cardLastFour: matched.cardLastFour, locationNumber: matched.locationNumber, city: matched.city, state: matched.state },
       ));
-      if (matched && matchedProductDifference && matchedProductIdentityIsStrong && corroboratesFuelProducts(pilotProducts, matched.products) && matched.amountMinor === calculation.expectedMinor) {
+      if (matched && matchedProductDifference && matchedProductIdentityIsStrong && corroboratesFuelProducts(pilotProducts, matched.products) && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, matched.amountMinor)) {
         consume([matched]);
-        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: matchedEvidence });
+        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: matched.amountMinor - calculation.expectedMinor, observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: matchedEvidence });
         continue;
       }
       if (matched && !corroboratesFuelProducts(pilotProducts, matched.products)) {
@@ -474,13 +481,14 @@ export class FuelDeductionReconciliationService {
         const exceptionCandidates = (byCompanyCandidateDate.get(`${history.companyId}|${purchaseDate}`) ?? []).filter(line => !consumed.has(line.id)
           && quickManageDateRelation(purchaseDate, line.sourceTimestamp)
           && corroboratesFuelIdentityStrict(pilotIdentity, { cardLastFour: line.cardLastFour, locationNumber: line.locationNumber, city: line.city, state: line.state }));
-        const crossRecipient = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
-          && line.amountMinor === calculation.expectedMinor && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+        const crossRecipientIdentity = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
+          && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+        const crossRecipient = crossRecipientIdentity.length === 1 && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, crossRecipientIdentity[0].amountMinor) ? crossRecipientIdentity : [];
         if (crossRecipient.length === 1) {
           const review = crossRecipient[0]; consume([review]);
           const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate);
           const crossProductDifference = isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications);
-          rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? BigInt(0) : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
+          rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? review.amountMinor - calculation.expectedMinor : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
           continue;
         }
         const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientId === assignment.recipientId);
@@ -498,12 +506,12 @@ export class FuelDeductionReconciliationService {
           const statementMinor = group.reduce((sum, line) => sum + line.amountMinor, BigInt(0));
           return corroboratesFuelProducts(pilotProducts, groupProducts(group))
             && isDieselReeferClassificationDifference(pilotProductClassifications, statementProducts)
-            && statementMinor === calculation.expectedMinor;
+            && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, statementMinor);
         });
         if (acceptedProductGroups.length === 1 && candidateProductGroups.size === 1) {
           const accepted = acceptedProductGroups[0];
           const statementMinor = accepted.reduce((sum, line) => sum + line.amountMinor, BigInt(0)); consume(accepted);
-          rows.push({ ...base, ...statementAudit(accepted), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: accepted[0].pid, statementPeriod: `${accepted[0].workStart}–${accepted[0].workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: statementEvidence(accepted) });
+          rows.push({ ...base, ...statementAudit(accepted), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: statementMinor - calculation.expectedMinor, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: accepted[0].pid, statementPeriod: `${accepted[0].workStart}–${accepted[0].workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: statementEvidence(accepted) });
           continue;
         }
         const productGroups = new Map([...candidateProductGroups].filter(([, group]) => !corroboratesFuelProducts(pilotProducts, groupProducts(group))));
@@ -589,10 +597,19 @@ export class FuelDeductionReconciliationService {
     const proposed = scoped.filter(row => row.purchaseDate! >= range.effectiveFrom && row.purchaseDate! < range.effectiveTo);
     const current = scoped.filter(row => row.purchaseDate! >= range.currentFrom && row.purchaseDate! < range.currentTo);
     const newlyCovered = proposed.filter(row => row.purchaseDate! < range.currentFrom || row.purchaseDate! >= range.currentTo);
+    const reeferEventIds = proposed.filter(row => row.products.includes('REEFER_FUEL')).map(row => row.pilotEventId!);
+    const reeferEvents = reeferEventIds.length ? await this.database.pilotFuelingEvent.findMany({
+      where: { id: { in: reeferEventIds }, invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
+      select: { id: true, productLines: { where: { productType: { in: ['TRUCK_DIESEL', 'REEFER_FUEL', 'DEF'] } }, select: { amountMinor: true, retailAmountMinor: true, savingsMinor: true, discountMinor: true } } },
+    }) : [];
+    const reeferComponents = new Map(reeferEvents.map(event => [event.id, event.productLines.map(line => ({ amountMinor: line.amountMinor, retailMinor: line.retailAmountMinor, savingsMinor: line.savingsMinor ?? line.discountMinor }))]));
     const clean = proposed.filter(row => {
       if (!row.statementEvidence || !row.pilotEventId || !row.purchaseDate) return false;
-      const calculated = expectedFuelDeduction({ amountMinor: row.pilotActualMinor, retailMinor: row.pilotRetailMinor, savingsMinor: row.pilotSavingsMinor }, policy);
-      return calculated?.expectedMinor === row.statementMinor;
+      const components = reeferComponents.get(row.pilotEventId);
+      const calculated = components
+        ? expectedFuelDeductionForComponents(components, policy)
+        : expectedFuelDeduction({ amountMinor: row.pilotActualMinor, retailMinor: row.pilotRetailMinor, savingsMinor: row.pilotSavingsMinor }, policy);
+      return calculated !== null && fuelAmountsWithinOwnerTolerance(calculated.expectedMinor, row.statementMinor);
     });
     const cleanIds = new Set(clean.map(row => row.pilotEventId));
     const contradictions = newlyCovered.filter(row => row.statementEvidence && !cleanIds.has(row.pilotEventId!));

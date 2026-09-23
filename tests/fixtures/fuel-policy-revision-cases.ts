@@ -275,7 +275,7 @@ export const fuelPolicyRevisionCases = [
     "contradictions": 0
   },
   {
-    "classification": "CONFLICTING_RULE",
+    "classification": "SAME_RULE_EXTENSION",
     "company": "Angels On The Road Inc.",
     "truck": "7773",
     "currentFrom": "2026-07-17",
@@ -310,7 +310,8 @@ export const fuelPolicyRevisionCases = [
         "supportTo": "2026-08-03"
       }
     ],
-    "contradictions": 1
+    "contradictions": 0,
+    "acceptedVarianceMinor": "-1"
   },
   {
     "classification": "SAME_RULE_EXTENSION",
@@ -451,7 +452,7 @@ export const fuelPolicyRevisionCases = [
     "contradictions": 0
   },
   {
-    "classification": "CONFLICTING_RULE",
+    "classification": "SAME_RULE_EXTENSION",
     "company": "Angels On The Road Inc.",
     "truck": "8479",
     "currentFrom": "2026-07-03",
@@ -494,7 +495,8 @@ export const fuelPolicyRevisionCases = [
         "supportTo": "2026-08-03"
       }
     ],
-    "contradictions": 1
+    "contradictions": 0,
+    "acceptedVarianceMinor": "-1"
   },
   {
     "classification": "SAME_RULE_EXTENSION",
@@ -829,3 +831,8 @@ export const fuelPolicyRevisionCases = [
 ] as const;
 
 export const heldFuelPolicyScopes = { scopes: 9, rows: 67, pilotMinor: "3045669" } as const;
+
+export const toleranceReviewedHeldScopes = {
+  truck9115: { classification: "POTENTIALLY_POLICY_SUPPORTABLE", extensionEligible: false, reason: "All three formula variances (+$0.02, -$0.01, -$0.01) are within tolerance, but no existing policy can be revised; a separately authorized policy-creation review is required." },
+  truck8158: { classification: "HELD", extensionEligible: false, reason: "The +$67.01 formula conflict exceeds the OWNER-approved $0.05 tolerance." },
+} as const;
