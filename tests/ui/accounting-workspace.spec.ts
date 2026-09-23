@@ -48,11 +48,13 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       summary:{count:1,pilotActualMinor:'10000',expectedMinor:'10000',statementMinor:'11509',comparableStatementMinor:'11509',rawStatementDeductionMinor:'15000',rawFuelStatementMinor:'11509',unsupportedFuelStatementCount:0,unsupportedFuelStatementMinor:'0',differenceMinor:'1509',outsideCoverageStatementMinor:'0',comparablePilotMinor:'10000',reeferExcludedMinor:'500',providerCreditExcludedMinor:'-2859',historicalPostedDifferences:1},
       byStatus:Object.fromEntries(['MATCHED','UNDER_DEDUCTED','OVER_DEDUCTED','MISSING_DEDUCTION','STATEMENT_ONLY','TIMING_DIFFERENCE','NO_PILOT_DATA_IMPORTED','NEEDS_COMPANY_HISTORY','NEEDS_TRUCK_MAPPING','NEEDS_RECIPIENT_MAPPING','NEEDS_RECIPIENT_REVIEW','PRODUCT_CLASSIFICATION_REVIEW','NEEDS_POLICY','NEEDS_REVIEW'].map(status=>[status,{count:status==='TIMING_DIFFERENCE'?1:0,pilotActualMinor:status==='TIMING_DIFFERENCE'?'10000':'0',expectedMinor:status==='TIMING_DIFFERENCE'?'10000':'0',statementMinor:status==='TIMING_DIFFERENCE'?'11509':'0',differenceMinor:status==='TIMING_DIFFERENCE'?'1509':'0'}])),
       byCompany:[],total:1,page:1,pageSize:50,
-      rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',currentCompanyId:'current',currentCompanyName:'Current Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',matchMethod:'REFERENCE',pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
+      rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',currentCompanyId:'current',currentCompanyName:'Current Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',matchMethod:'REFERENCE',statementTruckUnit:'024',statementRecipientId:'contractor',statementRecipientName:'Synthetic Contractor',statementProducts:['TRUCK_DIESEL','DEF'],productClassification:'SAME',pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
     };
     reconciliation.rows.push(
       {...reconciliation.rows[0],key:'pilot:weekend',status:'MATCHED',truckUnit:'7455',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'},
+      {...reconciliation.rows[0],key:'pilot:historical-routing',status:'MATCHED',truckUnit:'7906',statementTruckUnit:'8154',statementRecipientName:'8154 Saas LLC',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'HISTORICAL_CROSS_RECIPIENT_RECOVERED'},
       {...reconciliation.rows[0],key:'pilot:recipient',status:'NEEDS_RECIPIENT_REVIEW',truckUnit:'7906',purchaseDate:'2026-07-04',differenceMinor:'0',matchMethod:'CROSS_RECIPIENT_STRUCTURED_IDENTITY'},
+      {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
       {...reconciliation.rows[0],key:'pilot:product',status:'PRODUCT_CLASSIFICATION_REVIEW',truckUnit:'8479',purchaseDate:'2026-07-12',differenceMinor:'0',matchMethod:'PRODUCT_CLASSIFICATION_CONFLICT'},
     );
     reconciliation.total = reconciliation.rows.length;
@@ -63,7 +65,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       return route.fulfill({json:reconciliation});
     });
     await page.goto('/accounting?view=statements&archive=reconciliation');
-    await expect(page.getByText('Comparable Pilot Diesel + DEF')).toBeVisible();
+    await expect(page.getByText('Comparable Pilot Diesel + Reefer + DEF')).toBeVisible();
     await expect(page.getByText('$15.09',{exact:true}).first()).toBeVisible();
     await expect(page.getByText('TIMING DIFFERENCE',{exact:true}).first()).toBeVisible();
     const timingRow = page.getByRole('row').filter({hasText:'TIMING DIFFERENCE'}).last();
@@ -71,11 +73,17 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(timingRow.getByText(/invoice PILOT-1/)).toBeVisible();
     await expect(timingRow.getByText(/PID 30/)).toBeVisible();
     await expect(timingRow.getByText(/Current Company Current Company/)).toBeVisible();
-    for (const [status, explanation] of [['MATCHED','Matched the Pilot Sunday date-only row'],['NEEDS RECIPIENT REVIEW','Recipient responsibility requires review'],['PRODUCT CLASSIFICATION REVIEW','No over- or under-deduction conclusion is made']]) {
-      const row = page.getByRole('row').filter({hasText:status}).last();
+    for (const [rowText, explanation] of [['7455','Matched the Pilot Sunday date-only row'],['NEEDS RECIPIENT REVIEW','Recipient responsibility requires review'],['PRODUCT CLASSIFICATION REVIEW','No over- or under-deduction conclusion is made']]) {
+      const row = page.getByRole('row').filter({hasText:rowText}).last();
       await row.getByText('Evidence and calculation').click();
       await expect(row.getByText(new RegExp(explanation))).toBeVisible();
     }
+    const historicalRouting = page.getByRole('row').filter({hasText:'8154 Saas LLC'}).last();
+    await historicalRouting.getByText('Evidence and calculation').click();
+    await expect(historicalRouting.getByText(/historical cross-recipient settlement accepted/)).toBeVisible();
+    const dieselReefer = page.getByRole('row').filter({hasText:'Different \/ informational'}).last();
+    await dieselReefer.getByText('Evidence and calculation').click();
+    await expect(dieselReefer.getByText(/same fuel purchase/)).toBeVisible();
     for (const viewport of [{width:1440,height:900},{width:900,height:900},{width:390,height:844}]) {
       await page.setViewportSize(viewport);
       await expect(page.getByText('Comparable statement fuel in coverage')).toBeVisible();

@@ -27,7 +27,7 @@ export function classifyFuelDeductionLine(line: {
   const metadata = line.metadata as Record<string, unknown>;
   if (!('diesel_amount' in metadata) || !('def_amount' in metadata) || !('reefer_amount' in metadata)) return false;
   const positive = (value: unknown) => typeof value === 'number' || typeof value === 'string' ? Number(value) > 0 : false;
-  return !positive(metadata.reefer_amount) && (positive(metadata.diesel_amount) || positive(metadata.def_amount));
+  return positive(metadata.diesel_amount) || positive(metadata.reefer_amount) || positive(metadata.def_amount);
 }
 
 export function expectedFuelDeduction(pilot: ComparablePilotAmount, policy: Pick<FuelDeductionPolicy, 'responsibility' | 'discountTreatment' | 'companyRetentionBasisPoints'>) {
@@ -40,6 +40,15 @@ export function expectedFuelDeduction(pilot: ComparablePilotAmount, policy: Pick
   // charge as retail minus that display value can differ by one cent.
   const retainedDiscountMinor = (savings * BigInt(policy.companyRetentionBasisPoints)) / BigInt(10000);
   return { expectedMinor: pilot.amountMinor + retainedDiscountMinor, retainedDiscountMinor };
+}
+
+export function expectedFuelDeductionForComponents(components: ComparablePilotAmount[], policy: Pick<FuelDeductionPolicy, 'responsibility' | 'discountTreatment' | 'companyRetentionBasisPoints'>) {
+  const calculations = components.map(component => expectedFuelDeduction(component, policy));
+  if (!calculations.every(value => value !== null)) return null;
+  return {
+    expectedMinor: calculations.reduce((sum, value) => sum + value!.expectedMinor, BigInt(0)),
+    retainedDiscountMinor: calculations.reduce((sum, value) => sum + value!.retainedDiscountMinor, BigInt(0)),
+  };
 }
 
 export function discrepancyStatus(expectedMinor: bigint, actualMinor: bigint, timing: boolean): FuelReconciliationStatus {
@@ -66,13 +75,29 @@ const fixedTwoMinor = (value: unknown) => {
 };
 
 export type FuelProductIdentity = {
-  dieselQuantityHundredths: bigint;
+  dieselFamilyQuantityHundredths: bigint;
   defAmountMinor: bigint;
 };
 
 export function corroboratesFuelProducts(pilot: FuelProductIdentity, statement: FuelProductIdentity) {
-  return pilot.dieselQuantityHundredths === statement.dieselQuantityHundredths
+  return pilot.dieselFamilyQuantityHundredths === statement.dieselFamilyQuantityHundredths
     && pilot.defAmountMinor === statement.defAmountMinor;
+}
+
+const dieselFamilyProducts = new Set(['TRUCK_DIESEL', 'REEFER_FUEL']);
+export function isDieselReeferClassificationDifference(pilotProducts: string[], statementProducts: string[]) {
+  const pilot = new Set(pilotProducts);
+  const statement = new Set(statementProducts);
+  const sameDef = pilot.has('DEF') === statement.has('DEF');
+  const pilotFuel = [...pilot].filter(product => dieselFamilyProducts.has(product));
+  const statementFuel = [...statement].filter(product => dieselFamilyProducts.has(product));
+  return sameDef && pilotFuel.length > 0 && statementFuel.length > 0
+    && (pilot.has('TRUCK_DIESEL') !== statement.has('TRUCK_DIESEL') || pilot.has('REEFER_FUEL') !== statement.has('REEFER_FUEL'));
+}
+
+export const historicalFuelRoutingCutoff = '2026-09-22';
+export function acceptsHistoricalCrossRecipientRouting(purchaseDate: string) {
+  return purchaseDate < historicalFuelRoutingCutoff;
 }
 
 export function quickManageDateRelation(pilotDate: string, statementTimestamp: string | null) {
@@ -111,7 +136,7 @@ type EvidenceLine = {
   description: string | null; providerLineId: string | null;
   currentCompanyId: string | null; currentCompanyName: string | null;
   cardLastFour: string | null; locationNumber: string | null; city: string | null; state: string | null;
-  sourceTimestamp: string | null; products: FuelProductIdentity;
+  sourceTimestamp: string | null; products: FuelProductIdentity; productClassifications: string[];
 };
 
 type FuelIdentity = { cardLastFour: string | null; locationNumber: string | null; city: string | null; state: string | null };
@@ -151,6 +176,8 @@ export type FuelReconciliationRow = {
   historicalCompanyId: string | null; postedCompanyId: string | null; postedCompanyName: string | null;
   currentCompanyId: string | null; currentCompanyName: string | null;
   historyDiffersFromPosted: boolean; products: string[]; gallons: string; matchMethod: string | null;
+  statementTruckUnit: string | null; statementRecipientId: string | null; statementRecipientName: string | null;
+  statementProducts: string[]; productClassification: 'SAME' | 'DIESEL_REEFER_DIFFERENCE' | 'CONFLICT' | null;
   pilotEvidence: { eventId: string; invoiceId: string; invoiceNumber: string; transactionId: string | null } | null;
   statementEvidence: { lineIds: string[]; versionId: string; pid: string; statementNumber: string | null; description: string | null; reference: string | null } | null;
 };
@@ -195,7 +222,7 @@ export class FuelDeductionReconciliationService {
       this.database.company.findMany({ where: { id: { in: context.companyIds } }, select: { id: true, name: true } }),
     ]);
     const companyNames = new Map(companies.map(company => [company.id, company.name]));
-    const comparableEvents = events.map(event => ({ event, lines: event.productLines.filter(line => line.productType === 'TRUCK_DIESEL' || line.productType === 'DEF') }));
+    const comparableEvents = events.map(event => ({ event, lines: event.productLines.filter(line => line.productType === 'TRUCK_DIESEL' || line.productType === 'REEFER_FUEL' || line.productType === 'DEF') }));
     const dated = comparableEvents.filter(item => item.lines.length);
     const coverageStart = dated.length ? day(dated[0].event.transactionDate) : null;
     const coverageEnd = dated.length ? day(dated.at(-1)!.event.transactionDate) : null;
@@ -214,7 +241,13 @@ export class FuelDeductionReconciliationService {
         const metadataText = (key: string) => typeof metadata[key] === 'string' || typeof metadata[key] === 'number' ? String(metadata[key]) : null;
         const cardNumber = metadataText('card_number');
         const dieselQuantityHundredths = fixedTwoMinor(metadataText('diesel_qty'));
+        const reeferQuantityHundredths = fixedTwoMinor(metadataText('reefer_qty'));
         const defAmountMinor = fixedTwoMinor(metadataText('def_amount'));
+        const productClassifications = [
+          Number(metadataText('diesel_amount') ?? 0) > 0 ? 'TRUCK_DIESEL' : null,
+          Number(metadataText('reefer_amount') ?? 0) > 0 ? 'REEFER_FUEL' : null,
+          Number(metadataText('def_amount') ?? 0) > 0 ? 'DEF' : null,
+        ].filter((product): product is string => product !== null);
         const sourceUnit = line.sourceUnit?.trim().toUpperCase() ?? null;
         const candidates = mapped.filter(truck => !sourceUnit || truck.unit?.trim().toUpperCase() === sourceUnit);
         const truck = candidates.length === 1 ? candidates[0] : mapped.length === 1 ? mapped[0] : null;
@@ -230,7 +263,11 @@ export class FuelDeductionReconciliationService {
           currentCompanyName: truck?.truck?.companyId && context.companyIds.includes(truck.truck.companyId) ? truck.truck.company?.name ?? null : null,
           cardLastFour: cardNumber?.slice(-4) ?? null, locationNumber: metadataText('merchant'), city: metadataText('city'), state: metadataText('state'),
           sourceTimestamp: metadataText('date') ?? line.sourceDate,
-          products: { dieselQuantityHundredths: dieselQuantityHundredths ?? BigInt(-1), defAmountMinor: defAmountMinor ?? BigInt(-1) },
+          products: {
+            dieselFamilyQuantityHundredths: dieselQuantityHundredths === null || reeferQuantityHundredths === null ? BigInt(-1) : dieselQuantityHundredths + reeferQuantityHundredths,
+            defAmountMinor: defAmountMinor ?? BigInt(-1),
+          },
+          productClassifications,
         });
       }
     }
@@ -274,6 +311,12 @@ export class FuelDeductionReconciliationService {
       statementNumber: matched[0].statementNumber, description: matched.map(line => line.description).filter(Boolean).join(' + ') || null,
       reference: matched.map(line => line.reference).filter(Boolean).join(' + ') || null,
     } : null;
+    const statementAudit = (matched: EvidenceLine[]) => ({
+      statementTruckUnit: matched[0]?.truckUnit ?? null,
+      statementRecipientId: matched[0]?.recipientId ?? null,
+      statementRecipientName: matched[0]?.recipientName ?? null,
+      statementProducts: [...new Set(matched.flatMap(line => line.productClassifications))],
+    });
     const consume = (matched: EvidenceLine[]) => matched.forEach(line => consumed.add(line.id));
     for (const { event, lines } of dated) {
       const purchaseDate = day(event.transactionDate), history = historyByEvent.get(event.id);
@@ -283,9 +326,10 @@ export class FuelDeductionReconciliationService {
       const pilotRetailMinor = retailValues.every(value => value !== null) ? retailValues.reduce<bigint>((sum, value) => sum + value!, BigInt(0)) : null;
       const pilotSavingsMinor = savingsValues.every(value => value !== null) ? savingsValues.reduce<bigint>((sum, value) => sum + value!, BigInt(0)) : null;
       const pilotProducts: FuelProductIdentity = {
-        dieselQuantityHundredths: event.productLines.filter(line => line.productType === 'TRUCK_DIESEL').reduce((sum, line) => sum + BigInt(Math.round(Number(line.quantity) * 100)), BigInt(0)),
+        dieselFamilyQuantityHundredths: event.productLines.filter(line => line.productType === 'TRUCK_DIESEL' || line.productType === 'REEFER_FUEL').reduce((sum, line) => sum + BigInt(Math.round(Number(line.quantity) * 100)), BigInt(0)),
         defAmountMinor: event.productLines.filter(line => line.productType === 'DEF').reduce((sum, line) => sum + (line.retailAmountMinor ?? line.amountMinor), BigInt(0)),
       };
+      const pilotProductClassifications = [...new Set(lines.map(line => line.productType))];
       const pilotIdentity = { cardLastFour: event.cardLastFour, locationNumber: event.locationNumber, city: event.city, state: event.state };
       const base = {
         key: `pilot:${event.id}`, companyId: history?.status === 'EXACT' ? history.companyId : null,
@@ -297,7 +341,8 @@ export class FuelDeductionReconciliationService {
         currentCompanyId: event.truck?.companyId && context.companyIds.includes(event.truck.companyId) ? event.truck.companyId : null,
         currentCompanyName: event.truck?.companyId && context.companyIds.includes(event.truck.companyId) ? event.truck.company?.name ?? null : null,
         historyDiffersFromPosted: history?.status === 'EXACT' && !!event.transaction?.companyId && history.companyId !== event.transaction.companyId,
-        products: [...new Set(lines.map(line => line.productType))], gallons: lines.reduce((sum, line) => sum + Number(line.quantity), 0).toFixed(2),
+        products: pilotProductClassifications, gallons: lines.reduce((sum, line) => sum + Number(line.quantity), 0).toFixed(2),
+        statementTruckUnit: null, statementRecipientId: null, statementRecipientName: null, statementProducts: [] as string[], productClassification: null,
         pilotEvidence: { eventId: event.id, invoiceId: event.invoice.id, invoiceNumber: event.invoice.invoiceNumber, transactionId: event.transaction?.id ?? null },
       };
       if (!event.truckId) { rows.push({ ...base, status: 'NEEDS_TRUCK_MAPPING', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null, matchMethod: null, statementEvidence: null }); continue; }
@@ -325,7 +370,7 @@ export class FuelDeductionReconciliationService {
       const unresolvedDateEvidence = !referenceMatch.length && !matched && (dateIdentityCandidates.length > 1 || weekendMatch.length > 1 || (sameTruckDate.length > 0 && !dateMatch.length));
       const matchMethod = matched ? (referenceMatch.length ? 'REFERENCE' : dateMatch.length ? 'TRUCK_DATE_CORROBORATED' : 'PILOT_SUNDAY_QUICKMANAGE_SATURDAY') : unresolvedDateEvidence ? 'INSUFFICIENT_TRUCK_DATE_CORROBORATION' : null;
       if (!history || history.status !== 'EXACT') {
-        rows.push({ ...base, status: 'NEEDS_COMPANY_HISTORY', recipientId: matched?.recipientId ?? null, recipientName: matched?.recipientName ?? null, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
+        rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_COMPANY_HISTORY', recipientId: matched?.recipientId ?? null, recipientName: matched?.recipientName ?? null, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
         if (matched) consume([matched]);
         continue;
       }
@@ -338,19 +383,32 @@ export class FuelDeductionReconciliationService {
       const companyDriver = assignment.recipientType === 'DRIVER' && /company\s*driver/i.test(assignment.role ?? '');
       const policyResolution = companyDriver ? { policy: null, ambiguous: false } : resolveApplicableFuelPolicy(policies, history.companyId, event.truckId, assignment.recipientId, purchaseDate);
       if (policyResolution.ambiguous) {
-        rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Ambiguous applicable policies', pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
+        rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Ambiguous applicable policies', pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
         if (matched) consume([matched]);
         continue;
       }
       const policy = policyResolution.policy;
       const responsibility = companyDriver ? 'COMPANY' : policy?.responsibility ?? null;
-      if (!companyDriver && !policy) { rows.push({ ...base, status: 'NEEDS_POLICY', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence }); if (matched) consume([matched]); continue; }
-      const calculation = expectedFuelDeduction({ amountMinor: pilotActualMinor, retailMinor: pilotRetailMinor, savingsMinor: pilotSavingsMinor }, policy ?? { responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0 });
-      if (!calculation) { rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: policy?.id ?? null, policyLabel: 'Discount evidence unavailable', pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence }); if (matched) consume([matched]); continue; }
+      if (!companyDriver && !policy) { rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_POLICY', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence }); if (matched) consume([matched]); continue; }
+      const controllingPolicy = policy ?? { responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0 };
+      const calculation = pilotProductClassifications.includes('REEFER_FUEL')
+        ? expectedFuelDeductionForComponents(lines.map(line => ({ amountMinor: line.amountMinor, retailMinor: line.retailAmountMinor, savingsMinor: line.savingsMinor ?? line.discountMinor })), controllingPolicy)
+        : expectedFuelDeduction({ amountMinor: pilotActualMinor, retailMinor: pilotRetailMinor, savingsMinor: pilotSavingsMinor }, controllingPolicy);
+      if (!calculation) { rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: policy?.id ?? null, policyLabel: 'Discount evidence unavailable', pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence }); if (matched) consume([matched]); continue; }
       const policyLabel = companyDriver ? 'Company-driver fuel; no recipient recovery' : `${policy!.discountTreatment} · ${policy!.companyRetentionBasisPoints / 100}% retained`;
-      if (matched && matchMethod === 'TRUCK_DATE_CORROBORATED' && !corroboratesFuelProducts(pilotProducts, matched.products)) {
+      const matchedProductDifference = !!matched && isDieselReeferClassificationDifference(pilotProductClassifications, matched.productClassifications);
+      const matchedProductIdentityIsStrong = !!matched && (matchMethod === 'REFERENCE' || corroboratesFuelIdentityStrict(
+        pilotIdentity,
+        { cardLastFour: matched.cardLastFour, locationNumber: matched.locationNumber, city: matched.city, state: matched.state },
+      ));
+      if (matched && matchedProductDifference && matchedProductIdentityIsStrong && corroboratesFuelProducts(pilotProducts, matched.products) && matched.amountMinor === calculation.expectedMinor) {
         consume([matched]);
-        rows.push({ ...base, status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: null, observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: matchedEvidence });
+        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: matchedEvidence });
+        continue;
+      }
+      if (matched && !corroboratesFuelProducts(pilotProducts, matched.products)) {
+        consume([matched]);
+        rows.push({ ...base, ...statementAudit([matched]), productClassification: 'CONFLICT', status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: null, observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: matchedEvidence });
         continue;
       }
       if (!matched) {
@@ -361,7 +419,9 @@ export class FuelDeductionReconciliationService {
           && line.amountMinor === calculation.expectedMinor && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
         if (crossRecipient.length === 1) {
           const review = crossRecipient[0]; consume([review]);
-          rows.push({ ...base, status: 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
+          const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate);
+          const crossProductDifference = isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications);
+          rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? BigInt(0) : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
           continue;
         }
         const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientId === assignment.recipientId);
@@ -370,10 +430,24 @@ export class FuelDeductionReconciliationService {
           const key = [line.versionId, line.sourceTimestamp, line.cardLastFour, line.locationNumber].join('|');
           candidateProductGroups.set(key, [...(candidateProductGroups.get(key) ?? []), line]);
         }
-        const productGroups = new Map([...candidateProductGroups].filter(([, group]) => !corroboratesFuelProducts(pilotProducts, {
-          dieselQuantityHundredths: group.reduce((sum, line) => sum + line.products.dieselQuantityHundredths, BigInt(0)),
+        const groupProducts = (group: EvidenceLine[]) => ({
+          dieselFamilyQuantityHundredths: group.reduce((sum, line) => sum + line.products.dieselFamilyQuantityHundredths, BigInt(0)),
           defAmountMinor: group.reduce((sum, line) => sum + line.products.defAmountMinor, BigInt(0)),
-        })));
+        });
+        const acceptedProductGroups = [...candidateProductGroups.values()].filter(group => {
+          const statementProducts = [...new Set(group.flatMap(line => line.productClassifications))];
+          const statementMinor = group.reduce((sum, line) => sum + line.amountMinor, BigInt(0));
+          return corroboratesFuelProducts(pilotProducts, groupProducts(group))
+            && isDieselReeferClassificationDifference(pilotProductClassifications, statementProducts)
+            && statementMinor === calculation.expectedMinor;
+        });
+        if (acceptedProductGroups.length === 1 && candidateProductGroups.size === 1) {
+          const accepted = acceptedProductGroups[0];
+          const statementMinor = accepted.reduce((sum, line) => sum + line.amountMinor, BigInt(0)); consume(accepted);
+          rows.push({ ...base, ...statementAudit(accepted), productClassification: 'DIESEL_REEFER_DIFFERENCE', status: 'MATCHED', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: BigInt(0), observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Diesel/Reefer classification differs; recovery confirmed`, pid: accepted[0].pid, statementPeriod: `${accepted[0].workStart}–${accepted[0].workEnd}`, matchMethod: 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED', statementEvidence: statementEvidence(accepted) });
+          continue;
+        }
+        const productGroups = new Map([...candidateProductGroups].filter(([, group]) => !corroboratesFuelProducts(pilotProducts, groupProducts(group))));
         // Multiple same-day statement candidates were already an explicit review state.
         // Preserve that behavior unless the immutable provider timestamp shows the audited
         // Sunday/Saturday boundary. A single incompatible line is also reviewable (the
@@ -382,7 +456,7 @@ export class FuelDeductionReconciliationService {
         if (reviewableProductGroups.length === 1 && productGroups.size === 1) {
           const review = reviewableProductGroups[0];
           const statementMinor = review.reduce((sum, line) => sum + line.amountMinor, BigInt(0)); consume(review);
-          rows.push({ ...base, status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: null, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: review[0].pid, statementPeriod: `${review[0].workStart}–${review[0].workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: statementEvidence(review) });
+          rows.push({ ...base, ...statementAudit(review), productClassification: 'CONFLICT', status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: null, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: review[0].pid, statementPeriod: `${review[0].workStart}–${review[0].workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: statementEvidence(review) });
           continue;
         }
         if (crossRecipient.length > 1 || productGroups.size > 1 || unresolvedDateEvidence) {
@@ -394,7 +468,7 @@ export class FuelDeductionReconciliationService {
       const timingDate = matchMethod === 'PILOT_SUNDAY_QUICKMANAGE_SATURDAY' ? matched?.sourceDate ?? purchaseDate : purchaseDate;
       const timing = !!matched && !(matched.workStart <= timingDate && matched.workEnd >= timingDate);
       if (matched) consume([matched]);
-      rows.push({ ...base, status: discrepancyStatus(calculation.expectedMinor, statementMinor, timing), recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: statementMinor - calculation.expectedMinor, observedAmountDeltaMinor: matched ? statementMinor - pilotActualMinor : null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
+      rows.push({ ...base, ...statementAudit(matched ? [matched] : []), productClassification: matchedProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : matched ? 'SAME' : null, status: discrepancyStatus(calculation.expectedMinor, statementMinor, timing), recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: statementMinor - calculation.expectedMinor, observedAmountDeltaMinor: matched ? statementMinor - pilotActualMinor : null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
     }
     for (const line of statementLines.filter(line => !consumed.has(line.id))) {
       const outside = !coverageStart || !coverageEnd || line.workEnd < coverageStart || line.workStart > coverageEnd;
@@ -408,10 +482,15 @@ export class FuelDeductionReconciliationService {
         historicalCompanyId: null, postedCompanyId: null, postedCompanyName: null, historyDiffersFromPosted: false,
         currentCompanyId: line.currentCompanyId, currentCompanyName: line.currentCompanyName,
         products: [], gallons: '0.00', matchMethod: null, pilotEvidence: null,
+        statementTruckUnit: line.truckUnit, statementRecipientId: line.recipientId, statementRecipientName: line.recipientName,
+        statementProducts: line.productClassifications, productClassification: null,
         statementEvidence: { lineIds: line.evidenceIds, versionId: line.versionId, pid: line.pid, statementNumber: line.statementNumber, description: line.description, reference: line.reference },
       });
     }
-    const reeferMinor = events.flatMap(event => event.productLines).filter(line => line.productType === 'REEFER_FUEL').reduce((sum, line) => sum + line.amountMinor, BigInt(0));
+    // Reefer fuel participates in reconciliation under the OWNER's Diesel/Reefer
+    // equivalence rule. Keep the legacy summary field for API compatibility; zero
+    // proves that no supported reefer amount was excluded.
+    const reeferMinor = BigInt(0);
     const providerCreditMinor = events.length ? await this.database.pilotInvoiceAdjustment.aggregate({ where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } }, _sum: { signedAmountMinor: true } }).then(result => result._sum.signedAmountMinor ?? BigInt(0)) : BigInt(0);
     const filtered = rows.filter(row => (!filters.companyId || row.companyId === filters.companyId) && (!filters.pid || row.pid === filters.pid) && (!filters.date || row.purchaseDate === filters.date || !!row.statementPeriod && row.statementPeriod.slice(0, 10) <= filters.date && row.statementPeriod.slice(-10) >= filters.date) && (!filters.truck || row.truckUnit?.toLowerCase().includes(filters.truck.toLowerCase())) && (!filters.recipient || row.recipientName?.toLowerCase().includes(filters.recipient.toLowerCase()) || row.recipientId === filters.recipient) && (!filters.responsibility || row.responsibility === filters.responsibility) && (!filters.status || row.status === filters.status) && (!filters.policy || (filters.policy === 'known' ? !!row.policyId || row.responsibility === 'COMPANY' : row.status === 'NEEDS_POLICY')));
     const start = (page - 1) * pageSize;
