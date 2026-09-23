@@ -16,6 +16,7 @@ export async function GET(request: Request) {
       pid: params.get('pid') ?? undefined, date: params.get('date') ?? undefined, truck: params.get('truck') ?? undefined,
       recipient: params.get('recipient') ?? undefined, status: params.get('status') ?? undefined,
       responsibility: params.get('responsibility') ?? undefined, policy: params.get('policy') ?? undefined,
+      history: params.get('history') ?? undefined,
     }));
   } catch (error) { return financialRouteError(error); }
 }
