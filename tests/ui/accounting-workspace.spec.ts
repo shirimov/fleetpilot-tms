@@ -86,13 +86,22 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(page.getByText('TIMING DIFFERENCE',{exact:true}).first()).toBeVisible();
     const missingControl=page.getByRole('link',{name:'Missing deduction: 1 records'});
     await expect(missingControl).toContainText('$1,046.51 potential missing');
-    await missingControl.click();
-    await expect(page).toHaveURL(/status=MISSING_DEDUCTION/);
-    await expect(page.getByRole('status')).toContainText('Missing deduction · 1 matching reconciliation rows');
-    await page.reload();
-    await expect(page.getByRole('status')).toContainText('Missing deduction · 1 matching reconciliation rows');
-    await page.goBack(); await expect(page).not.toHaveURL(/status=MISSING_DEDUCTION/);
-    await page.goForward(); await expect(page).toHaveURL(/status=MISSING_DEDUCTION/);
+    for (const control of reconciliation.controls) {
+      await page.goto('/accounting?view=statements&archive=reconciliation');
+      const link=page.getByRole('link',{name:`${control.label}: ${control.count} records`});
+      const href=await link.getAttribute('href'); expect(href).toBeTruthy();
+      await link.click();
+      const filterEntry=Object.entries(control.filter)[0];
+      await expect(page).toHaveURL(new RegExp(`${filterEntry[0]}=${filterEntry[1]}`));
+      await expect(page.getByRole('status')).toContainText(`${control.label} · ${control.count} matching reconciliation rows`);
+      await page.reload();
+      await expect(page.getByRole('status')).toContainText(`${control.label} · ${control.count} matching reconciliation rows`);
+      await page.goBack(); await expect(page).toHaveURL(/\/accounting\?view=statements&archive=reconciliation$/);
+      await page.goForward(); await expect(page).toHaveURL(new RegExp(`${filterEntry[0]}=${filterEntry[1]}`));
+      await page.goto('/accounting?view=statements&archive=reconciliation');
+      await page.goto(href!);
+      await expect(page.getByRole('status')).toContainText(`${control.label} · ${control.count} matching reconciliation rows`);
+    }
     await page.goto('/accounting?view=statements&archive=reconciliation');
     const recipientReviewControl=page.getByRole('link',{name:'Needs recipient routing review: 1 records'});
     await recipientReviewControl.focus(); await page.keyboard.press('Enter');
@@ -160,6 +169,9 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(fuelControls.getByRole('link',{name:/Missing deduction:/})).toHaveAttribute('href',/status=MISSING_DEDUCTION/);
     await expect(fuelControls.getByRole('link',{name:/Historical ≠ posted Company:/})).toHaveAttribute('href',/history=posted-mismatch/);
     await expect(fuelControls.getByRole('link',{name:/records/})).toHaveCount(12);
+    for (const link of await fuelControls.getByRole('link',{name:/records/}).all()) {
+      await expect(link).toHaveAttribute('href',/view=statements.*archive=reconciliation.*(status|history)=/);
+    }
     await page.unroute('**/api/finance/overview');
     await page.goto('/accounting?view=transactions&queue=uncategorizedExpenses');
     await expect(page.getByText('Page 1 · 0 transactions')).toBeVisible();

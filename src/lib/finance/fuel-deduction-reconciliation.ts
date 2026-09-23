@@ -429,6 +429,7 @@ export class FuelDeductionReconciliationService {
     const byTruckDate = new Map<string, EvidenceLine[]>();
     const byTruckWeekendDate = new Map<string, EvidenceLine[]>();
     const byCompanyCandidateDate = new Map<string, EvidenceLine[]>();
+    const byCandidateDate = new Map<string, EvidenceLine[]>();
     const versionsByTruck = new Map<string, typeof acceptedVersions>();
     const index = (target: Map<string, EvidenceLine[]>, key: string, line: EvidenceLine) => target.set(key, [...(target.get(key) ?? []), line]);
     for (const version of acceptedVersions) for (const truck of version.trucks) if (truck.truckId) versionsByTruck.set(truck.truckId, [...(versionsByTruck.get(truck.truckId) ?? []), version]);
@@ -437,6 +438,7 @@ export class FuelDeductionReconciliationService {
       if (line.truckId && line.sourceDate) index(byTruckDate, `${line.truckId}|${line.sourceDate}`, line);
       const timestampDate = validDate(line.sourceTimestamp);
       if (!timestampDate) continue;
+      index(byCandidateDate, timestampDate, line);
       index(byCompanyCandidateDate, `${line.companyId}|${timestampDate}`, line);
       if (!line.sourceTimestamp?.includes('T')) continue;
       const timestamp = historyDate(timestampDate);
@@ -444,6 +446,7 @@ export class FuelDeductionReconciliationService {
       timestamp.setUTCDate(timestamp.getUTCDate() + 1);
       const followingSunday = day(timestamp);
       if (line.truckId) index(byTruckWeekendDate, `${line.truckId}|${followingSunday}`, line);
+      index(byCandidateDate, followingSunday, line);
       index(byCompanyCandidateDate, `${line.companyId}|${followingSunday}`, line);
     }
     const consumed = new Set<string>();
@@ -565,6 +568,21 @@ export class FuelDeductionReconciliationService {
           const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate);
           const crossProductDifference = isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications);
           rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? review.amountMinor - calculation.expectedMinor : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
+          continue;
+        }
+        const identityConflicts = (byCandidateDate.get(purchaseDate) ?? []).filter(line => !consumed.has(line.id)
+          && line.companyId !== history.companyId
+          && quickManageDateRelation(purchaseDate, line.sourceTimestamp)
+          && corroboratesFuelIdentityStrict(pilotIdentity, { cardLastFour: line.cardLastFour, locationNumber: line.locationNumber, city: line.city, state: line.state })
+          && corroboratesFuelProducts(pilotProducts, line.products)
+          && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, line.amountMinor));
+        if (identityConflicts.length === 1) {
+          const review = identityConflicts[0]; consume([review]);
+          rows.push({ ...base, ...statementAudit([review]), productClassification: isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications) ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · exact recovery evidence is assigned to ${review.companyName} / Truck ${review.truckUnit ?? 'unresolved'}; Company and Truck identity require OWNER review`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: 'CROSS_COMPANY_IDENTITY_REVIEW', statementEvidence: statementEvidence([review]) });
+          continue;
+        }
+        if (identityConflicts.length > 1) {
+          rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple cross-Company recoveries share the structured fuel identity', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
           continue;
         }
         const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientId === assignment.recipientId);
