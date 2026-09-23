@@ -91,11 +91,14 @@ test('weekend matching requires card, location, geography and product compositio
 test('OWNER rules accept only pre-cutoff routing and only Diesel/Reefer classification differences', () => {
   assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-21'), true);
   assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-22'), false);
+  assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-23'), false);
   assert.equal(isDieselReeferClassificationDifference(['TRUCK_DIESEL'], ['REEFER_FUEL']), true);
   assert.equal(isDieselReeferClassificationDifference(['REEFER_FUEL'], ['TRUCK_DIESEL']), true);
   assert.equal(isDieselReeferClassificationDifference(['TRUCK_DIESEL', 'DEF'], ['REEFER_FUEL', 'DEF']), true);
   assert.equal(isDieselReeferClassificationDifference(['DEF'], ['TRUCK_DIESEL']), false);
   assert.equal(isDieselReeferClassificationDifference(['TRUCK_DIESEL'], ['DEF']), false);
+  assert.equal(isDieselReeferClassificationDifference(['REEFER_FUEL'], ['DEF']), false);
+  assert.equal(isDieselReeferClassificationDifference(['DEF'], ['REEFER_FUEL']), false);
 });
 
 const auditedWeekendCases = [
@@ -207,6 +210,8 @@ before(async () => {
   await archiveVersion({ key: 'cross-sep21-line', pid: '38', recipientId: 'contractor-actual', recipientType: 'CONTRACTOR', workStart: '2026-09-20', workEnd: '2026-09-26', truckId: truckIds.crossActual, unit: 'UNIT-CROSSACTUAL', amount: minor(9_100), sourceDate: '2026-09-21' });
   caseEventIds.crossSep22 = (await addEvent({ key: 'cross-sep22', date: '2026-09-22', truckId: truckIds.crossExpected, unit: 'UNIT-CROSSEXPECTED', amount: minor(9_200) })).id;
   await archiveVersion({ key: 'cross-sep22-line', pid: '38', recipientId: 'contractor-actual', recipientType: 'CONTRACTOR', workStart: '2026-09-20', workEnd: '2026-09-26', truckId: truckIds.crossActual, unit: 'UNIT-CROSSACTUAL', amount: minor(9_200), sourceDate: '2026-09-22' });
+  caseEventIds.crossSep23 = (await addEvent({ key: 'cross-sep23', date: '2026-09-23', truckId: truckIds.crossExpected, unit: 'UNIT-CROSSEXPECTED', amount: minor(9_300) })).id;
+  await archiveVersion({ key: 'cross-sep23-line', pid: '38', recipientId: 'contractor-actual', recipientType: 'CONTRACTOR', workStart: '2026-09-20', workEnd: '2026-09-26', truckId: truckIds.crossActual, unit: 'UNIT-CROSSACTUAL', amount: minor(9_300), sourceDate: '2026-09-23' });
   caseEventIds.product = (await addEvent({ key: 'product', date: '2026-07-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_000) })).id;
   await archiveVersion({ key: 'product-line', pid: '29', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(8_500), sourceDate: '2026-07-15', dieselQuantity: '28.05' });
   caseEventIds.dieselToReefer = (await addEvent({ key: 'diesel-to-reefer', date: '2026-08-10', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'TRUCK_DIESEL', quantity: '20.00', amount: minor(7_000) })).id;
@@ -215,6 +220,10 @@ before(async () => {
   await archiveVersion({ key: 'reefer-to-diesel-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_100), sourceDate: '2026-08-11', dieselAmount: '71.00', dieselQuantity: '20.00' });
   caseEventIds.defMismatch = (await addEvent({ key: 'def-mismatch', date: '2026-08-12', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'DEF', quantity: '6.00', amount: minor(3_000) })).id;
   await archiveVersion({ key: 'def-mismatch-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_000), sourceDate: '2026-08-12', dieselAmount: '0', dieselQuantity: '0', defAmount: '40.00' });
+  caseEventIds.dieselToDef = (await addEvent({ key: 'diesel-to-def', date: '2026-08-13', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'TRUCK_DIESEL', quantity: '6.00', amount: minor(3_100) })).id;
+  await archiveVersion({ key: 'diesel-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_100), sourceDate: '2026-08-13', dieselAmount: '0', dieselQuantity: '0', defAmount: '31.00' });
+  caseEventIds.reeferToDef = (await addEvent({ key: 'reefer-to-def', date: '2026-08-14', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'REEFER_FUEL', quantity: '6.00', amount: minor(3_200) })).id;
+  await archiveVersion({ key: 'reefer-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_200), sourceDate: '2026-08-14', dieselAmount: '0', dieselQuantity: '0', defAmount: '32.00' });
   caseEventIds.ambiguous = (await addEvent({ key: 'ambiguous', date: '2026-07-19', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000) })).id;
   await archiveVersion({ key: 'ambiguous-one', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T10:00:00Z' });
   await archiveVersion({ key: 'ambiguous-two', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T11:00:00Z' });
@@ -229,7 +238,7 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
   const protectedBefore = [await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()];
   const result = await service.preview(context);
-  assert.deepEqual(result.coverage, { start: '2026-04-22', end: '2026-09-22' });
+  assert.deepEqual(result.coverage, { start: '2026-04-22', end: '2026-09-23' });
   assert.equal(result.summary.reeferExcludedMinor, BigInt(0)); assert.equal(result.summary.providerCreditExcludedMinor, BigInt(-2859));
   const exact = result.rows.find(row => row.pilotEventId && row.truckId === truckIds.exact && row.purchaseDate === '2026-06-10')!;
   assert.equal(exact.status, 'MATCHED'); assert.equal(exact.statementMinor, minor(10_000)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
@@ -257,6 +266,8 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   assert.equal(crossSep21.status, 'MATCHED'); assert.equal(crossSep21.matchMethod, 'HISTORICAL_CROSS_RECIPIENT_RECOVERED'); assert.equal(crossSep21.differenceMinor, BigInt(0));
   const crossSep22 = result.rows.find(row => row.pilotEventId === caseEventIds.crossSep22)!;
   assert.equal(crossSep22.status, 'NEEDS_RECIPIENT_REVIEW'); assert.equal(crossSep22.matchMethod, 'CROSS_RECIPIENT_STRUCTURED_IDENTITY'); assert.equal(crossSep22.differenceMinor, null);
+  const crossSep23 = result.rows.find(row => row.pilotEventId === caseEventIds.crossSep23)!;
+  assert.equal(crossSep23.status, 'NEEDS_RECIPIENT_REVIEW'); assert.equal(crossSep23.matchMethod, 'CROSS_RECIPIENT_STRUCTURED_IDENTITY'); assert.equal(crossSep23.differenceMinor, null);
   const product = result.rows.find(row => row.pilotEventId === caseEventIds.product)!;
   assert.equal(product.status, 'PRODUCT_CLASSIFICATION_REVIEW'); assert.equal(product.matchMethod, 'PRODUCT_CLASSIFICATION_CONFLICT'); assert.equal(product.differenceMinor, null);
   const dieselToReefer = result.rows.find(row => row.pilotEventId === caseEventIds.dieselToReefer)!;
@@ -265,6 +276,10 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   assert.equal(reeferToDiesel.status, 'MATCHED'); assert.equal(reeferToDiesel.matchMethod, 'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'); assert.deepEqual(reeferToDiesel.statementProducts, ['TRUCK_DIESEL']);
   const defMismatch = result.rows.find(row => row.pilotEventId === caseEventIds.defMismatch)!;
   assert.equal(defMismatch.status, 'PRODUCT_CLASSIFICATION_REVIEW'); assert.equal(defMismatch.matchMethod, 'PRODUCT_CLASSIFICATION_CONFLICT');
+  const dieselToDef = result.rows.find(row => row.pilotEventId === caseEventIds.dieselToDef)!;
+  assert.equal(dieselToDef.status, 'PRODUCT_CLASSIFICATION_REVIEW'); assert.equal(dieselToDef.matchMethod, 'PRODUCT_CLASSIFICATION_CONFLICT');
+  const reeferToDef = result.rows.find(row => row.pilotEventId === caseEventIds.reeferToDef)!;
+  assert.equal(reeferToDef.status, 'PRODUCT_CLASSIFICATION_REVIEW'); assert.equal(reeferToDef.matchMethod, 'PRODUCT_CLASSIFICATION_CONFLICT');
   const ambiguous = result.rows.find(row => row.pilotEventId === caseEventIds.ambiguous)!;
   assert.equal(ambiguous.status, 'NEEDS_REVIEW'); assert.equal(ambiguous.matchMethod, 'INSUFFICIENT_TRUCK_DATE_CORROBORATION'); assert.equal(ambiguous.statementEvidence, null);
   const consumedIds = result.rows.flatMap(row => row.statementEvidence?.lineIds ?? []);
