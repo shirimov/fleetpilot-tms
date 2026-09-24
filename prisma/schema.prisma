@@ -151,25 +151,27 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  historicalTruckMappings       HistoricalTruckMapping[]      @relation("HistoricalTruckMappingActor")
-  approvedFuelDeductionPolicies FuelDeductionPolicy[]         @relation("FuelDeductionPolicyApprover")
-  fuelDeductionPolicyRevisions  FuelDeductionPolicyRevision[] @relation("FuelDeductionPolicyRevisionActor")
-  truckHistoryRevisions         TruckCompanyHistoryRevision[]
-  archiveCaptureRuns            ArchiveCaptureRun[]
-  archiveGrants                 ArchiveScopeGrant[]
-  archiveCatalogs               ArchiveBrowserCatalog[]
-  archiveVersions               ArchiveVersion[]              @relation("ArchiveVersionActor")
-  archiveConflicts              ArchiveConflict[]             @relation("ArchiveConflictActor")
-  archiveInventories            ArchiveInventory[]            @relation("ArchiveInventoryActor")
-  id                            String                        @id @default(cuid())
-  email                         String                        @unique
-  displayName                   String
-  image                         String?
-  isActive                      Boolean                       @default(true)
-  activeCompanyId               String?
-  activeCompany                 Company?                      @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt                     DateTime                      @default(now())
-  updatedAt                     DateTime                      @updatedAt
+  createdFuelReconciliationMatches   FuelReconciliationManualMatch[] @relation("FuelReconciliationMatchActor")
+  unmatchedFuelReconciliationMatches FuelReconciliationManualMatch[] @relation("FuelReconciliationUnmatchActor")
+  historicalTruckMappings            HistoricalTruckMapping[]        @relation("HistoricalTruckMappingActor")
+  approvedFuelDeductionPolicies      FuelDeductionPolicy[]           @relation("FuelDeductionPolicyApprover")
+  fuelDeductionPolicyRevisions       FuelDeductionPolicyRevision[]   @relation("FuelDeductionPolicyRevisionActor")
+  truckHistoryRevisions              TruckCompanyHistoryRevision[]
+  archiveCaptureRuns                 ArchiveCaptureRun[]
+  archiveGrants                      ArchiveScopeGrant[]
+  archiveCatalogs                    ArchiveBrowserCatalog[]
+  archiveVersions                    ArchiveVersion[]                @relation("ArchiveVersionActor")
+  archiveConflicts                   ArchiveConflict[]               @relation("ArchiveConflictActor")
+  archiveInventories                 ArchiveInventory[]              @relation("ArchiveInventoryActor")
+  id                                 String                          @id @default(cuid())
+  email                              String                          @unique
+  displayName                        String
+  image                              String?
+  isActive                           Boolean                         @default(true)
+  activeCompanyId                    String?
+  activeCompany                      Company?                        @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt                          DateTime                        @default(now())
+  updatedAt                          DateTime                        @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -1481,31 +1483,32 @@ enum FuelDiscountTreatment {
 }
 
 model OperatingGroup {
-  historicalTruckMappings HistoricalTruckMapping[]
-  fuelDeductionPolicies   FuelDeductionPolicy[]
-  archiveCaptureRuns      ArchiveCaptureRun[]
-  archiveGrants           ArchiveScopeGrant[]
-  archiveCatalogs         ArchiveBrowserCatalog[]
-  archiveCompanies        ArchiveCompany[]
-  id                      String                          @id @default(cuid())
-  name                    String
-  currency                String                          @default("USD")
-  createdAt               DateTime                        @default(now())
-  updatedAt               DateTime                        @updatedAt
-  companies               OperatingGroupCompany[]
-  memberships             OperatingGroupMembership[]
-  sources                 FinancialSource[]
-  statements              FinancialStatement[]
-  categories              FinancialCategory[]
-  programs                FinancialProgram[]
-  adminFeeAgreements      AdminFeeAgreement[]
-  parties                 FinancialParty[]
-  transactions            FinancialTransaction[]
-  expectations            FinancialExpectation[]
-  bankExpectationMatches  FinancialExpectationBankMatch[]
-  auditEvents             FinancialAuditEvent[]
-  pilotInvoices           PilotProviderInvoice[]
-  pilotProductMappings    PilotProductMapping[]
+  fuelReconciliationMatches FuelReconciliationManualMatch[]
+  historicalTruckMappings   HistoricalTruckMapping[]
+  fuelDeductionPolicies     FuelDeductionPolicy[]
+  archiveCaptureRuns        ArchiveCaptureRun[]
+  archiveGrants             ArchiveScopeGrant[]
+  archiveCatalogs           ArchiveBrowserCatalog[]
+  archiveCompanies          ArchiveCompany[]
+  id                        String                          @id @default(cuid())
+  name                      String
+  currency                  String                          @default("USD")
+  createdAt                 DateTime                        @default(now())
+  updatedAt                 DateTime                        @updatedAt
+  companies                 OperatingGroupCompany[]
+  memberships               OperatingGroupMembership[]
+  sources                   FinancialSource[]
+  statements                FinancialStatement[]
+  categories                FinancialCategory[]
+  programs                  FinancialProgram[]
+  adminFeeAgreements        AdminFeeAgreement[]
+  parties                   FinancialParty[]
+  transactions              FinancialTransaction[]
+  expectations              FinancialExpectation[]
+  bankExpectationMatches    FinancialExpectationBankMatch[]
+  auditEvents               FinancialAuditEvent[]
+  pilotInvoices             PilotProviderInvoice[]
+  pilotProductMappings      PilotProductMapping[]
 }
 
 /// Effective-dated control policy. It determines expected recovery only and never posts economics.
@@ -2045,7 +2048,8 @@ model PilotInvoiceDocument {
 }
 
 model PilotFuelingEvent {
-  id                                  String                 @id @default(cuid())
+  fuelReconciliationMatches           FuelReconciliationManualMatch[]
+  id                                  String                          @id @default(cuid())
   invoiceId                           String
   eventKeyHash                        String
   ticketHash                          String
@@ -2057,20 +2061,20 @@ model PilotFuelingEvent {
   state                               String?
   purchaseOrderContext                String?
   sourceDriverName                    String?
-  transactionDate                     DateTime               @db.Date
-  odometer                            Decimal?               @db.Decimal(18, 2)
+  transactionDate                     DateTime                        @db.Date
+  odometer                            Decimal?                        @db.Decimal(18, 2)
   truckId                             String?
   truckMatchStatus                    PilotTruckMatchStatus
   historicalInactiveReviewedAt        DateTime?
   historicalInactiveReviewedByUserId  String?
   historicalInactiveReviewedCompanyId String?
   historicalInactiveReviewedTruckId   String?
-  transactionId                       String?                @unique
-  createdAt                           DateTime               @default(now())
-  updatedAt                           DateTime               @updatedAt
-  invoice                             PilotProviderInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  truck                               Truck?                 @relation(fields: [truckId], references: [id], onDelete: Restrict)
-  transaction                         FinancialTransaction?  @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  transactionId                       String?                         @unique
+  createdAt                           DateTime                        @default(now())
+  updatedAt                           DateTime                        @updatedAt
+  invoice                             PilotProviderInvoice            @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  truck                               Truck?                          @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  transaction                         FinancialTransaction?           @relation(fields: [transactionId], references: [id], onDelete: Restrict)
   productLines                        PilotFuelProductLine[]
   issues                              PilotImportIssue[]
 
@@ -2563,27 +2567,52 @@ model ArchiveVersion {
 }
 
 model ArchiveLine {
-  id             String         @id @default(cuid())
-  versionId      String
-  kind           String
-  sourceArray    String
-  sourceOrder    Int
-  providerLineId String?
-  description    String?
-  sourceType     String?
-  amountMinor    BigInt?
-  rawAmount      String?
-  sourceDate     String?
-  reference      String?
-  sourceUnit     String?
-  included       Boolean?
-  metadata       Json
-  version        ArchiveVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  fuelReconciliationMatches FuelReconciliationManualMatch[]
+  id                        String                          @id @default(cuid())
+  versionId                 String
+  kind                      String
+  sourceArray               String
+  sourceOrder               Int
+  providerLineId            String?
+  description               String?
+  sourceType                String?
+  amountMinor               BigInt?
+  rawAmount                 String?
+  sourceDate                String?
+  reference                 String?
+  sourceUnit                String?
+  included                  Boolean?
+  metadata                  Json
+  version                   ArchiveVersion                  @relation(fields: [versionId], references: [id], onDelete: Restrict)
 
   @@unique([versionId, sourceArray, sourceOrder])
   @@index([versionId, kind])
   @@index([providerLineId])
   @@index([sourceUnit, sourceDate])
+}
+
+/// Reconciliation-only pairing. Source evidence and posted Accounting remain unchanged.
+/// Identity fields are immutable; an audited unmatch only closes the active pairing.
+model FuelReconciliationManualMatch {
+  id                String            @id @default(cuid())
+  operatingGroupId  String
+  pilotEventId      String
+  archiveLineId     String
+  reason            String
+  createdByUserId   String
+  createdAt         DateTime          @default(now())
+  unmatchedByUserId String?
+  unmatchReason     String?
+  unmatchedAt       DateTime?
+  operatingGroup    OperatingGroup    @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  pilotEvent        PilotFuelingEvent @relation(fields: [pilotEventId], references: [id], onDelete: Restrict)
+  archiveLine       ArchiveLine       @relation(fields: [archiveLineId], references: [id], onDelete: Restrict)
+  createdBy         User              @relation("FuelReconciliationMatchActor", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  unmatchedBy       User?             @relation("FuelReconciliationUnmatchActor", fields: [unmatchedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([operatingGroupId, createdAt, id])
+  @@index([pilotEventId, unmatchedAt])
+  @@index([archiveLineId, unmatchedAt])
 }
 
 model ArchiveTruck {

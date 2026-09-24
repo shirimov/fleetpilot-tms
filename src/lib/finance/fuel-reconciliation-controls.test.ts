@@ -24,7 +24,7 @@ test('control aggregation assigns each queue its audited money basis and positiv
   ];
   const controls = buildFuelReconciliationControls(rows);
   const byKey = Object.fromEntries(controls.map(control => [control.key, control]));
-  assert.equal(controls.length, 15);
+  assert.equal(controls.length, 18);
   for (const control of controls) {
     assert.equal(rows.filter(item => fuelReconciliationRowMatches(item, control.filter)).length, control.count, `${control.key} card/table parity`);
   }
@@ -61,5 +61,8 @@ test('control aggregation preserves canonical row counts and reports mixed bases
   ]);
   assert.deepEqual(controls.find(control => control.key === 'PRODUCT_CLASSIFICATION_REVIEW')!.amounts, [
     { amountMinor: BigInt(0), amountBasis: 'PILOT', amountLabel: 'affected' },
+  ]);
+  assert.deepEqual(rows.filter(item => fuelReconciliationRowMatches(item, { queue: 'review' })).map(item => item.status), [
+    'NEEDS_RECIPIENT_MAPPING', 'NEEDS_RECIPIENT_MAPPING', 'NEEDS_REVIEW',
   ]);
 });

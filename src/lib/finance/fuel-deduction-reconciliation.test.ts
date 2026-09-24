@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
-import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelIdentityWithUnavailableStatementCard, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
+import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelIdentityWithUnavailableStatementCard, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, subtractCoverageRanges, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
@@ -28,6 +28,17 @@ test('policy arithmetic is exact in integer minor units', () => {
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: null, savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
   assert.equal(expectedFuelDeduction({ amountMinor: BigInt(10_000), retailMinor: BigInt(9_000), savingsMinor: null }, { responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000 }), null);
   assert.deepEqual([discrepancyStatus(BigInt(10_000), BigInt(10_000), false), discrepancyStatus(BigInt(10_000), BigInt(9_994), false), discrepancyStatus(BigInt(10_000), BigInt(10_006), false), discrepancyStatus(BigInt(10_000), BigInt(0), false), discrepancyStatus(BigInt(10_000), BigInt(11_509), true)], ['MATCHED', 'UNDER_DEDUCTED', 'OVER_DEDUCTED', 'MISSING_DEDUCTION', 'TIMING_DIFFERENCE']);
+});
+
+test('Pilot source gaps include QuickManage-covered periods before, between, and after Pilot imports', () => {
+  assert.deepEqual(subtractCoverageRanges([
+    { start: '2025-10-20', end: '2025-11-09' },
+    { start: '2026-01-05', end: '2026-09-13' },
+  ], [{ start: '2026-06-29', end: '2026-08-02' }]), [
+    { start: '2025-10-20', end: '2025-11-09' },
+    { start: '2026-01-05', end: '2026-06-28' },
+    { start: '2026-08-03', end: '2026-09-13' },
+  ]);
 });
 
 test('OWNER fuel tolerance is five cents per total comparison and preserves the exact variance', () => {
@@ -283,7 +294,7 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
   const protectedBefore = [await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()];
   const result = await service.preview(context);
-  assert.deepEqual(result.coverage, { start: '2026-04-22', end: '2026-09-23' });
+  assert.equal(result.coverage.start, '2026-04-22'); assert.equal(result.coverage.end, '2026-09-23'); assert.ok(result.coverage.pilotRanges.length > 0);
   assert.equal(result.summary.reeferExcludedMinor, BigInt(0)); assert.equal(result.summary.providerCreditExcludedMinor, BigInt(-2859));
   const exact = result.rows.find(row => row.pilotEventId && row.truckId === truckIds.exact && row.purchaseDate === '2026-06-10')!;
   assert.equal(exact.status, 'MATCHED'); assert.equal(exact.expectedMinor, minor(10_000)); assert.equal(exact.statementMinor, minor(10_005)); assert.equal(exact.differenceMinor, minor(5)); assert.equal(exact.statementEvidence?.lineIds.length, 2); assert.equal(exact.recipientId, 'contractor-exact');
@@ -294,9 +305,47 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   const unknown = result.rows.find(row => row.truckId === truckIds.unknown)!;
   assert.equal(unknown.status, 'NEEDS_COMPANY_HISTORY'); assert.equal(unknown.pid, '12'); assert.equal(unknown.observedAmountDeltaMinor, minor(1509));
   assert.equal(result.rows.find(row => row.truckUnit === 'UNIT-211')?.status, 'NEEDS_TRUCK_MAPPING');
-  assert.equal(result.rows.find(row => row.pid === '20')?.status, 'STATEMENT_ONLY');
-  assert.equal(result.rows.find(row => row.pid === '1')?.status, 'NO_PILOT_DATA_IMPORTED');
+  assert.equal(result.rows.find(row => row.pid === '20')?.status, 'SOURCE_COVERAGE_GAP');
+  assert.equal(result.rows.find(row => row.pid === '1')?.status, 'SOURCE_COVERAGE_GAP');
+  assert.equal(result.completeness.conservation.pilot.countDifference, 0);
+  assert.equal(result.completeness.conservation.pilot.gallonsDifferenceHundredths, BigInt(0));
+  assert.equal(result.completeness.conservation.pilot.retailDifferenceMinor, BigInt(0));
+  assert.equal(result.completeness.conservation.pilot.dollarDifferenceMinor, BigInt(0));
+  assert.equal(result.completeness.conservation.quickManage.countDifference, 0);
+  assert.equal(result.completeness.conservation.quickManage.gallonsDifferenceHundredths, BigInt(0));
+  assert.equal(result.completeness.conservation.quickManage.retailDifferenceMinor, BigInt(0));
+  assert.equal(result.completeness.conservation.quickManage.dollarDifferenceMinor, BigInt(0));
+  assert.equal(result.completeness.orphanRecords, 0); assert.equal(result.completeness.duplicateConsumedEvidence, 0);
   assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], protectedBefore);
+});
+
+test('OWNER manual match and audited unmatch conserve both sources without changing source evidence or economics', async () => {
+  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
+  const before = await service.preview(context, { pageSize: 10000 });
+  const pilot = before.rows.find(row => row.truckUnit === 'UNIT-211' && row.pilotEventId && !row.statementEvidence)!;
+  const qm = before.rows.find(row => row.pid === '20' && !row.pilotEventId && row.statementEvidence)!;
+  const archiveLineId = qm.statementEvidence!.groupLineId;
+  const sourceBefore = [await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: pilot.pilotEventId! } }), await db.archiveLine.findUniqueOrThrow({ where: { id: archiveLineId } })];
+  const economicsBefore = [await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()];
+  const reason = 'OWNER confirmed the two source records describe the same purchase.';
+  const match = await service.createManualMatch({ pilotEventId: pilot.pilotEventId, archiveLineId, reason }, context);
+  const paired = await service.preview(context, { pageSize: 10000 });
+  const pairedRow = paired.rows.find(row => row.pilotEventId === pilot.pilotEventId)!;
+  assert.equal(pairedRow.manualMatch?.id, match.id); assert.equal(pairedRow.matchMethod, 'MANUAL_OWNER_MATCH'); assert.ok(pairedRow.statementEvidence?.lineIds.includes(archiveLineId));
+  assert.equal(paired.completeness.matching.manualMatched, before.completeness.matching.manualMatched + 1);
+  assert.equal(paired.completeness.orphanRecords, 0); assert.equal(paired.completeness.duplicateConsumedEvidence, 0);
+  await assert.rejects(service.createManualMatch({ pilotEventId: pilot.pilotEventId, archiveLineId, reason }, context));
+  const member = await db.user.create({ data: { email: `${dbName}-manual-member@example.test`, displayName: 'Manual match member', memberships: { create: { companyId, role: 'MEMBER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: 'MEMBER' } } } });
+  await assert.rejects(service.unmatchManualMatch({ matchId: match.id, reason: 'Member must not be allowed to undo matches.' }, { ...context, userId: member.id, role: 'MEMBER' }));
+  const unmatchReason = 'OWNER determined that the source pairing should return to review.';
+  await service.unmatchManualMatch({ matchId: match.id, reason: unmatchReason }, context);
+  const restored = await service.preview(context, { pageSize: 10000 });
+  assert.equal(restored.rows.find(row => row.pilotEventId === pilot.pilotEventId)?.statementEvidence, null);
+  assert.ok(restored.rows.some(row => row.statementEvidence?.lineIds.includes(archiveLineId) && !row.pilotEventId));
+  assert.equal(await db.financialAuditEvent.count({ where: { action: { in: ['FUEL_RECONCILIATION_MANUAL_MATCHED', 'FUEL_RECONCILIATION_MANUAL_UNMATCHED'] }, actorUserId: userId } }), 2);
+  assert.deepEqual([await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: pilot.pilotEventId! } }), await db.archiveLine.findUniqueOrThrow({ where: { id: archiveLineId } })], sourceBefore);
+  assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], economicsBefore);
+  await assert.rejects(db.fuelReconciliationManualMatch.delete({ where: { id: match.id } }));
 });
 
 test('preview resolves the weekend provider boundary and fails closed for recipient, product, Company identity and ambiguous evidence', async () => {
@@ -305,8 +354,8 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   const weekend = result.rows.find(row => row.pilotEventId === caseEventIds.weekend)!;
   assert.equal(weekend.status, 'MATCHED'); assert.equal(weekend.matchMethod, 'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'); assert.equal(weekend.statementMinor, minor(8_000));
   const weekendGap = result.rows.find(row => row.pilotEventId === caseEventIds.weekendGap)!;
-  assert.equal(weekendGap.status, 'NEEDS_COMPANY_HISTORY'); assert.equal(weekendGap.matchMethod, 'WEEKEND_COMPANY_HISTORY_GAP');
-  assert.equal(weekendGap.expectedMinor, minor(8_100)); assert.equal(weekendGap.statementMinor, BigInt(0)); assert.equal(weekendGap.differenceMinor, null);
+  assert.equal(weekendGap.status, 'SOURCE_COVERAGE_GAP'); assert.equal(weekendGap.matchMethod, 'WEEKEND_COMPANY_HISTORY_GAP');
+  assert.equal(weekendGap.expectedMinor, null); assert.equal(weekendGap.statementMinor, BigInt(0)); assert.equal(weekendGap.differenceMinor, null);
   const cross = result.rows.find(row => row.pilotEventId === caseEventIds.cross)!;
   assert.equal(cross.status, 'MATCHED'); assert.equal(cross.matchMethod, 'HISTORICAL_CROSS_RECIPIENT_RECOVERED'); assert.equal(cross.statementMinor, minor(9_000));
   assert.equal(cross.statementTruckUnit, 'UNIT-CROSSACTUAL'); assert.equal(cross.statementRecipientId, 'contractor-actual');
@@ -470,8 +519,10 @@ test('audited policy revision preserves identity/history, enforces authority and
     expectedMinor: null, statementMinor: BigInt(1010), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null,
     historicalCompanyId: companyId, postedCompanyId: companyId, postedCompanyName: 'Synthetic reconciliation Company', currentCompanyId: companyId, currentCompanyName: 'Synthetic reconciliation Company', historyDiffersFromPosted: false,
     products: ['TRUCK_DIESEL'], gallons: '2.00', matchMethod: 'STRUCTURED_IDENTITY', statementTruckUnit: 'UNIT-DRIVER', statementRecipientId: recipientId, statementRecipientName: 'Revision recipient', statementProducts: ['TRUCK_DIESEL'], productClassification: 'SAME',
+    pilotCardLastFour: '1234', pilotLocationNumber: '100', pilotCity: 'Test City', pilotState: 'CA',
+    statementDate: date, statementCardLastFour: '1234', statementLocationNumber: '100', statementCity: 'Test City', statementState: 'CA', statementGallons: '2.00', statementRetailMinor: BigInt(1100), manualMatch: null,
     canonicalIdentityLink: null,
-    pilotEvidence: { eventId: provenanceEvent.id, invoiceId: 'invoice', invoiceNumber: 'revision', transactionId: null }, statementEvidence: { lineIds: [provenanceVersion.lines[0].id], versionId: provenanceVersion.id, pid: 'revision', statementNumber: 'revision', description: 'Fuel', reference: `reference-${date}` },
+    pilotEvidence: { eventId: provenanceEvent.id, invoiceId: 'invoice', invoiceNumber: 'revision', transactionId: null }, statementEvidence: { groupLineId: provenanceVersion.lines[0].id, lineIds: [provenanceVersion.lines[0].id], versionId: provenanceVersion.id, pid: 'revision', statementNumber: 'revision', description: 'Fuel', reference: `reference-${date}` },
   });
   let evidenceRows = [row('2026-07-10'), row('2026-07-12')];
   revisionService.preview = async () => ({ rows: evidenceRows } as Awaited<ReturnType<FuelDeductionReconciliationService['preview']>>);
