@@ -85,6 +85,10 @@ const validDate = (value: string | null) => {
 };
 
 type CoverageRange = { start: string; end: string };
+type CoverageMatrixRow = {
+  source: 'PILOT' | 'QUICKMANAGE'; companyId: string | null; companyName: string | null; pid: string | null;
+  start: string | null; end: string | null; status: 'PRESENT' | 'MISSING' | 'PARTIAL'; reason: string | null;
+};
 const mergeCoverageRanges = (ranges: CoverageRange[]) => {
   const sorted = [...ranges].sort((left, right) => left.start.localeCompare(right.start) || left.end.localeCompare(right.end));
   const merged: CoverageRange[] = [];
@@ -316,7 +320,7 @@ export function buildFuelReconciliationControls(rows: FuelReconciliationRow[]): 
   return controls;
 }
 
-export type FuelReconciliationFilters = { page?: number; pageSize?: number; companyId?: string; pid?: string; date?: string; truck?: string; recipient?: string; responsibility?: string; status?: string; policy?: string; history?: string; match?: string; queue?: string };
+export type FuelReconciliationFilters = { page?: number; pageSize?: number; companyId?: string; pid?: string; date?: string; truck?: string; recipient?: string; responsibility?: string; status?: string; policy?: string; history?: string; match?: string; queue?: string; source?: string; scope?: string };
 
 export type HistoricalTruckMappingEvidenceReference = {
   pilotEventId: string;
@@ -586,6 +590,8 @@ export class FuelDeductionReconciliationService {
     if (filters.responsibility && !['COMPANY', 'RECIPIENT', 'DRIVER', 'CONTRACTOR'].includes(filters.responsibility)) throw new FinancialValidationError('Invalid responsibility filter.');
     if (filters.match && !['auto', 'manual'].includes(filters.match)) throw new FinancialValidationError('Invalid match filter.');
     if (filters.queue && filters.queue !== 'review') throw new FinancialValidationError('Invalid queue filter.');
+    if (filters.source && !['pilot', 'quickmanage'].includes(filters.source)) throw new FinancialValidationError('Invalid source filter.');
+    if (filters.scope && !['comparable', 'outside'].includes(filters.scope)) throw new FinancialValidationError('Invalid coverage scope filter.');
     if (filters.date) historyDate(filters.date);
     for (const value of [filters.companyId, filters.pid, filters.truck, filters.recipient]) if (value && value.length > 200) throw new FinancialValidationError('Filter too long.');
     const [events, versions, policies, companies, historicalMappings, pilotInvoices, manualMatches] = await Promise.all([
@@ -1024,7 +1030,6 @@ export class FuelDeductionReconciliationService {
     // proves that no supported reefer amount was excluded.
     const reeferMinor = BigInt(0);
     const providerCreditMinor = events.length ? await this.database.pilotInvoiceAdjustment.aggregate({ where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } }, _sum: { signedAmountMinor: true } }).then(result => result._sum.signedAmountMinor ?? BigInt(0)) : BigInt(0);
-    const filtered = rows.filter(row => fuelReconciliationRowMatches(row, filters));
     const start = (page - 1) * pageSize;
     const totals = (items: FuelReconciliationRow[]) => ({ count: items.length, pilotActualMinor: items.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)), expectedMinor: items.reduce((sum, row) => sum + (row.expectedMinor ?? BigInt(0)), BigInt(0)), statementMinor: items.reduce((sum, row) => sum + row.statementMinor, BigInt(0)), differenceMinor: items.reduce((sum, row) => sum + (row.differenceMinor ?? BigInt(0)), BigInt(0)) });
     const byStatus = Object.fromEntries(reconciliationStatuses.map(status => [status, totals(rows.filter(row => row.status === status))]));
@@ -1078,6 +1083,10 @@ export class FuelDeductionReconciliationService {
     const needsReviewRows = rows.filter(row => fuelReconciliationReviewStatuses.has(row.status));
     const pilotComparableIds = new Set([...pilotRowsById].filter(([, sourceRows]) => sourceRows.every(row => !coverageGapRows.includes(row))).map(([id]) => id));
     const quickManageComparableIds = new Set([...quickManageRowsById].filter(([, sourceRows]) => sourceRows.every(row => !coverageGapRows.includes(row))).map(([id]) => id));
+    const outsideComparable = (row: FuelReconciliationRow) => coverageGapRows.includes(row) || row.matchMethod === 'NO_DEDUCTION_EXPECTED';
+    const filtered = rows.filter(row => fuelReconciliationRowMatches(row, filters)
+      && (!filters.source || (filters.source === 'pilot' ? !!row.pilotEventId : !!row.statementEvidence))
+      && (!filters.scope || (filters.scope === 'outside' ? outsideComparable(row) : !outsideComparable(row))));
     const sumPilot = (ids: Iterable<string>) => [...ids].reduce((total, id) => {
       const source = pilotSources.get(id)!; return { count: total.count + 1, gallonsHundredths: total.gallonsHundredths + source.gallonsHundredths, retailMinor: total.retailMinor + source.retailMinor, netMinor: total.netMinor + source.netMinor, missingRetailCount: total.missingRetailCount + Number(source.missingRetail) };
     }, { count: 0, gallonsHundredths: BigInt(0), retailMinor: BigInt(0), netMinor: BigInt(0), missingRetailCount: 0 });
@@ -1086,7 +1095,34 @@ export class FuelDeductionReconciliationService {
     }, { count: 0, sourceRecordCount: 0, gallonsHundredths: BigInt(0), retailMinor: BigInt(0), deductedMinor: BigInt(0), missingRetailCount: 0 });
     const pilotAll = sumPilot(pilotSources.keys()), pilotDisposed = sumPilot(pilotRowsById.keys());
     const quickManageAll = sumQuickManage(quickManageSources.keys()), quickManageDisposed = sumQuickManage(quickManageRowsById.keys());
-    const missingQuickManageCoverage = coverageGapRows.filter(row => row.pilotEventId).map(row => ({ companyId: row.companyId, companyName: row.companyName, pid: row.pid, date: row.purchaseDate, reason: row.matchMethod }));
+    const missingQuickManageCoverage = coverageGapRows.filter(row => row.pilotEventId).map(row => {
+      const date = row.purchaseDate && row.matchMethod === 'WEEKEND_COMPANY_HISTORY_GAP' ? previousDay(row.purchaseDate) : row.purchaseDate;
+      const coveringVersions = date ? acceptedVersions.filter(version => day(version.workStart) <= date && day(version.workEnd) >= date) : [];
+      const pids = [...new Set(coveringVersions.map(version => version.pid))];
+      return { companyId: row.companyId, companyName: row.companyName, pid: row.pid ?? (pids.length === 1 ? pids[0] : null), date, reason: row.matchMethod, status: coveringVersions.length ? 'PARTIAL' as const : 'MISSING' as const };
+    });
+    const missingPilotCoverage = subtractCoverageRanges(quickManagePilotCalendarCoverage, pilotCoverageRanges);
+    const quickManageCoverageMatrix: CoverageMatrixRow[] = [...new Map(acceptedVersions.map(version => {
+      const item: CoverageMatrixRow = {
+        source: 'QUICKMANAGE', companyId: version.statement.company.companyId,
+        companyName: version.statement.company.company.name, pid: version.pid,
+        start: day(version.workStart), end: day(version.workEnd), status: 'PRESENT', reason: null,
+      };
+      return [`${item.companyId}:${item.pid}:${item.start}:${item.end}`, item];
+    })).values()];
+    for (const gap of missingQuickManageCoverage) quickManageCoverageMatrix.push({
+      source: 'QUICKMANAGE', companyId: gap.companyId, companyName: gap.companyName ?? 'Unresolved Company', pid: gap.pid,
+      start: gap.date, end: gap.date, status: gap.status, reason: gap.reason,
+    });
+    for (const company of companies.filter(company => !acceptedVersions.some(version => version.statement.company.companyId === company.id))) quickManageCoverageMatrix.push({
+      source: 'QUICKMANAGE', companyId: company.id, companyName: company.name, pid: null,
+      start: null, end: null, status: 'MISSING', reason: 'NO_ACCEPTED_QUICKMANAGE_ARCHIVE',
+    });
+    const coverageMatrix: CoverageMatrixRow[] = [
+      ...pilotCoverageRanges.map(range => ({ source: 'PILOT' as const, companyId: null, companyName: null, pid: null, ...range, status: 'PRESENT' as const, reason: null })),
+      ...missingPilotCoverage.map(range => ({ source: 'PILOT' as const, companyId: null, companyName: null, pid: null, ...range, status: 'MISSING' as const, reason: 'MISSING_PILOT_COVERAGE' })),
+      ...quickManageCoverageMatrix,
+    ];
     const completeness = {
       allImported: { pilot: pilotAll, quickManage: quickManageAll },
       comparable: { pilot: sumPilot(pilotComparableIds), quickManage: sumQuickManage(quickManageComparableIds) },
@@ -1099,15 +1135,18 @@ export class FuelDeductionReconciliationService {
       },
       conservation: {
         pilot: { total: pilotAll, disposed: pilotDisposed, countDifference: pilotAll.count - pilotDisposed.count, gallonsDifferenceHundredths: pilotAll.gallonsHundredths - pilotDisposed.gallonsHundredths, retailDifferenceMinor: pilotAll.retailMinor - pilotDisposed.retailMinor, dollarDifferenceMinor: pilotAll.netMinor - pilotDisposed.netMinor },
-        quickManage: { total: quickManageAll, disposed: quickManageDisposed, countDifference: quickManageAll.count - quickManageDisposed.count, gallonsDifferenceHundredths: quickManageAll.gallonsHundredths - quickManageDisposed.gallonsHundredths, retailDifferenceMinor: quickManageAll.retailMinor - quickManageDisposed.retailMinor, dollarDifferenceMinor: quickManageAll.deductedMinor - quickManageDisposed.deductedMinor },
+        quickManage: { total: quickManageAll, disposed: quickManageDisposed, countDifference: quickManageAll.count - quickManageDisposed.count, sourceRecordCountDifference: quickManageAll.sourceRecordCount - quickManageDisposed.sourceRecordCount, gallonsDifferenceHundredths: quickManageAll.gallonsHundredths - quickManageDisposed.gallonsHundredths, retailDifferenceMinor: quickManageAll.retailMinor - quickManageDisposed.retailMinor, dollarDifferenceMinor: quickManageAll.deductedMinor - quickManageDisposed.deductedMinor },
       },
       orphanRecords: pilotOrphans.length + quickManageOrphans.length + activeManualMatchOrphans,
       orphanPilotRecords: pilotOrphans.length,
       orphanQuickManageRecords: quickManageOrphans.length,
       orphanActiveManualMatches: activeManualMatchOrphans,
       duplicateConsumedEvidence: pilotDuplicateConsumption + quickManageDuplicateConsumption,
-      missingPilotCoverage: subtractCoverageRanges(quickManagePilotCalendarCoverage, pilotCoverageRanges),
+      duplicatePilotConsumption: pilotDuplicateConsumption,
+      duplicateQuickManageConsumption: quickManageDuplicateConsumption,
+      missingPilotCoverage,
       missingQuickManageCoverage,
+      coverageMatrix,
     };
     return { coverage: { start: coverageStart, end: coverageEnd, pilotRanges: pilotCoverageRanges }, completeness, summary: { ...allTotals, statementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, comparableStatementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, outsideCoverageStatementMinor, rawStatementDeductionMinor, rawFuelStatementMinor, unsupportedFuelStatementCount: unsupportedFuelStatementLines.length, unsupportedFuelStatementMinor, comparablePilotMinor: dated.reduce((sum, item) => sum + item.lines.reduce((part, line) => part + line.amountMinor, BigInt(0)), BigInt(0)), reeferExcludedMinor: reeferMinor, providerCreditExcludedMinor: providerCreditMinor, historicalPostedDifferences }, controls: buildFuelReconciliationControls(rows), byStatus, byCompany, rows: filtered.slice(start, start + pageSize), total: filtered.length, page, pageSize };
   }

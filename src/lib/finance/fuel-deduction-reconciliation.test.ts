@@ -312,10 +312,15 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   assert.equal(result.completeness.conservation.pilot.retailDifferenceMinor, BigInt(0));
   assert.equal(result.completeness.conservation.pilot.dollarDifferenceMinor, BigInt(0));
   assert.equal(result.completeness.conservation.quickManage.countDifference, 0);
+  assert.equal(result.completeness.conservation.quickManage.sourceRecordCountDifference, 0);
   assert.equal(result.completeness.conservation.quickManage.gallonsDifferenceHundredths, BigInt(0));
   assert.equal(result.completeness.conservation.quickManage.retailDifferenceMinor, BigInt(0));
   assert.equal(result.completeness.conservation.quickManage.dollarDifferenceMinor, BigInt(0));
   assert.equal(result.completeness.orphanRecords, 0); assert.equal(result.completeness.duplicateConsumedEvidence, 0);
+  assert.equal(result.completeness.duplicatePilotConsumption, 0); assert.equal(result.completeness.duplicateQuickManageConsumption, 0);
+  assert.ok(result.completeness.coverageMatrix.some(row => row.source === 'PILOT' && row.status === 'PRESENT'));
+  assert.ok(result.completeness.coverageMatrix.some(row => row.source === 'PILOT' && row.status === 'MISSING'));
+  assert.ok(result.completeness.coverageMatrix.some(row => row.source === 'QUICKMANAGE' && row.status === 'PRESENT'));
   assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], protectedBefore);
 });
 
@@ -346,6 +351,17 @@ test('OWNER manual match and audited unmatch conserve both sources without chang
   assert.deepEqual([await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: pilot.pilotEventId! } }), await db.archiveLine.findUniqueOrThrow({ where: { id: archiveLineId } })], sourceBefore);
   assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], economicsBefore);
   await assert.rejects(db.fuelReconciliationManualMatch.delete({ where: { id: match.id } }));
+  const concurrent = await Promise.allSettled([
+    service.createManualMatch({ pilotEventId: pilot.pilotEventId, archiveLineId, reason }, context),
+    service.createManualMatch({ pilotEventId: pilot.pilotEventId, archiveLineId, reason }, context),
+  ]);
+  assert.deepEqual(concurrent.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+  const concurrentMatch = concurrent.find(result => result.status === 'fulfilled');
+  assert.ok(concurrentMatch?.status === 'fulfilled');
+  const concurrentMatchId = concurrentMatch.value.id;
+  await service.unmatchManualMatch({ matchId: concurrentMatchId, reason: 'OWNER completed the concurrency safety verification.' }, context);
+  assert.deepEqual([await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: pilot.pilotEventId! } }), await db.archiveLine.findUniqueOrThrow({ where: { id: archiveLineId } })], sourceBefore);
+  assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], economicsBefore);
 });
 
 test('preview resolves the weekend provider boundary and fails closed for recipient, product, Company identity and ambiguous evidence', async () => {

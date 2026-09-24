@@ -18,6 +18,8 @@ export async function GET(request: Request) {
       responsibility: params.get('responsibility') ?? undefined, policy: params.get('policy') ?? undefined,
       history: params.get('history') ?? undefined, match: params.get('match') ?? undefined,
       queue: params.get('queue') ?? undefined,
+      source: params.get('source') ?? undefined,
+      scope: params.get('scope') ?? undefined,
     }));
   } catch (error) { return financialRouteError(error); }
 }
