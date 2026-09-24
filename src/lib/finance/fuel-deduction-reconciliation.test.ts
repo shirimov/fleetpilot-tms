@@ -171,13 +171,14 @@ async function addEvent(input: { key: string; date: string; truckId?: string | n
   return event;
 }
 
-async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; providerTruckId?: string; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string }) {
+async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string }) {
   const document = await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'OWNER_SETTLEMENT', periodStart: historyDate(input.workStart), periodEnd: historyDate(input.workEnd), originalFilename: `${input.key}.pdf`, displayFilename: `${input.key}.pdf`, mimeType: 'application/pdf', byteSize: 1, storageKey: `test/${dbName}/${input.key}.pdf`, checksumSha256: hash(`pdf-${input.key}`), importedByUserId: userId } });
   const statement = await db.archiveStatement.create({ data: { archiveCompanyId: input.archiveCompanyId ?? archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   return db.$transaction(async tx => {
     const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
-    await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, providerTruckId: input.providerTruckId, unit: input.unit, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
-    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: '991234', merchant: '100', city: 'Test City', state: 'CA' } } });
+    await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
+    if (input.duplicateProviderTruck) await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: `${input.unit}-duplicate`, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
+    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: '991234', merchant: '100', city: 'Test City', state: 'CA' } } });
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
 }
@@ -331,11 +332,12 @@ test('policy creation requires Company authority, records audit evidence and dat
 test('OWNER can add an audited provider identity mapping only from repeated exact immutable fuel evidence', async () => {
   const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
   const providerTruckId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  const truck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-MAP', unitNumberNormalized: 'UNIT-MAP' } });
+  const vin = '1M8GDM9AXKP042788';
+  const truck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-MAP', unitNumberNormalized: 'UNIT-MAP', vin, vinNormalized: vin } });
   const eventOne = await addEvent({ key: 'mapping-one', date: '2026-08-20', truckId: truck.id, unit: 'UNIT-MAP', quantity: '20.00', amount: minor(7_000) });
   const eventTwo = await addEvent({ key: 'mapping-two', date: '2026-08-21', truckId: truck.id, unit: 'UNIT-MAP', quantity: '20.00', amount: minor(7_100) });
-  const versionOne = await archiveVersion({ key: 'mapping-one', pid: '34', recipientId: 'mapping-recipient', recipientType: 'CONTRACTOR', workStart: '2026-08-16', workEnd: '2026-08-22', truckId: null, providerTruckId, unit: 'UNIT-MAP', mappingStatus: 'NEEDS_REVIEW', amount: minor(7_000), sourceDate: '2026-08-20', dieselQuantity: '20.00' });
-  const versionTwo = await archiveVersion({ key: 'mapping-two', pid: '34', recipientId: 'mapping-recipient', recipientType: 'CONTRACTOR', workStart: '2026-08-16', workEnd: '2026-08-22', truckId: null, providerTruckId, unit: 'UNIT-MAP', mappingStatus: 'NEEDS_REVIEW', amount: minor(7_100), sourceDate: '2026-08-21', dieselQuantity: '20.00' });
+  const versionOne = await archiveVersion({ key: 'mapping-one', pid: '34', recipientId: 'mapping-recipient', recipientType: 'CONTRACTOR', workStart: '2026-08-16', workEnd: '2026-08-22', truckId: null, providerTruckId, unit: 'UNIT-MAP', vin, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_000), sourceDate: '2026-08-20', dieselQuantity: '20.00' });
+  const versionTwo = await archiveVersion({ key: 'mapping-two', pid: '34', recipientId: 'mapping-recipient', recipientType: 'CONTRACTOR', workStart: '2026-08-16', workEnd: '2026-08-22', truckId: null, providerTruckId, duplicateProviderTruck: true, unit: 'UNIT-MAP', vin, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_100), sourceDate: '2026-08-21', dieselQuantity: '20.00' });
   const [lineOne, lineTwo] = await Promise.all([
     db.archiveLine.findFirstOrThrow({ where: { versionId: versionOne.id } }),
     db.archiveLine.findFirstOrThrow({ where: { versionId: versionTwo.id } }),
@@ -344,15 +346,76 @@ test('OWNER can add an audited provider identity mapping only from repeated exac
     { pilotEventId: eventOne.id, statementVersionId: versionOne.id, statementLineIds: [lineOne.id] },
     { pilotEventId: eventTwo.id, statementVersionId: versionTwo.id, statementLineIds: [lineTwo.id] },
   ];
+  const request = { providerTruckId, truckId: truck.id, sourceReference: 'Two exact Pilot and immutable QuickManage fuel identities.', reason: 'Stable provider UUID and repeated exact card, location, date, product, and unit evidence.', evidenceReferences };
   const archiveBefore = await db.archiveTruck.findMany({ where: { providerTruckId }, orderBy: { id: 'asc' } });
-  const mapping = await service.createHistoricalTruckMapping({ providerTruckId, truckId: truck.id, sourceReference: 'Two exact Pilot and immutable QuickManage fuel identities.', reason: 'Stable provider UUID and repeated exact card, location, date, product, and unit evidence.', evidenceReferences }, context);
-  assert.equal(mapping.truckId, truck.id);
-  assert.equal(await db.financialAuditEvent.count({ where: { action: 'HISTORICAL_TRUCK_MAPPING_CREATED', actorUserId: userId } }), 1);
+  const canonicalBefore = await db.truck.findUniqueOrThrow({ where: { id: truck.id } });
+  const economicsBefore = [await db.financialTransaction.count(), await db.financialAllocation.count(), await db.financialExpectation.count(), await db.financialExpectationBankMatch.count(), await db.fuelDeductionPolicy.count(), await db.pilotFuelingEvent.count(), await db.archiveLine.count()];
+  const auditBefore = await db.financialAuditEvent.count({ where: { action: 'HISTORICAL_TRUCK_MAPPING_CREATED', actorUserId: userId } });
+  const [mapping, retry] = await Promise.all([service.createHistoricalTruckMapping(request, context), service.createHistoricalTruckMapping(request, context)]);
+  assert.equal(mapping.truckId, truck.id); assert.equal(retry.id, mapping.id);
+  assert.equal((await service.createHistoricalTruckMapping(request, context)).id, mapping.id);
+  assert.equal(await db.historicalTruckMapping.count({ where: { providerTruckId } }), 1);
+  assert.equal(await db.financialAuditEvent.count({ where: { action: 'HISTORICAL_TRUCK_MAPPING_CREATED', actorUserId: userId } }), auditBefore + 1);
   assert.deepEqual(await db.archiveTruck.findMany({ where: { providerTruckId }, orderBy: { id: 'asc' } }), archiveBefore);
+  assert.deepEqual(await db.truck.findUniqueOrThrow({ where: { id: truck.id } }), canonicalBefore);
+  assert.deepEqual([await db.financialTransaction.count(), await db.financialAllocation.count(), await db.financialExpectation.count(), await db.financialExpectationBankMatch.count(), await db.fuelDeductionPolicy.count(), await db.pilotFuelingEvent.count(), await db.archiveLine.count()], economicsBefore);
+  const mappedRows = (await service.preview(context, { truck: 'UNIT-MAP', pageSize: 10000 })).rows.filter(row => row.truckId === truck.id);
+  assert.equal(mappedRows.some(row => row.status === 'NEEDS_TRUCK_MAPPING'), false);
+  assert.equal(mappedRows.some(row => row.status === 'NEEDS_COMPANY_HISTORY'), true);
   await assert.rejects(db.historicalTruckMapping.update({ where: { id: mapping.id }, data: { reason: 'Tampered mapping' } }));
   await assert.rejects(db.historicalTruckMapping.delete({ where: { id: mapping.id } }));
   await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId, truckId: truck.id, sourceReference: 'Duplicate mapping attempt.', reason: 'Must remain unique and fail closed.', evidenceReferences }, context));
   await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', truckId: truck.id, sourceReference: 'Insufficient evidence attempt.', reason: 'Must require repeated immutable corroboration.', evidenceReferences: evidenceReferences.slice(0, 1) }, context));
+
+  const member = await db.user.create({ data: { email: `${dbName}-mapping-member@example.test`, displayName: 'Mapping member', activeCompanyId: companyId, memberships: { create: { companyId, role: 'MEMBER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: 'MEMBER' } } } });
+  await assert.rejects(service.createHistoricalTruckMapping(request, { ...context, userId: member.id, role: 'OWNER' }));
+  const inactive = await db.user.create({ data: { email: `${dbName}-mapping-inactive@example.test`, displayName: 'Inactive mapping owner', activeCompanyId: companyId, isActive: false, memberships: { create: { companyId, role: 'OWNER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: 'OWNER' } } } });
+  await assert.rejects(service.createHistoricalTruckMapping(request, { ...context, userId: inactive.id }));
+  const revoked = await db.user.create({ data: { email: `${dbName}-mapping-revoked@example.test`, displayName: 'Revoked mapping owner', activeCompanyId: companyId, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: 'OWNER' } } } });
+  await assert.rejects(service.createHistoricalTruckMapping(request, { ...context, userId: revoked.id }));
+  await assert.rejects(service.createHistoricalTruckMapping(request, { ...context, operatingGroupId: 'outside-group' }));
+
+  const repeatedEvent = await addEvent({ key: 'mapping-repeated-line', date: '2026-08-20', truckId: truck.id, unit: 'UNIT-MAP', quantity: '20.00', amount: minor(7_000) });
+  await assert.rejects(service.createHistoricalTruckMapping({ ...request, providerTruckId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', evidenceReferences: [evidenceReferences[0], { pilotEventId: repeatedEvent.id, statementVersionId: versionOne.id, statementLineIds: [lineOne.id] }] }, context));
+
+  const conflictVin = '1M8GDM9AXKP042789';
+  const vinProviderId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const canonicalConflictVin = `TESTVIN${randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`;
+  const vinTruck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-VIN', unitNumberNormalized: 'UNIT-VIN', vin: canonicalConflictVin, vinNormalized: canonicalConflictVin } });
+  const vinEventOne = await addEvent({ key: 'vin-conflict-one', date: '2026-08-22', truckId: vinTruck.id, unit: 'UNIT-VIN', amount: minor(7_200) });
+  const vinEventTwo = await addEvent({ key: 'vin-conflict-two', date: '2026-08-23', truckId: vinTruck.id, unit: 'UNIT-VIN', amount: minor(7_300) });
+  const vinVersionOne = await archiveVersion({ key: 'vin-conflict-one', pid: '35', recipientId: 'vin-conflict', recipientType: 'CONTRACTOR', workStart: '2026-08-22', workEnd: '2026-08-24', truckId: null, providerTruckId: vinProviderId, unit: 'UNIT-VIN', vin: conflictVin, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_200), sourceDate: '2026-08-22' });
+  const vinVersionTwo = await archiveVersion({ key: 'vin-conflict-two', pid: '35', recipientId: 'vin-conflict', recipientType: 'CONTRACTOR', workStart: '2026-08-22', workEnd: '2026-08-24', truckId: null, providerTruckId: vinProviderId, unit: 'UNIT-VIN', vin: conflictVin, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_300), sourceDate: '2026-08-23' });
+  const vinLines = await db.archiveLine.findMany({ where: { versionId: { in: [vinVersionOne.id, vinVersionTwo.id] } }, orderBy: { sourceDate: 'asc' } });
+  await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId: vinProviderId, truckId: vinTruck.id, sourceReference: 'Conflicting archived VIN evidence.', reason: 'Physical identity contradiction must fail closed.', evidenceReferences: [{ pilotEventId: vinEventOne.id, statementVersionId: vinVersionOne.id, statementLineIds: [vinLines[0].id] }, { pilotEventId: vinEventTwo.id, statementVersionId: vinVersionTwo.id, statementLineIds: [vinLines[1].id] }] }, context));
+  assert.equal(await db.historicalTruckMapping.count({ where: { providerTruckId: vinProviderId } }), 0);
+
+  const wrongLineProviderId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const wrongLineTruck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-LINE', unitNumberNormalized: 'UNIT-LINE' } });
+  const wrongEventOne = await addEvent({ key: 'wrong-line-one', date: '2026-08-24', truckId: wrongLineTruck.id, unit: 'UNIT-LINE', amount: minor(7_400) });
+  const wrongEventTwo = await addEvent({ key: 'wrong-line-two', date: '2026-08-25', truckId: wrongLineTruck.id, unit: 'UNIT-LINE', amount: minor(7_500) });
+  const wrongVersionOne = await archiveVersion({ key: 'wrong-line-one', pid: '36', recipientId: 'wrong-line', recipientType: 'CONTRACTOR', workStart: '2026-08-24', workEnd: '2026-08-26', truckId: null, providerTruckId: wrongLineProviderId, unit: 'UNIT-LINE', lineUnit: 'ANOTHER-TRUCK', mappingStatus: 'NEEDS_REVIEW', amount: minor(7_400), sourceDate: '2026-08-24' });
+  const wrongVersionTwo = await archiveVersion({ key: 'wrong-line-two', pid: '36', recipientId: 'wrong-line', recipientType: 'CONTRACTOR', workStart: '2026-08-24', workEnd: '2026-08-26', truckId: null, providerTruckId: wrongLineProviderId, unit: 'UNIT-LINE', lineUnit: 'ANOTHER-TRUCK', mappingStatus: 'NEEDS_REVIEW', amount: minor(7_500), sourceDate: '2026-08-25' });
+  const wrongLines = await db.archiveLine.findMany({ where: { versionId: { in: [wrongVersionOne.id, wrongVersionTwo.id] } }, orderBy: { sourceDate: 'asc' } });
+  await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId: wrongLineProviderId, truckId: wrongLineTruck.id, sourceReference: 'Statement versions contain multiple Trucks.', reason: 'Lines from another source unit must not prove identity.', evidenceReferences: [{ pilotEventId: wrongEventOne.id, statementVersionId: wrongVersionOne.id, statementLineIds: [wrongLines[0].id] }, { pilotEventId: wrongEventTwo.id, statementVersionId: wrongVersionTwo.id, statementLineIds: [wrongLines[1].id] }] }, context));
+
+  await db.companyMembership.create({ data: { userId, companyId: conflictCompanyId, role: 'OWNER' } });
+  const collisionProviderId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const collisionTruck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-COLLISION', unitNumberNormalized: 'UNIT-COLLISION' } });
+  await db.truck.create({ data: { companyId: conflictCompanyId, unitNumber: 'UNIT-COLLISION', unitNumberNormalized: 'UNIT-COLLISION' } });
+  await archiveVersion({ key: 'unit-collision-one', pid: '36', recipientId: 'unit-collision', recipientType: 'CONTRACTOR', workStart: '2026-08-24', workEnd: '2026-08-26', truckId: null, providerTruckId: collisionProviderId, unit: 'UNIT-COLLISION', mappingStatus: 'NEEDS_REVIEW' });
+  await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId: collisionProviderId, truckId: collisionTruck.id, sourceReference: 'Unit label without unique physical identity.', reason: 'A same-unit canonical collision must fail closed.', evidenceReferences: [{ pilotEventId: wrongEventOne.id, statementVersionId: wrongVersionOne.id, statementLineIds: [wrongLines[0].id] }, { pilotEventId: wrongEventTwo.id, statementVersionId: wrongVersionTwo.id, statementLineIds: [wrongLines[1].id] }] }, { ...context, companyIds: [companyId, conflictCompanyId] }));
+
+  const historicalProviderId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const historicalTruck = await db.truck.create({ data: { companyId, unitNumber: 'UNIT-HISTORY', unitNumberNormalized: 'UNIT-HISTORY' } });
+  const historicalEventOne = await addEvent({ key: 'historical-company-one', date: '2026-08-26', truckId: historicalTruck.id, unit: 'UNIT-HISTORY', amount: minor(7_600) });
+  const historicalEventTwo = await addEvent({ key: 'historical-company-two', date: '2026-08-27', truckId: historicalTruck.id, unit: 'UNIT-HISTORY', amount: minor(7_700) });
+  const historicalVersionOne = await archiveVersion({ key: 'historical-company-one', pid: '37', recipientId: 'historical-company', recipientType: 'CONTRACTOR', workStart: '2026-08-26', workEnd: '2026-08-28', truckId: null, providerTruckId: historicalProviderId, unit: 'UNIT-HISTORY', archiveCompanyId: conflictArchiveCompanyId, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_600), sourceDate: '2026-08-26' });
+  const historicalVersionTwo = await archiveVersion({ key: 'historical-company-two', pid: '37', recipientId: 'historical-company', recipientType: 'CONTRACTOR', workStart: '2026-08-26', workEnd: '2026-08-28', truckId: null, providerTruckId: historicalProviderId, unit: 'UNIT-HISTORY', archiveCompanyId: conflictArchiveCompanyId, mappingStatus: 'NEEDS_REVIEW', amount: minor(7_700), sourceDate: '2026-08-27' });
+  const historicalLines = await db.archiveLine.findMany({ where: { versionId: { in: [historicalVersionOne.id, historicalVersionTwo.id] } }, orderBy: { sourceDate: 'asc' } });
+  const historicalMapping = await service.createHistoricalTruckMapping({ providerTruckId: historicalProviderId, truckId: historicalTruck.id, sourceReference: 'Historical source Company differs from current Company.', reason: 'Repeated exact physical identity evidence supports this link.', evidenceReferences: [{ pilotEventId: historicalEventOne.id, statementVersionId: historicalVersionOne.id, statementLineIds: [historicalLines[0].id] }, { pilotEventId: historicalEventTwo.id, statementVersionId: historicalVersionTwo.id, statementLineIds: [historicalLines[1].id] }] }, { ...context, companyIds: [companyId, conflictCompanyId] });
+  assert.equal(historicalMapping.truckId, historicalTruck.id);
+  assert.equal((await db.truck.findUniqueOrThrow({ where: { id: historicalTruck.id } })).companyId, companyId);
 });
 
 test('audited policy revision preserves identity/history, enforces authority and concurrency, and posts no economics', async () => {

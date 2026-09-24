@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FuelDeductionPolicy, PrismaClient } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { historyDate, TruckCompanyHistoryService } from '@/lib/fleet/truck-company-history';
+import { normalizeVin } from '@/lib/fleet/truck-import-service';
 import { normalizeTruckUnitNumber } from '@/lib/fleet/truck-normalization';
 import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
@@ -354,66 +355,101 @@ export class FuelDeductionReconciliationService {
         || !Array.isArray(reference.statementLineIds) || !reference.statementLineIds.length
         || !reference.statementLineIds.every(lineId => typeof lineId === 'string')) throw new FinancialValidationError('Invalid mapping evidence reference.');
       return { pilotEventId: reference.pilotEventId, statementVersionId: reference.statementVersionId, statementLineIds: [...new Set(reference.statementLineIds as string[])].sort() };
-    }) as HistoricalTruckMappingEvidenceReference[];
+    }).sort((left, right) => `${left.pilotEventId}|${left.statementVersionId}|${left.statementLineIds.join(',')}`.localeCompare(`${right.pilotEventId}|${right.statementVersionId}|${right.statementLineIds.join(',')}`)) as HistoricalTruckMappingEvidenceReference[];
     if (new Set(references.map(reference => reference.pilotEventId)).size < 2) throw new FinancialValidationError('At least two distinct Pilot events must corroborate a historical Truck mapping.');
+    if (new Set(references.map(reference => `${reference.statementVersionId}|${reference.statementLineIds.join(',')}`)).size < 2) throw new FinancialValidationError('At least two distinct QuickManage observations must corroborate a historical Truck mapping.');
+    const referencedLines = references.flatMap(reference => reference.statementLineIds.map(lineId => `${reference.statementVersionId}|${lineId}`));
+    if (new Set(referencedLines).size !== referencedLines.length) throw new FinancialValidationError('A QuickManage statement line cannot be reused as separate mapping evidence.');
 
-    return this.database.$transaction(async tx => {
-      const actor = await tx.user.findFirst({ where: { id: context.userId, isActive: true, memberships: { some: { companyId: { in: context.companyIds }, role: 'OWNER' } } }, select: { id: true } });
-      if (!actor || context.role !== 'OWNER') throw new FinancialNotFoundError();
-      const truck = await tx.truck.findFirst({
-        where: { id: truckId, OR: [{ companyId: { in: context.companyIds } }, { operatingAffiliations: { some: { companyId: { in: context.companyIds }, supersededAt: null } } }] },
-        select: { id: true, unitNumber: true, companyId: true },
-      });
-      if (!truck) throw new FinancialNotFoundError();
-      const archiveTrucks = await tx.archiveTruck.findMany({
-        where: { providerTruckId, version: { sealed: true, statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } } } },
-        select: { id: true, unit: true, vin: true, truckId: true, versionId: true, version: { select: { statement: { select: { acceptedProviderVersion: true } }, providerVersion: true } } },
-      });
-      const acceptedArchiveTrucks = archiveTrucks.filter(item => item.version.providerVersion === item.version.statement.acceptedProviderVersion);
-      if (!acceptedArchiveTrucks.length || acceptedArchiveTrucks.some(item => item.truckId && item.truckId !== truck.id)) throw new FinancialConflictError('Provider Truck identity is absent or conflicts with an existing canonical mapping.');
-      const providerUnits = new Set(acceptedArchiveTrucks.map(item => normalizeTruckUnitNumber(item.unit ?? '')).filter(Boolean));
-      if (providerUnits.size !== 1 || !providerUnits.has(normalizeTruckUnitNumber(truck.unitNumber))) throw new FinancialConflictError('Provider Truck unit does not uniquely agree with the canonical Truck.');
-      const normalizedUnit = normalizeTruckUnitNumber(truck.unitNumber);
-      const competingTrucks = await tx.truck.findMany({ where: { id: { not: truck.id }, companyId: { in: context.companyIds } }, select: { unitNumber: true, unitNumberNormalized: true } });
-      if (competingTrucks.some(candidate => (candidate.unitNumberNormalized ?? normalizeTruckUnitNumber(candidate.unitNumber)) === normalizedUnit)) throw new FinancialConflictError('Another canonical Truck shares this provider unit in the Operating Group.');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.database.$transaction(async tx => {
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`historical-truck:${context.operatingGroupId}:QUICKMANAGE:${providerTruckId}`}, 0))::text AS lock_result`;
+          const actors = await tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`;
+          const groupMemberships = await tx.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId"=${context.operatingGroupId} AND "userId"=${context.userId} FOR UPDATE`;
+          const groupCompanies = await tx.$queryRaw<Array<{ companyId: string }>>`SELECT "companyId" FROM "OperatingGroupCompany" WHERE "operatingGroupId"=${context.operatingGroupId} FOR UPDATE`;
+          const ownerMemberships = await tx.$queryRaw<Array<{ companyId: string }>>`SELECT "companyId" FROM "CompanyMembership" WHERE "userId"=${context.userId} AND role='OWNER'::"CompanyMembershipRole" FOR UPDATE`;
+          if (!actors[0]?.isActive || groupMemberships[0]?.role !== 'OWNER') throw new FinancialNotFoundError();
+          const groupCompanyIds = new Set(groupCompanies.map(company => company.companyId));
+          const allowedCompanyIds = ownerMemberships.map(membership => membership.companyId).filter(companyId => groupCompanyIds.has(companyId));
+          if (!allowedCompanyIds.includes(context.activeCompanyId)) throw new FinancialNotFoundError();
+          const truck = await tx.truck.findFirst({
+            where: { id: truckId, companyId: { in: allowedCompanyIds } },
+            select: { id: true, unitNumber: true, companyId: true, vin: true, vinNormalized: true },
+          });
+          if (!truck) throw new FinancialNotFoundError();
+          const archiveTrucks = await tx.archiveTruck.findMany({
+            where: { providerTruckId, version: { sealed: true, statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: allowedCompanyIds } } } } },
+            select: { id: true, unit: true, vin: true, truckId: true, versionId: true, version: { select: { statement: { select: { acceptedProviderVersion: true } }, providerVersion: true } } },
+          });
+          const acceptedArchiveTrucks = archiveTrucks.filter(item => item.version.providerVersion === item.version.statement.acceptedProviderVersion);
+          if (!acceptedArchiveTrucks.length || acceptedArchiveTrucks.some(item => item.truckId && item.truckId !== truck.id)) throw new FinancialConflictError('Provider Truck identity is absent or conflicts with an existing canonical mapping.');
+          const providerUnits = new Set(acceptedArchiveTrucks.map(item => normalizeTruckUnitNumber(item.unit ?? '')).filter(Boolean));
+          if (providerUnits.size !== 1 || !providerUnits.has(normalizeTruckUnitNumber(truck.unitNumber))) throw new FinancialConflictError('Provider Truck unit does not uniquely agree with the canonical Truck.');
+          const providerVins = new Set(acceptedArchiveTrucks.map(item => item.vin ? normalizeVin(item.vin) : '').filter(Boolean));
+          const canonicalVin = truck.vinNormalized ?? (truck.vin ? normalizeVin(truck.vin) : '');
+          if (providerVins.size > 1 || providerVins.size === 1 && (!canonicalVin || !providerVins.has(canonicalVin))) throw new FinancialConflictError('Provider Truck VIN conflicts with the canonical Truck.');
+          const normalizedUnit = normalizeTruckUnitNumber(truck.unitNumber);
+          const competingTrucks = await tx.truck.findMany({ where: { id: { not: truck.id }, companyId: { in: [...groupCompanyIds] } }, select: { unitNumber: true, unitNumberNormalized: true } });
+          if (competingTrucks.some(candidate => (candidate.unitNumberNormalized ?? normalizeTruckUnitNumber(candidate.unitNumber)) === normalizedUnit)) throw new FinancialConflictError('Another canonical Truck shares this provider unit in the Operating Group.');
 
-      for (const reference of references) {
-        const [event, version] = await Promise.all([
-          tx.pilotFuelingEvent.findFirst({
-            where: { id: reference.pilotEventId, truckId: truck.id, invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
-            include: { productLines: true },
-          }),
-          tx.archiveVersion.findFirst({
-            where: { id: reference.statementVersionId, sealed: true, statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } }, trucks: { some: { providerTruckId } } },
-            include: { statement: { select: { acceptedProviderVersion: true } }, lines: { where: { id: { in: reference.statementLineIds } } } },
-          }),
-        ]);
-        if (!event || !version || version.providerVersion !== version.statement.acceptedProviderVersion || version.lines.length !== reference.statementLineIds.length) throw new FinancialConflictError('Mapping evidence is unavailable in posted Pilot or the accepted immutable statement version.');
-        const pilotProducts: FuelProductIdentity = {
-          dieselFamilyQuantityHundredths: event.productLines.filter(line => dieselFamilyProducts.has(line.productType)).reduce((sum, line) => sum + BigInt(Math.round(Number(line.quantity) * 100)), BigInt(0)),
-          defAmountMinor: event.productLines.filter(line => line.productType === 'DEF').reduce((sum, line) => sum + (line.retailAmountMinor ?? line.amountMinor), BigInt(0)),
-        };
-        const statementProducts = version.lines.reduce<FuelProductIdentity>((sum, line) => {
-          if (!classifyFuelDeductionLine(line)) throw new FinancialConflictError('Mapping evidence must reference structured fuel-deduction lines.');
-          const metadata = line.metadata as Record<string, unknown>;
-          const value = (key: string) => typeof metadata[key] === 'string' || typeof metadata[key] === 'number' ? String(metadata[key]) : null;
-          const diesel = fixedTwoMinor(value('diesel_qty')), reefer = fixedTwoMinor(value('reefer_qty')), def = fixedTwoMinor(value('def_amount'));
-          if (diesel === null || reefer === null || def === null) throw new FinancialConflictError('Mapping evidence lacks structured product identity.');
-          const statementIdentity = { cardLastFour: value('card_number')?.slice(-4) ?? null, locationNumber: value('merchant'), city: value('city'), state: value('state') };
-          const statementTimestamp = value('date') ?? line.sourceDate;
-          if (!quickManageDateRelation(day(event.transactionDate), statementTimestamp)
-            || !corroboratesFuelIdentityStrict({ cardLastFour: event.cardLastFour, locationNumber: event.locationNumber, city: event.city, state: event.state }, statementIdentity)) {
-            throw new FinancialConflictError('Mapping evidence does not have exact date/card/location identity.');
+          const existing = await tx.historicalTruckMapping.findUnique({ where: { operatingGroupId_provider_providerTruckId: { operatingGroupId: context.operatingGroupId, provider: 'QUICKMANAGE', providerTruckId } } });
+          if (existing) {
+            const existingEvidence = Array.isArray(existing.evidenceReferences) ? existing.evidenceReferences.map(value => {
+              const reference = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+              return `${String(reference.pilotEventId)}|${String(reference.statementVersionId)}|${Array.isArray(reference.statementLineIds) ? reference.statementLineIds.map(String).sort().join(',') : ''}`;
+            }).sort() : [];
+            const requestedEvidence = references.map(reference => `${reference.pilotEventId}|${reference.statementVersionId}|${reference.statementLineIds.join(',')}`).sort();
+            if (existing.truckId === truck.id && existing.sourceReference === sourceReference && existing.reason === reason
+              && JSON.stringify(existingEvidence) === JSON.stringify(requestedEvidence)) return existing;
+            throw new FinancialConflictError('Provider Truck identity already has a different canonical mapping decision.');
           }
-          return { dieselFamilyQuantityHundredths: sum.dieselFamilyQuantityHundredths + diesel + reefer, defAmountMinor: sum.defAmountMinor + def };
-        }, { dieselFamilyQuantityHundredths: BigInt(0), defAmountMinor: BigInt(0) });
-        if (!corroboratesFuelProducts(pilotProducts, statementProducts)) throw new FinancialConflictError('Mapping evidence product identity conflicts with Pilot.');
+
+          for (const reference of references) {
+            const event = await tx.pilotFuelingEvent.findFirst({
+              where: { id: reference.pilotEventId, truckId: truck.id, invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
+              include: { productLines: true },
+            });
+            const version = await tx.archiveVersion.findFirst({
+              where: { id: reference.statementVersionId, sealed: true, statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: allowedCompanyIds } } }, trucks: { some: { providerTruckId } } },
+              include: { statement: { select: { acceptedProviderVersion: true } }, trucks: { select: { providerTruckId: true, unit: true } }, lines: { where: { id: { in: reference.statementLineIds } } } },
+            });
+            if (!event || !version || version.providerVersion !== version.statement.acceptedProviderVersion || version.lines.length !== reference.statementLineIds.length) throw new FinancialConflictError('Mapping evidence is unavailable in posted Pilot or the accepted immutable statement version.');
+            if (version.lines.some(line => !line.sourceUnit || normalizeTruckUnitNumber(line.sourceUnit) !== normalizedUnit)) throw new FinancialConflictError('Mapping evidence line does not belong to the provider Truck unit.');
+            const providerIdentitiesForUnit = new Set(version.trucks.filter(candidate => normalizeTruckUnitNumber(candidate.unit ?? '') === normalizedUnit).map(candidate => candidate.providerTruckId).filter(Boolean));
+            if (providerIdentitiesForUnit.size !== 1 || !providerIdentitiesForUnit.has(providerTruckId)) throw new FinancialConflictError('Mapping evidence line is ambiguous between provider Truck identities.');
+            const pilotProducts: FuelProductIdentity = {
+              dieselFamilyQuantityHundredths: event.productLines.filter(line => dieselFamilyProducts.has(line.productType)).reduce((sum, line) => sum + BigInt(Math.round(Number(line.quantity) * 100)), BigInt(0)),
+              defAmountMinor: event.productLines.filter(line => line.productType === 'DEF').reduce((sum, line) => sum + (line.retailAmountMinor ?? line.amountMinor), BigInt(0)),
+            };
+            const statementProducts = version.lines.reduce<FuelProductIdentity>((sum, line) => {
+              if (!classifyFuelDeductionLine(line)) throw new FinancialConflictError('Mapping evidence must reference structured fuel-deduction lines.');
+              const metadata = line.metadata as Record<string, unknown>;
+              const value = (key: string) => typeof metadata[key] === 'string' || typeof metadata[key] === 'number' ? String(metadata[key]) : null;
+              const diesel = fixedTwoMinor(value('diesel_qty')), reefer = fixedTwoMinor(value('reefer_qty')), def = fixedTwoMinor(value('def_amount'));
+              if (diesel === null || reefer === null || def === null) throw new FinancialConflictError('Mapping evidence lacks structured product identity.');
+              const statementIdentity = { cardLastFour: value('card_number')?.slice(-4) ?? null, locationNumber: value('merchant'), city: value('city'), state: value('state') };
+              const statementTimestamp = value('date') ?? line.sourceDate;
+              if (!quickManageDateRelation(day(event.transactionDate), statementTimestamp)
+                || !corroboratesFuelIdentityStrict({ cardLastFour: event.cardLastFour, locationNumber: event.locationNumber, city: event.city, state: event.state }, statementIdentity)) {
+                throw new FinancialConflictError('Mapping evidence does not have exact date/card/location identity.');
+              }
+              return { dieselFamilyQuantityHundredths: sum.dieselFamilyQuantityHundredths + diesel + reefer, defAmountMinor: sum.defAmountMinor + def };
+            }, { dieselFamilyQuantityHundredths: BigInt(0), defAmountMinor: BigInt(0) });
+            if (!corroboratesFuelProducts(pilotProducts, statementProducts)) throw new FinancialConflictError('Mapping evidence product identity conflicts with Pilot.');
+          }
+          const mapping = await tx.historicalTruckMapping.create({ data: { operatingGroupId: context.operatingGroupId, provider: 'QUICKMANAGE', providerTruckId, truckId: truck.id, evidenceReferences: references, sourceReference, reason, createdByUserId: context.userId } });
+          await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: truck.companyId, actorUserId: context.userId, action: 'HISTORICAL_TRUCK_MAPPING_CREATED', after: { mappingId: mapping.id, provider: mapping.provider, providerTruckId, truckId: truck.id }, metadata: { sourceReference, reason, evidenceReferences: references } } });
+          return mapping;
+        }, { isolationLevel: 'Serializable' });
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (['P2002', 'P2034'].includes(code ?? '') && attempt < 2) continue;
+        if (['P2002', 'P2034'].includes(code ?? '')) throw new FinancialConflictError('Historical Truck mapping could not be serialized safely.');
+        throw error;
       }
-      const evidenceReferences = references.sort((left, right) => `${left.pilotEventId}|${left.statementVersionId}`.localeCompare(`${right.pilotEventId}|${right.statementVersionId}`));
-      const mapping = await tx.historicalTruckMapping.create({ data: { operatingGroupId: context.operatingGroupId, provider: 'QUICKMANAGE', providerTruckId, truckId: truck.id, evidenceReferences, sourceReference, reason, createdByUserId: context.userId } });
-      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: truck.companyId, actorUserId: context.userId, action: 'HISTORICAL_TRUCK_MAPPING_CREATED', after: { mappingId: mapping.id, provider: mapping.provider, providerTruckId, truckId: truck.id }, metadata: { sourceReference, reason, evidenceReferences } } });
-      return mapping;
-    }, { isolationLevel: 'Serializable' });
+    }
+    throw new FinancialConflictError('Historical Truck mapping could not be serialized safely.');
   }
 
   async preview(context: FinancialAuthorization, filters: FuelReconciliationFilters = {}) {
@@ -473,7 +509,13 @@ export class FuelDeductionReconciliationService {
         const mapping = archiveTruck.providerTruckId ? historicalMappingByProviderTruck.get(archiveTruck.providerTruckId) : null;
         return mapping ? { ...archiveTruck, truckId: mapping.truckId, mappingStatus: 'AUDITED_PROVIDER_IDENTITY', truck: mapping.truck } : archiveTruck;
       });
-      resolvedTrucksByVersion.set(version.id, resolved);
+      const unique = new Map<string, (typeof resolved)[number]>();
+      for (const truck of resolved) {
+        const key = truck.truckId && truck.mappingStatus !== 'NEEDS_REVIEW' ? `canonical:${truck.truckId}` : `archive:${truck.id}`;
+        const prior = unique.get(key);
+        if (!prior || prior.mappingStatus === 'AUDITED_PROVIDER_IDENTITY' && truck.mappingStatus !== 'AUDITED_PROVIDER_IDENTITY') unique.set(key, truck);
+      }
+      resolvedTrucksByVersion.set(version.id, [...unique.values()]);
     }
     const evidence: EvidenceLine[] = [];
     for (const version of acceptedVersions) {
@@ -532,7 +574,10 @@ export class FuelDeductionReconciliationService {
     const byCandidateDate = new Map<string, EvidenceLine[]>();
     const versionsByTruck = new Map<string, typeof acceptedVersions>();
     const index = (target: Map<string, EvidenceLine[]>, key: string, line: EvidenceLine) => target.set(key, [...(target.get(key) ?? []), line]);
-    for (const version of acceptedVersions) for (const truck of resolvedTrucksByVersion.get(version.id)!) if (truck.truckId) versionsByTruck.set(truck.truckId, [...(versionsByTruck.get(truck.truckId) ?? []), version]);
+    for (const version of acceptedVersions) for (const truck of resolvedTrucksByVersion.get(version.id)!) if (truck.truckId) {
+      const indexedVersions = versionsByTruck.get(truck.truckId) ?? [];
+      if (!indexedVersions.some(indexed => indexed.id === version.id)) versionsByTruck.set(truck.truckId, [...indexedVersions, version]);
+    }
     for (const line of statementLines) {
       if (line.truckId && line.reference) index(byTruckReference, `${line.truckId}|${pilotReferenceHash(line.reference)}`, line);
       if (line.truckId && line.sourceDate) index(byTruckDate, `${line.truckId}|${line.sourceDate}`, line);
