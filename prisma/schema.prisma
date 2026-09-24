@@ -2620,7 +2620,7 @@ model HistoricalTruckMapping {
   truck              Truck          @relation(fields: [truckId], references: [id], onDelete: Restrict)
   createdBy          User           @relation("HistoricalTruckMappingActor", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
-  @@unique([operatingGroupId, provider, providerTruckId])
+  @@unique([provider, providerTruckId])
   @@index([truckId, createdAt])
   @@index([createdByUserId, createdAt])
 }

@@ -393,7 +393,7 @@ export class FuelDeductionReconciliationService {
           const competingTrucks = await tx.truck.findMany({ where: { id: { not: truck.id }, companyId: { in: [...groupCompanyIds] } }, select: { unitNumber: true, unitNumberNormalized: true } });
           if (competingTrucks.some(candidate => (candidate.unitNumberNormalized ?? normalizeTruckUnitNumber(candidate.unitNumber)) === normalizedUnit)) throw new FinancialConflictError('Another canonical Truck shares this provider unit in the Operating Group.');
 
-          const existing = await tx.historicalTruckMapping.findUnique({ where: { operatingGroupId_provider_providerTruckId: { operatingGroupId: context.operatingGroupId, provider: 'QUICKMANAGE', providerTruckId } } });
+          const existing = await tx.historicalTruckMapping.findUnique({ where: { provider_providerTruckId: { provider: 'QUICKMANAGE', providerTruckId } } });
           if (existing) {
             const existingEvidence = Array.isArray(existing.evidenceReferences) ? existing.evidenceReferences.map(value => {
               const reference = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};

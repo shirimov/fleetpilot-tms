@@ -12,8 +12,8 @@ CREATE TABLE "HistoricalTruckMapping" (
     CONSTRAINT "HistoricalTruckMapping_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "HistoricalTruckMapping_operatingGroupId_provider_providerTruckId_key"
-ON "HistoricalTruckMapping"("operatingGroupId", "provider", "providerTruckId");
+CREATE UNIQUE INDEX "HistoricalTruckMapping_provider_providerTruckId_key"
+ON "HistoricalTruckMapping"("provider", "providerTruckId");
 CREATE INDEX "HistoricalTruckMapping_truckId_createdAt_idx" ON "HistoricalTruckMapping"("truckId", "createdAt");
 CREATE INDEX "HistoricalTruckMapping_createdByUserId_createdAt_idx" ON "HistoricalTruckMapping"("createdByUserId", "createdAt");
 

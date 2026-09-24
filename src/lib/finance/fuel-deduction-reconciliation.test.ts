@@ -359,6 +359,9 @@ test('OWNER can add an audited provider identity mapping only from repeated exac
   assert.deepEqual(await db.archiveTruck.findMany({ where: { providerTruckId }, orderBy: { id: 'asc' } }), archiveBefore);
   assert.deepEqual(await db.truck.findUniqueOrThrow({ where: { id: truck.id } }), canonicalBefore);
   assert.deepEqual([await db.financialTransaction.count(), await db.financialAllocation.count(), await db.financialExpectation.count(), await db.financialExpectationBankMatch.count(), await db.fuelDeductionPolicy.count(), await db.pilotFuelingEvent.count(), await db.archiveLine.count()], economicsBefore);
+  const foreignGroup = await db.operatingGroup.create({ data: { name: 'Foreign mapping uniqueness group' } });
+  await assert.rejects(db.historicalTruckMapping.create({ data: { operatingGroupId: foreignGroup.id, provider: 'QUICKMANAGE', providerTruckId, truckId: truckIds.exact, evidenceReferences, sourceReference: 'Contradictory cross-group identity.', reason: 'Database uniqueness must reject this mapping.', createdByUserId: userId } }));
+  await db.operatingGroup.delete({ where: { id: foreignGroup.id } });
   const mappedRows = (await service.preview(context, { truck: 'UNIT-MAP', pageSize: 10000 })).rows.filter(row => row.truckId === truck.id);
   assert.equal(mappedRows.some(row => row.status === 'NEEDS_TRUCK_MAPPING'), false);
   assert.equal(mappedRows.some(row => row.status === 'NEEDS_COMPANY_HISTORY'), true);
