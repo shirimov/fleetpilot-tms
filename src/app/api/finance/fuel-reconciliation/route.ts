@@ -23,8 +23,10 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const context = await financialControlAuthorization.requireContext('ADMIN');
     const body = await request.json();
+    const historicalMapping = body.action === 'RESOLVE_HISTORICAL_TRUCK_MAPPING';
+    const context = await financialControlAuthorization.requireContext(historicalMapping ? 'OWNER' : 'ADMIN');
+    if (historicalMapping) return reply(await fuelDeductionReconciliation.createHistoricalTruckMapping(body, context), 201);
     return reply(await fuelDeductionReconciliation.createPolicy(body, context), 201);
   } catch (error) { return financialRouteError(error); }
 }
