@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
-import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
+import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelIdentityWithUnavailableStatementCard, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
@@ -106,6 +106,14 @@ test('weekend matching requires card, location, geography and product compositio
   assert.equal(corroboratesFuelProducts({ dieselFamilyQuantityHundredths: BigInt(15041), defAmountMinor: BigInt(0) }, { dieselFamilyQuantityHundredths: BigInt(15040), defAmountMinor: BigInt(0) }), false);
 });
 
+test('a missing QuickManage card is unavailable corroboration only when location and geography are complete', () => {
+  const pilot = { cardLastFour: '8926', locationNumber: '1194', city: 'Phoenix', state: 'AZ' };
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { cardLastFour: null, locationNumber: '1194', city: 'Phoenix', state: 'AZ' }), true);
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { cardLastFour: '8926', locationNumber: '1194', city: 'Phoenix', state: 'AZ' }), false);
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { cardLastFour: null, locationNumber: '1195', city: 'Phoenix', state: 'AZ' }), false);
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { cardLastFour: null, locationNumber: '1194', city: null, state: 'AZ' }), false);
+});
+
 test('OWNER rules accept only pre-cutoff routing and only Diesel/Reefer classification differences', () => {
   assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-21'), true);
   assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-22'), false);
@@ -163,22 +171,22 @@ async function importRecord(rawAmount = '0') {
   return db.financialImportRecord.create({ data: { statementId: pilotStatementId, sourceRowIndex: importRow, rawAmount, fingerprintSha256: hash(`${dbName}:${importRow}`) } });
 }
 
-async function addEvent(input: { key: string; date: string; truckId?: string | null; unit: string; product?: 'TRUCK_DIESEL' | 'DEF' | 'REEFER_FUEL'; quantity?: string; amount: bigint; retail?: bigint; savings?: bigint; reference?: string }) {
+async function addEvent(input: { key: string; date: string; truckId?: string | null; unit: string; product?: 'TRUCK_DIESEL' | 'DEF' | 'REEFER_FUEL'; quantity?: string; amount: bigint; retail?: bigint; savings?: bigint; reference?: string; cardLastFour?: string; locationNumber?: string; city?: string; state?: string }) {
   const invoice = await db.pilotProviderInvoice.create({ data: { operatingGroupId: groupId, sourceId, providerAccountHash: hash('account'), invoiceNumber: `INV-${input.key}`, billingDate: historyDate(input.date), periodStart: historyDate(input.date), periodEnd: historyDate(input.date), invoiceTotalMinor: input.amount, parsedTotalMinor: input.amount, differenceMinor: BigInt(0), status: 'POSTED', parseVersion: 'test', uploadedByUserId: userId, postedByUserId: userId, postedAt: new Date() } });
-  const event = await db.pilotFuelingEvent.create({ data: { invoiceId: invoice.id, eventKeyHash: hash(input.key), ticketHash: hash(input.reference ?? `ticket-${input.key}`), authorizationHash: hash(`auth-${input.key}`), cardLastFour: '1234', sourceUnitNumber: input.unit, locationNumber: '100', city: 'Test City', state: 'CA', transactionDate: historyDate(input.date), truckId: input.truckId, truckMatchStatus: input.truckId ? 'MATCHED' : 'UNMATCHED' } });
+  const event = await db.pilotFuelingEvent.create({ data: { invoiceId: invoice.id, eventKeyHash: hash(input.key), ticketHash: hash(input.reference ?? `ticket-${input.key}`), authorizationHash: hash(`auth-${input.key}`), cardLastFour: input.cardLastFour ?? '1234', sourceUnitNumber: input.unit, locationNumber: input.locationNumber ?? '100', city: input.city ?? 'Test City', state: input.state ?? 'CA', transactionDate: historyDate(input.date), truckId: input.truckId, truckMatchStatus: input.truckId ? 'MATCHED' : 'UNMATCHED' } });
   const record = await importRecord(input.amount.toString());
   await db.pilotFuelProductLine.create({ data: { invoiceId: invoice.id, eventId: event.id, importRecordId: record.id, lineFingerprint: hash(`line-${input.key}`), sourceLineIdentity: input.key, sourceProductCode: input.product ?? 'DIESEL', productType: input.product ?? 'TRUCK_DIESEL', quantity: input.quantity ?? '20.00', unitPrice: '5.0000000', amountMinor: input.amount, retailAmountMinor: input.retail ?? input.amount, savingsMinor: input.savings ?? BigInt(0) } });
   return event;
 }
 
-async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string }) {
+async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientName?: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string; cardNumber?: string | null; merchant?: string; city?: string; state?: string }) {
   const document = await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'OWNER_SETTLEMENT', periodStart: historyDate(input.workStart), periodEnd: historyDate(input.workEnd), originalFilename: `${input.key}.pdf`, displayFilename: `${input.key}.pdf`, mimeType: 'application/pdf', byteSize: 1, storageKey: `test/${dbName}/${input.key}.pdf`, checksumSha256: hash(`pdf-${input.key}`), importedByUserId: userId } });
   const statement = await db.archiveStatement.create({ data: { archiveCompanyId: input.archiveCompanyId ?? archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   return db.$transaction(async tx => {
-    const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
+    const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientName ?? input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
     await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
     if (input.duplicateProviderTruck) await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: `${input.unit}-duplicate`, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
-    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: '991234', merchant: '100', city: 'Test City', state: 'CA' } } });
+    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: input.cardNumber === undefined ? '991234' : input.cardNumber, merchant: input.merchant ?? '100', city: input.city ?? 'Test City', state: input.state ?? 'CA' } } });
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
 }
@@ -199,18 +207,22 @@ before(async () => {
   conflictArchiveCompanyId = (await db.archiveCompany.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId, sourceId: conflictSource.id, accountKey: 'conflict', providerCompanyId: 'conflict-company', providerCompanyName: conflictCompany.name } })).id;
   pilotStatementId = (await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'FUEL_STATEMENT', periodStart: historyDate('2026-04-01'), periodEnd: historyDate('2026-08-31'), originalFilename: 'pilot.csv', displayFilename: 'pilot.csv', mimeType: 'text/csv', byteSize: 1, storageKey: `test/${dbName}/pilot.csv`, checksumSha256: hash('pilot-document'), importedByUserId: userId } })).id;
   const history = new TruckCompanyHistoryService(db);
-  for (const [name, withHistory] of [['exact', true], ['driver', true], ['timing', true], ['unknown', false], ['weekend', true], ['crossExpected', true], ['crossActual', true], ['product', true], ['ambiguous', true], ['identityConflict', true]] as const) {
-    const truck = await db.truck.create({ data: { companyId, unitNumber: `UNIT-${name.toUpperCase()}`, unitNumberNormalized: `UNIT-${name.toUpperCase()}` } }); truckIds[name] = truck.id;
+  for (const [name, withHistory] of [['exact', true], ['driver', true], ['timing', true], ['unknown', false], ['weekend', true], ['weekendGap', false], ['crossExpected', true], ['crossActual', true], ['product', true], ['ambiguous', true], ['identityConflict', true], ['truck042', true]] as const) {
+    const unit = name === 'truck042' ? '042' : `UNIT-${name.toUpperCase()}`;
+    const truck = await db.truck.create({ data: { companyId, unitNumber: unit, unitNumberNormalized: unit } }); truckIds[name] = truck.id;
     if (withHistory) await history.change(truck.id, { action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic fixture', reason: 'Synthetic fixture', periods: [{ companyId, effectiveFrom: '2026-01-01', effectiveTo: '2026-10-01' }] }, userId);
   }
+  await history.change(truckIds.weekendGap, { action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic Sunday-only fixture', reason: 'Preceding Saturday deliberately remains uncovered', periods: [{ companyId, effectiveFrom: '2026-07-26', effectiveTo: '2026-10-01' }] }, userId);
   await db.fuelDeductionPolicy.createMany({ data: [
     { operatingGroupId: groupId, companyId, truckId: truckIds.exact, providerRecipientId: 'contractor-exact', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic full pass through', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.timing, providerRecipientId: 'contractor-timing', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic timing policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.weekend, providerRecipientId: 'contractor-weekend', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic weekend policy', reason: 'Fixture', approvedByUserId: userId },
+    { operatingGroupId: groupId, companyId, truckId: truckIds.weekendGap, providerRecipientId: 'contractor-weekend-gap', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic weekend history-gap policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.crossExpected, providerRecipientId: 'contractor-expected', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic recipient policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.product, providerRecipientId: 'contractor-product', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic product policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.ambiguous, providerRecipientId: 'contractor-ambiguous', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic ambiguity policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.identityConflict, providerRecipientId: 'contractor-identity', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic identity-conflict policy', reason: 'Fixture', approvedByUserId: userId },
+    { operatingGroupId: groupId, companyId, truckId: truckIds.truck042, providerRecipientId: 'truck-042-recipient', responsibility: 'RECIPIENT', discountTreatment: 'COMPANY_RETENTION', companyRetentionBasisPoints: 1000, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Truck 042 audited 10% retention policy', reason: 'OWNER-provided statement regression', approvedByUserId: userId },
   ] });
   await addEvent({ key: 'exact', date: '2026-06-10', truckId: truckIds.exact, unit: 'UNIT-EXACT', product: 'TRUCK_DIESEL', amount: minor(10_000), retail: minor(12_000), savings: minor(2_000) });
   await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
@@ -227,6 +239,8 @@ before(async () => {
   await archiveVersion({ key: 'statement-outside', pid: '1', recipientId: 'contractor-other', recipientType: 'CONTRACTOR', workStart: '2026-01-01', workEnd: '2026-01-07', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(4_000) });
   caseEventIds.weekend = (await addEvent({ key: 'weekend', date: '2026-07-12', truckId: truckIds.weekend, unit: 'UNIT-WEEKEND', amount: minor(8_000) })).id;
   await archiveVersion({ key: 'weekend-line', pid: '28', recipientId: 'contractor-weekend', recipientType: 'CONTRACTOR', workStart: '2026-07-05', workEnd: '2026-07-11', truckId: truckIds.weekend, unit: 'UNIT-WEEKEND', amount: minor(8_000), sourceDate: '2026-07-11', sourceTimestamp: '2026-07-11T13:25:00Z' });
+  caseEventIds.weekendGap = (await addEvent({ key: 'weekend-gap', date: '2026-07-26', truckId: truckIds.weekendGap, unit: 'UNIT-WEEKENDGAP', amount: minor(8_100) })).id;
+  await archiveVersion({ key: 'weekend-gap-assignment', pid: '31', recipientId: 'contractor-weekend-gap', recipientType: 'CONTRACTOR', workStart: '2026-07-26', workEnd: '2026-08-01', truckId: truckIds.weekendGap, unit: 'UNIT-WEEKENDGAP' });
   caseEventIds.cross = (await addEvent({ key: 'cross', date: '2026-07-14', truckId: truckIds.crossExpected, unit: 'UNIT-CROSSEXPECTED', amount: minor(9_000) })).id;
   await archiveVersion({ key: 'cross-assignment', pid: '29', recipientId: 'contractor-expected', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.crossExpected, unit: 'UNIT-CROSSEXPECTED' });
   await archiveVersion({ key: 'cross-line', pid: '29', recipientId: 'contractor-actual', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.crossActual, unit: 'UNIT-CROSSACTUAL', amount: minor(9_000), sourceDate: '2026-07-14' });
@@ -256,6 +270,9 @@ before(async () => {
   caseEventIds.identityConflict = (await addEvent({ key: 'identity-conflict', date: '2026-07-26', truckId: truckIds.identityConflict, unit: 'UNIT-IDENTITYCONFLICT', amount: minor(6_325), quantity: '20.00' })).id;
   await archiveVersion({ key: 'identity-assignment', pid: '31', recipientId: 'contractor-identity', recipientType: 'CONTRACTOR', workStart: '2026-07-26', workEnd: '2026-08-01', truckId: truckIds.identityConflict, unit: 'UNIT-IDENTITYCONFLICT' });
   await archiveVersion({ key: 'identity-conflicting-line', pid: '30', recipientId: 'contractor-conflicting', recipientType: 'CONTRACTOR', workStart: '2026-07-19', workEnd: '2026-07-25', truckId: null, unit: 'UNIT-IDENTITYCONFLICT', archiveCompanyId: conflictArchiveCompanyId, mappingStatus: 'NEEDS_REVIEW', amount: minor(6_325), sourceDate: '2026-07-25', sourceTimestamp: '2026-07-25T23:44:00Z', dieselQuantity: '20.00' });
+  caseEventIds.truck042 = (await addEvent({ key: 'truck-042', date: '2026-07-26', truckId: truckIds.truck042, unit: '042', quantity: '80.17', amount: minor(40_392), retail: minor(50_500), savings: minor(10_108), cardLastFour: '8926', locationNumber: '1194', city: 'Phoenix', state: 'AZ' })).id;
+  await archiveVersion({ key: 'truck-042-assignment', pid: '31', recipientId: 'truck-042-recipient', recipientName: '042 Babamurat Kurbanov', recipientType: 'CONTRACTOR', workStart: '2026-07-26', workEnd: '2026-08-01', truckId: truckIds.truck042, unit: '042' });
+  await archiveVersion({ key: 'truck-042-owner-pdf', pid: '2026-30', recipientId: 'truck-042-other-company-recipient', recipientName: '042 Babamurat Kurbanov', recipientType: 'CONTRACTOR', workStart: '2026-07-19', workEnd: '2026-07-25', truckId: null, unit: '042', archiveCompanyId: conflictArchiveCompanyId, mappingStatus: 'NEEDS_REVIEW', amount: minor(41_402), sourceDate: '2026-07-25', sourceTimestamp: '2026-07-25T16:34:00Z', dieselAmount: '505.00', dieselQuantity: '80.17', cardNumber: null, merchant: '1194', city: 'Phoenix', state: 'AZ' });
   const invoice = await db.pilotProviderInvoice.findFirstOrThrow(); const record = await importRecord('-28.59');
   await db.pilotInvoiceAdjustment.create({ data: { invoiceId: invoice.id, importRecordId: record.id, fingerprint: hash('credit'), sourceLineIdentity: 'credit', description: 'Provider credit', signedAmountMinor: BigInt(-2859) } });
 });
@@ -287,6 +304,9 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   const result = await service.preview(context, { pageSize: 10000 });
   const weekend = result.rows.find(row => row.pilotEventId === caseEventIds.weekend)!;
   assert.equal(weekend.status, 'MATCHED'); assert.equal(weekend.matchMethod, 'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'); assert.equal(weekend.statementMinor, minor(8_000));
+  const weekendGap = result.rows.find(row => row.pilotEventId === caseEventIds.weekendGap)!;
+  assert.equal(weekendGap.status, 'NEEDS_COMPANY_HISTORY'); assert.equal(weekendGap.matchMethod, 'WEEKEND_COMPANY_HISTORY_GAP');
+  assert.equal(weekendGap.expectedMinor, minor(8_100)); assert.equal(weekendGap.statementMinor, BigInt(0)); assert.equal(weekendGap.differenceMinor, null);
   const cross = result.rows.find(row => row.pilotEventId === caseEventIds.cross)!;
   assert.equal(cross.status, 'MATCHED'); assert.equal(cross.matchMethod, 'HISTORICAL_CROSS_RECIPIENT_RECOVERED'); assert.equal(cross.statementMinor, minor(9_000));
   assert.equal(cross.statementTruckUnit, 'UNIT-CROSSACTUAL'); assert.equal(cross.statementRecipientId, 'contractor-actual');
@@ -314,6 +334,11 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   assert.equal(identityConflict.status, 'NEEDS_REVIEW'); assert.equal(identityConflict.matchMethod, 'CROSS_COMPANY_IDENTITY_REVIEW');
   assert.equal(identityConflict.statementMinor, minor(6_325)); assert.equal(identityConflict.differenceMinor, null);
   assert.equal(identityConflict.statementTruckUnit, 'UNIT-IDENTITYCONFLICT'); assert.equal(identityConflict.statementRecipientId, 'contractor-conflicting');
+  const truck042 = result.rows.find(row => row.pilotEventId === caseEventIds.truck042)!;
+  assert.equal(truck042.status, 'NEEDS_REVIEW'); assert.equal(truck042.matchMethod, 'CROSS_COMPANY_RECOVERY_CONFIRMED');
+  assert.equal(truck042.expectedMinor, minor(41_402)); assert.equal(truck042.statementMinor, minor(41_402)); assert.equal(truck042.differenceMinor, BigInt(0));
+  assert.equal(truck042.statementTruckUnit, '042'); assert.equal(truck042.statementRecipientName, '042 Babamurat Kurbanov');
+  assert.equal(result.rows.some(row => row.status === 'MISSING_DEDUCTION' && row.pilotEventId === caseEventIds.truck042), false);
   assert.equal(result.rows.some(row => row.key.startsWith('statement:') && row.statementEvidence?.lineIds.some(id => identityConflict.statementEvidence?.lineIds.includes(id))), false);
   const consumedIds = result.rows.flatMap(row => row.statementEvidence?.lineIds ?? []);
   assert.equal(new Set(consumedIds).size, consumedIds.length);
@@ -365,6 +390,17 @@ test('OWNER can add an audited provider identity mapping only from repeated exac
   const mappedRows = (await service.preview(context, { truck: 'UNIT-MAP', pageSize: 10000 })).rows.filter(row => row.truckId === truck.id);
   assert.equal(mappedRows.some(row => row.status === 'NEEDS_TRUCK_MAPPING'), false);
   assert.equal(mappedRows.some(row => row.status === 'NEEDS_COMPANY_HISTORY'), true);
+  const linkedRow = mappedRows.find(row => row.canonicalIdentityLink?.linkId === mapping.id)!;
+  assert.equal(linkedRow.canonicalIdentityLink?.providerTruckId, providerTruckId);
+  assert.equal(linkedRow.canonicalIdentityLink?.sourceUnit, 'UNIT-MAP');
+  assert.equal(linkedRow.canonicalIdentityLink?.sourceVin, vin);
+  assert.equal(linkedRow.canonicalIdentityLink?.canonicalTruckId, truck.id);
+  assert.equal(linkedRow.canonicalIdentityLink?.canonicalUnit, 'UNIT-MAP');
+  assert.equal(linkedRow.canonicalIdentityLink?.canonicalVin, vin);
+  assert.equal(linkedRow.canonicalIdentityLink?.actor, 'Fuel policy owner');
+  assert.equal(linkedRow.canonicalIdentityLink?.reason, request.reason);
+  assert.equal(linkedRow.canonicalIdentityLink?.sourceReference, request.sourceReference);
+  assert.equal(linkedRow.canonicalIdentityLink?.evidenceReferenceCount, 2);
   await assert.rejects(db.historicalTruckMapping.update({ where: { id: mapping.id }, data: { reason: 'Tampered mapping' } }));
   await assert.rejects(db.historicalTruckMapping.delete({ where: { id: mapping.id } }));
   await assert.rejects(service.createHistoricalTruckMapping({ providerTruckId, truckId: truck.id, sourceReference: 'Duplicate mapping attempt.', reason: 'Must remain unique and fail closed.', evidenceReferences }, context));
@@ -434,6 +470,7 @@ test('audited policy revision preserves identity/history, enforces authority and
     expectedMinor: null, statementMinor: BigInt(1010), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null,
     historicalCompanyId: companyId, postedCompanyId: companyId, postedCompanyName: 'Synthetic reconciliation Company', currentCompanyId: companyId, currentCompanyName: 'Synthetic reconciliation Company', historyDiffersFromPosted: false,
     products: ['TRUCK_DIESEL'], gallons: '2.00', matchMethod: 'STRUCTURED_IDENTITY', statementTruckUnit: 'UNIT-DRIVER', statementRecipientId: recipientId, statementRecipientName: 'Revision recipient', statementProducts: ['TRUCK_DIESEL'], productClassification: 'SAME',
+    canonicalIdentityLink: null,
     pilotEvidence: { eventId: provenanceEvent.id, invoiceId: 'invoice', invoiceNumber: 'revision', transactionId: null }, statementEvidence: { lineIds: [provenanceVersion.lines[0].id], versionId: provenanceVersion.id, pid: 'revision', statementNumber: 'revision', description: 'Fuel', reference: `reference-${date}` },
   });
   let evidenceRows = [row('2026-07-10'), row('2026-07-12')];
