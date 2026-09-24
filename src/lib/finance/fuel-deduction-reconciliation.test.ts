@@ -151,7 +151,7 @@ const admin = new Pool({ connectionString: rootUrl.toString() });
 rootUrl.pathname = `/${dbName}`;
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: rootUrl.toString() }) });
 const service = new FuelDeductionReconciliationService(db);
-let companyId: string, groupId: string, userId: string, sourceId: string, archiveCompanyId: string, pilotStatementId: string;
+let companyId: string, groupId: string, userId: string, sourceId: string, archiveCompanyId: string, conflictCompanyId: string, conflictArchiveCompanyId: string, pilotStatementId: string;
 const truckIds: Record<string, string> = {};
 const caseEventIds: Record<string, string> = {};
 let importRow = 0;
@@ -171,12 +171,12 @@ async function addEvent(input: { key: string; date: string; truckId?: string | n
   return event;
 }
 
-async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string; unit: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string }) {
+async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string }) {
   const document = await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'OWNER_SETTLEMENT', periodStart: historyDate(input.workStart), periodEnd: historyDate(input.workEnd), originalFilename: `${input.key}.pdf`, displayFilename: `${input.key}.pdf`, mimeType: 'application/pdf', byteSize: 1, storageKey: `test/${dbName}/${input.key}.pdf`, checksumSha256: hash(`pdf-${input.key}`), importedByUserId: userId } });
-  const statement = await db.archiveStatement.create({ data: { archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
+  const statement = await db.archiveStatement.create({ data: { archiveCompanyId: input.archiveCompanyId ?? archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   return db.$transaction(async tx => {
     const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
-    await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, unit: input.unit, truckId: input.truckId, mappingStatus: 'MATCHED' } });
+    await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, unit: input.unit, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
     if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: '991234', merchant: '100', city: 'Test City', state: 'CA' } } });
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
@@ -191,9 +191,14 @@ before(async () => {
   const source = await db.financialSource.create({ data: { operatingGroupId: groupId, companyId, name: 'Synthetic Pilot and archive', type: 'FUEL_CARD', provider: 'PILOT' } }); sourceId = source.id;
   await db.archiveScopeGrant.create({ data: { operatingGroupId: groupId, companyId, grantedByUserId: userId, reason: 'Synthetic reconciliation fixture' } });
   archiveCompanyId = (await db.archiveCompany.create({ data: { operatingGroupId: groupId, companyId, sourceId, accountKey: 'synthetic', providerCompanyId: 'synthetic-company', providerCompanyName: company.name } })).id;
+  const conflictCompany = await db.company.create({ data: { name: 'Conflicting archive Company' } }); conflictCompanyId = conflictCompany.id;
+  await db.operatingGroupCompany.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId } });
+  const conflictSource = await db.financialSource.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId, name: 'Conflicting archive', type: 'OWNER_SETTLEMENT', provider: 'QUICKMANAGE' } });
+  await db.archiveScopeGrant.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId, grantedByUserId: userId, reason: 'Synthetic identity-conflict fixture' } });
+  conflictArchiveCompanyId = (await db.archiveCompany.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId, sourceId: conflictSource.id, accountKey: 'conflict', providerCompanyId: 'conflict-company', providerCompanyName: conflictCompany.name } })).id;
   pilotStatementId = (await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'FUEL_STATEMENT', periodStart: historyDate('2026-04-01'), periodEnd: historyDate('2026-08-31'), originalFilename: 'pilot.csv', displayFilename: 'pilot.csv', mimeType: 'text/csv', byteSize: 1, storageKey: `test/${dbName}/pilot.csv`, checksumSha256: hash('pilot-document'), importedByUserId: userId } })).id;
   const history = new TruckCompanyHistoryService(db);
-  for (const [name, withHistory] of [['exact', true], ['driver', true], ['timing', true], ['unknown', false], ['weekend', true], ['crossExpected', true], ['crossActual', true], ['product', true], ['ambiguous', true]] as const) {
+  for (const [name, withHistory] of [['exact', true], ['driver', true], ['timing', true], ['unknown', false], ['weekend', true], ['crossExpected', true], ['crossActual', true], ['product', true], ['ambiguous', true], ['identityConflict', true]] as const) {
     const truck = await db.truck.create({ data: { companyId, unitNumber: `UNIT-${name.toUpperCase()}`, unitNumberNormalized: `UNIT-${name.toUpperCase()}` } }); truckIds[name] = truck.id;
     if (withHistory) await history.change(truck.id, { action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic fixture', reason: 'Synthetic fixture', periods: [{ companyId, effectiveFrom: '2026-01-01', effectiveTo: '2026-10-01' }] }, userId);
   }
@@ -204,6 +209,7 @@ before(async () => {
     { operatingGroupId: groupId, companyId, truckId: truckIds.crossExpected, providerRecipientId: 'contractor-expected', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic recipient policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.product, providerRecipientId: 'contractor-product', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic product policy', reason: 'Fixture', approvedByUserId: userId },
     { operatingGroupId: groupId, companyId, truckId: truckIds.ambiguous, providerRecipientId: 'contractor-ambiguous', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic ambiguity policy', reason: 'Fixture', approvedByUserId: userId },
+    { operatingGroupId: groupId, companyId, truckId: truckIds.identityConflict, providerRecipientId: 'contractor-identity', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic identity-conflict policy', reason: 'Fixture', approvedByUserId: userId },
   ] });
   await addEvent({ key: 'exact', date: '2026-06-10', truckId: truckIds.exact, unit: 'UNIT-EXACT', product: 'TRUCK_DIESEL', amount: minor(10_000), retail: minor(12_000), savings: minor(2_000) });
   await archiveVersion({ key: 'exact-driver', pid: '10', recipientId: 'driver-pair', recipientType: 'DRIVER', workStart: '2026-06-08', workEnd: '2026-06-15', truckId: truckIds.exact, unit: 'UNIT-EXACT', amount: minor(10_005), sourceDate: '2026-06-10', reference: 'paired-ref' });
@@ -246,6 +252,9 @@ before(async () => {
   await archiveVersion({ key: 'ambiguous-one', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T10:00:00Z' });
   await archiveVersion({ key: 'ambiguous-two', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T11:00:00Z' });
   await archiveVersion({ key: 'ambiguous-assignment', pid: '30', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-19', workEnd: '2026-07-25', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS' });
+  caseEventIds.identityConflict = (await addEvent({ key: 'identity-conflict', date: '2026-07-26', truckId: truckIds.identityConflict, unit: 'UNIT-IDENTITYCONFLICT', amount: minor(6_325), quantity: '20.00' })).id;
+  await archiveVersion({ key: 'identity-assignment', pid: '31', recipientId: 'contractor-identity', recipientType: 'CONTRACTOR', workStart: '2026-07-26', workEnd: '2026-08-01', truckId: truckIds.identityConflict, unit: 'UNIT-IDENTITYCONFLICT' });
+  await archiveVersion({ key: 'identity-conflicting-line', pid: '30', recipientId: 'contractor-conflicting', recipientType: 'CONTRACTOR', workStart: '2026-07-19', workEnd: '2026-07-25', truckId: null, unit: 'UNIT-IDENTITYCONFLICT', archiveCompanyId: conflictArchiveCompanyId, mappingStatus: 'NEEDS_REVIEW', amount: minor(6_325), sourceDate: '2026-07-25', sourceTimestamp: '2026-07-25T23:44:00Z', dieselQuantity: '20.00' });
   const invoice = await db.pilotProviderInvoice.findFirstOrThrow(); const record = await importRecord('-28.59');
   await db.pilotInvoiceAdjustment.create({ data: { invoiceId: invoice.id, importRecordId: record.id, fingerprint: hash('credit'), sourceLineIdentity: 'credit', description: 'Provider credit', signedAmountMinor: BigInt(-2859) } });
 });
@@ -272,8 +281,8 @@ test('full preview covers matching, timing, coverage, responsibility, history, m
   assert.deepEqual([await db.financialTransaction.count(), await db.financialExpectation.count(), await db.financialAllocation.count(), await db.financialExpectationBankMatch.count()], protectedBefore);
 });
 
-test('preview resolves the weekend provider boundary and fails closed for recipient, product and ambiguous evidence', async () => {
-  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
+test('preview resolves the weekend provider boundary and fails closed for recipient, product, Company identity and ambiguous evidence', async () => {
+  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId, conflictCompanyId] };
   const result = await service.preview(context, { pageSize: 10000 });
   const weekend = result.rows.find(row => row.pilotEventId === caseEventIds.weekend)!;
   assert.equal(weekend.status, 'MATCHED'); assert.equal(weekend.matchMethod, 'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'); assert.equal(weekend.statementMinor, minor(8_000));
@@ -300,6 +309,11 @@ test('preview resolves the weekend provider boundary and fails closed for recipi
   assert.equal(reeferToDef.status, 'PRODUCT_CLASSIFICATION_REVIEW'); assert.equal(reeferToDef.matchMethod, 'PRODUCT_CLASSIFICATION_CONFLICT');
   const ambiguous = result.rows.find(row => row.pilotEventId === caseEventIds.ambiguous)!;
   assert.equal(ambiguous.status, 'NEEDS_REVIEW'); assert.equal(ambiguous.matchMethod, 'INSUFFICIENT_TRUCK_DATE_CORROBORATION'); assert.equal(ambiguous.statementEvidence, null);
+  const identityConflict = result.rows.find(row => row.pilotEventId === caseEventIds.identityConflict)!;
+  assert.equal(identityConflict.status, 'NEEDS_REVIEW'); assert.equal(identityConflict.matchMethod, 'CROSS_COMPANY_IDENTITY_REVIEW');
+  assert.equal(identityConflict.statementMinor, minor(6_325)); assert.equal(identityConflict.differenceMinor, null);
+  assert.equal(identityConflict.statementTruckUnit, 'UNIT-IDENTITYCONFLICT'); assert.equal(identityConflict.statementRecipientId, 'contractor-conflicting');
+  assert.equal(result.rows.some(row => row.key.startsWith('statement:') && row.statementEvidence?.lineIds.some(id => identityConflict.statementEvidence?.lineIds.includes(id))), false);
   const consumedIds = result.rows.flatMap(row => row.statementEvidence?.lineIds ?? []);
   assert.equal(new Set(consumedIds).size, consumedIds.length);
 });
