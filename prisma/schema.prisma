@@ -151,6 +151,7 @@ enum CompanyMembershipRole {
 }
 
 model User {
+  historicalTruckMappings       HistoricalTruckMapping[]      @relation("HistoricalTruckMappingActor")
   approvedFuelDeductionPolicies FuelDeductionPolicy[]         @relation("FuelDeductionPolicyApprover")
   fuelDeductionPolicyRevisions  FuelDeductionPolicyRevision[] @relation("FuelDeductionPolicyRevisionActor")
   truckHistoryRevisions         TruckCompanyHistoryRevision[]
@@ -433,6 +434,7 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  historicalArchiveMappings  HistoricalTruckMapping[]
   fuelDeductionPolicies      FuelDeductionPolicy[]
   operatingAffiliations      TruckCompanyAffiliation[]
   operatingHistoryRevisions  TruckCompanyHistoryRevision[]
@@ -1479,30 +1481,31 @@ enum FuelDiscountTreatment {
 }
 
 model OperatingGroup {
-  fuelDeductionPolicies  FuelDeductionPolicy[]
-  archiveCaptureRuns     ArchiveCaptureRun[]
-  archiveGrants          ArchiveScopeGrant[]
-  archiveCatalogs        ArchiveBrowserCatalog[]
-  archiveCompanies       ArchiveCompany[]
-  id                     String                          @id @default(cuid())
-  name                   String
-  currency               String                          @default("USD")
-  createdAt              DateTime                        @default(now())
-  updatedAt              DateTime                        @updatedAt
-  companies              OperatingGroupCompany[]
-  memberships            OperatingGroupMembership[]
-  sources                FinancialSource[]
-  statements             FinancialStatement[]
-  categories             FinancialCategory[]
-  programs               FinancialProgram[]
-  adminFeeAgreements     AdminFeeAgreement[]
-  parties                FinancialParty[]
-  transactions           FinancialTransaction[]
-  expectations           FinancialExpectation[]
-  bankExpectationMatches FinancialExpectationBankMatch[]
-  auditEvents            FinancialAuditEvent[]
-  pilotInvoices          PilotProviderInvoice[]
-  pilotProductMappings   PilotProductMapping[]
+  historicalTruckMappings HistoricalTruckMapping[]
+  fuelDeductionPolicies   FuelDeductionPolicy[]
+  archiveCaptureRuns      ArchiveCaptureRun[]
+  archiveGrants           ArchiveScopeGrant[]
+  archiveCatalogs         ArchiveBrowserCatalog[]
+  archiveCompanies        ArchiveCompany[]
+  id                      String                          @id @default(cuid())
+  name                    String
+  currency                String                          @default("USD")
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  companies               OperatingGroupCompany[]
+  memberships             OperatingGroupMembership[]
+  sources                 FinancialSource[]
+  statements              FinancialStatement[]
+  categories              FinancialCategory[]
+  programs                FinancialProgram[]
+  adminFeeAgreements      AdminFeeAgreement[]
+  parties                 FinancialParty[]
+  transactions            FinancialTransaction[]
+  expectations            FinancialExpectation[]
+  bankExpectationMatches  FinancialExpectationBankMatch[]
+  auditEvents             FinancialAuditEvent[]
+  pilotInvoices           PilotProviderInvoice[]
+  pilotProductMappings    PilotProductMapping[]
 }
 
 /// Effective-dated control policy. It determines expected recovery only and never posts economics.
@@ -2598,6 +2601,28 @@ model ArchiveTruck {
   @@unique([versionId, sourceKey])
   @@index([truckId, versionId])
   @@index([unit])
+}
+
+/// An additive, audited canonical identity link for immutable provider archive rows.
+/// ArchiveTruck remains sealed; reconciliation applies this link at read time.
+model HistoricalTruckMapping {
+  id                 String         @id @default(cuid())
+  operatingGroupId   String
+  provider           String
+  providerTruckId    String
+  truckId            String
+  evidenceReferences Json
+  sourceReference    String
+  reason             String
+  createdByUserId    String
+  createdAt          DateTime       @default(now())
+  operatingGroup     OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  truck              Truck          @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  createdBy          User           @relation("HistoricalTruckMappingActor", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, providerTruckId])
+  @@index([truckId, createdAt])
+  @@index([createdByUserId, createdAt])
 }
 
 // A second representation of the SAME provider version is quarantined, never promoted.
