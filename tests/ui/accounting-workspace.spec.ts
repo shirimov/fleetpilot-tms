@@ -43,13 +43,24 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(page.getByRole('heading',{name:invoices[1].invoiceNumber,exact:true})).toBeVisible();
     await page.goto('/accounting?view=statements&archive=documents');
     await expect(page.getByRole('heading',{name:'Statement documents'})).toBeVisible();
-    const reconciliation = {
-      coverage:{start:'2026-04-22',end:'2026-08-02'},
+    // The intercepted API payload intentionally exercises nullable source-side fields.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const reconciliation: any = {
+      coverage:{start:'2026-04-22',end:'2026-08-02',pilotRanges:[{start:'2026-04-22',end:'2026-08-02'}]},
+      completeness:{
+        allImported:{pilot:{count:7,gallonsHundredths:'14000',retailMinor:'84000',netMinor:'70000',missingRetailCount:0},quickManage:{count:7,sourceRecordCount:8,gallonsHundredths:'14000',retailMinor:'84000',deductedMinor:'80563',missingRetailCount:0}},
+        comparable:{pilot:{count:6,gallonsHundredths:'12000',retailMinor:'72000',netMinor:'60000',missingRetailCount:0},quickManage:{count:6,sourceRecordCount:7,gallonsHundredths:'12000',retailMinor:'72000',deductedMinor:'69054',missingRetailCount:0}},
+        matching:{autoMatched:5,manualMatched:1,pilotUnmatched:1,quickManageUnmatched:1,sourceCoverageGaps:1,needsReview:2,outsideComparable:1},
+        conservation:{pilot:{countDifference:0,gallonsDifferenceHundredths:'0',retailDifferenceMinor:'0',dollarDifferenceMinor:'0'},quickManage:{countDifference:0,sourceRecordCountDifference:0,gallonsDifferenceHundredths:'0',retailDifferenceMinor:'0',dollarDifferenceMinor:'0'}},
+        orphanRecords:0,orphanPilotRecords:0,orphanQuickManageRecords:0,orphanActiveManualMatches:0,duplicateConsumedEvidence:0,duplicatePilotConsumption:0,duplicateQuickManageConsumption:0,
+        missingPilotCoverage:[{start:'2026-01-05',end:'2026-06-28'}],missingQuickManageCoverage:[{companyId:fixture.company.id,companyName:'1-9 Transportation Inc',pid:'2026-30',date:'2026-07-25',reason:'MISSING_QUICKMANAGE_COVERAGE',status:'PARTIAL'}],
+        coverageMatrix:[{source:'PILOT',companyId:null,companyName:null,pid:null,start:'2026-04-22',end:'2026-08-02',status:'PRESENT',reason:null},{source:'PILOT',companyId:null,companyName:null,pid:null,start:'2026-01-05',end:'2026-06-28',status:'MISSING',reason:'MISSING_PILOT_COVERAGE'},{source:'QUICKMANAGE',companyId:fixture.company.id,companyName:'1-9 Transportation Inc',pid:'2026-30',start:'2026-07-25',end:'2026-07-25',status:'PARTIAL',reason:'MISSING_QUICKMANAGE_COVERAGE'}],
+      },
       summary:{count:1,pilotActualMinor:'10000',expectedMinor:'10000',statementMinor:'11509',comparableStatementMinor:'11509',rawStatementDeductionMinor:'15000',rawFuelStatementMinor:'11509',unsupportedFuelStatementCount:0,unsupportedFuelStatementMinor:'0',differenceMinor:'1509',outsideCoverageStatementMinor:'0',comparablePilotMinor:'10000',reeferExcludedMinor:'500',providerCreditExcludedMinor:'-2859',historicalPostedDifferences:1},
       byStatus:Object.fromEntries(['MATCHED','UNDER_DEDUCTED','OVER_DEDUCTED','MISSING_DEDUCTION','STATEMENT_ONLY','TIMING_DIFFERENCE','NO_PILOT_DATA_IMPORTED','NEEDS_COMPANY_HISTORY','NEEDS_TRUCK_MAPPING','NEEDS_RECIPIENT_MAPPING','NEEDS_RECIPIENT_REVIEW','PRODUCT_CLASSIFICATION_REVIEW','NEEDS_POLICY','NEEDS_REVIEW'].map(status=>[status,{count:status==='TIMING_DIFFERENCE'?1:0,pilotActualMinor:status==='TIMING_DIFFERENCE'?'10000':'0',expectedMinor:status==='TIMING_DIFFERENCE'?'10000':'0',statementMinor:status==='TIMING_DIFFERENCE'?'11509':'0',differenceMinor:status==='TIMING_DIFFERENCE'?'1509':'0'}])),
       controls:[] as Array<{key:string;label:string;count:number;filter:{status?:string;history?:string};amounts:Array<{amountMinor:string;amountBasis:string;amountLabel:string}>}>,
       byCompany:[],total:1,page:1,pageSize:50,
-      rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',currentCompanyId:'current',currentCompanyName:'Current Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',matchMethod:'REFERENCE',statementTruckUnit:'024',statementRecipientId:'contractor',statementRecipientName:'Synthetic Contractor',statementProducts:['TRUCK_DIESEL','DEF'],productClassification:'SAME',pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
+      rows:[{key:'pilot:timing',status:'TIMING_DIFFERENCE',companyId:fixture.company.id,companyName:fixture.company.name,pid:'30',purchaseDate:'2026-04-22',statementPeriod:'2026-07-01–2026-07-07',truckId:'truck',truckUnit:'024',recipientId:'contractor',recipientName:'Synthetic Contractor',responsibility:'RECIPIENT',pilotEventId:'event',pilotInvoiceId:'invoice',pilotActualMinor:'10000',pilotRetailMinor:'12000',pilotSavingsMinor:'2000',expectedMinor:'10000',statementMinor:'11509',differenceMinor:'1509',observedAmountDeltaMinor:'1509',retainedDiscountMinor:'0',policyId:'policy',policyLabel:'FULL_PASS_THROUGH · 0% retained',historicalCompanyId:fixture.company.id,postedCompanyId:'posted',postedCompanyName:'Posted Company',currentCompanyId:'current',currentCompanyName:'Current Company',historyDiffersFromPosted:true,products:['TRUCK_DIESEL','DEF'],gallons:'20.00',pilotCardLastFour:'1234',pilotLocationNumber:'1194',pilotCity:'Phoenix',pilotState:'AZ',matchMethod:'REFERENCE',statementTruckUnit:'024',statementRecipientId:'contractor',statementRecipientName:'Synthetic Contractor',statementDate:'2026-04-22T12:00:00Z',statementCardLastFour:'1234',statementLocationNumber:'1194',statementCity:'Phoenix',statementState:'AZ',statementGallons:'20.00',statementRetailMinor:'12000',statementProducts:['TRUCK_DIESEL','DEF'],productClassification:'SAME',manualMatch:null,canonicalIdentityLink:{linkId:'link-94',provider:'QUICKMANAGE',providerTruckId:'e8d2c3c4-45b0-4f1c-ab84-72cb893f8360',sourceUnit:'3891',sourceVin:null,sourceCompanyId:fixture.company.id,sourceCompanyName:'Source Company',canonicalTruckId:'canonical-truck',canonicalUnit:'3891',canonicalVin:'1M8GDM9AXKP042788',canonicalCompanyId:fixture.company.id,canonicalCompanyName:'Current Company',actor:fixture.owner.displayName,createdAt:'2026-09-24T12:00:00.000Z',reason:'Repeated immutable source evidence',sourceReference:'Two exact Pilot and QuickManage transactions',evidenceReferenceCount:2},pilotInvoiceNumber:'PILOT-1',pilotEvidence:{eventId:'event',invoiceId:'invoice',invoiceNumber:'PILOT-1',transactionId:'transaction'},statementEvidence:{groupLineId:'line-a',lineIds:['line-a','line-b'],versionId:'version',pid:'30',statementNumber:'STMT-30',description:'Fuel recovery',reference:'APR22-PID30'}}]
     };
     reconciliation.rows.push(
       {...reconciliation.rows[0],key:'pilot:weekend',status:'MATCHED',truckUnit:'7455',purchaseDate:'2026-07-12',differenceMinor:'0',historyDiffersFromPosted:false,matchMethod:'PILOT_SUNDAY_QUICKMANAGE_SATURDAY'},
@@ -57,35 +68,59 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       {...reconciliation.rows[0],key:'pilot:recipient',status:'NEEDS_RECIPIENT_REVIEW',truckUnit:'7906',purchaseDate:'2026-07-04',differenceMinor:'0',historyDiffersFromPosted:false,matchMethod:'CROSS_RECIPIENT_STRUCTURED_IDENTITY'},
       {...reconciliation.rows[0],key:'pilot:diesel-reefer',status:'MATCHED',truckUnit:'8479',products:['REEFER_FUEL'],statementProducts:['TRUCK_DIESEL'],productClassification:'DIESEL_REEFER_DIFFERENCE',purchaseDate:'2026-07-12',expectedMinor:'10000',statementMinor:'10001',differenceMinor:'1',historyDiffersFromPosted:false,matchMethod:'DIESEL_REEFER_CLASSIFICATION_ACCEPTED'},
       {...reconciliation.rows[0],key:'pilot:product',status:'PRODUCT_CLASSIFICATION_REVIEW',truckUnit:'8479',purchaseDate:'2026-07-12',differenceMinor:'0',historyDiffersFromPosted:false,matchMethod:'PRODUCT_CLASSIFICATION_CONFLICT'},
-      {...reconciliation.rows[0],key:'pilot:missing',status:'MISSING_DEDUCTION',truckUnit:'024',purchaseDate:'2026-05-01',expectedMinor:'104651',statementMinor:'0',differenceMinor:'-104651',historyDiffersFromPosted:false},
+      {...reconciliation.rows[0],key:'pilot:unmatched',status:'PILOT_UNMATCHED',pilotEventId:'pilot-unmatched',truckUnit:'042',purchaseDate:'2026-07-26',pilotActualMinor:'40392',pilotRetailMinor:'50500',pilotSavingsMinor:'10108',products:['TRUCK_DIESEL'],gallons:'80.17',expectedMinor:'41402',statementMinor:'0',differenceMinor:null,historyDiffersFromPosted:false,statementEvidence:null,statementTruckUnit:null,statementRecipientId:null,statementRecipientName:null,statementProducts:[],statementRetailMinor:null,statementGallons:'0',matchMethod:null},
+      {...reconciliation.rows[0],key:'statement:unmatched',status:'QM_UNMATCHED',pilotEventId:null,pilotInvoiceId:null,pilotEvidence:null,pilotActualMinor:'0',pilotRetailMinor:null,pilotSavingsMinor:null,products:[],gallons:'0.00',pid:'2026-30',statementMinor:'41402',differenceMinor:null,historyDiffersFromPosted:false,statementEvidence:{groupLineId:'line-qm-unmatched',lineIds:['line-qm-unmatched'],versionId:'version-qm',pid:'2026-30',statementNumber:'13',description:'Fuel deduction',reference:'QM-042'},statementTruckUnit:'042',statementRecipientName:'042 Babamurat Kurbanov',statementDate:'2026-07-25T16:34:00Z',statementGallons:'80.17',statementRetailMinor:'50500',matchMethod:null},
+      {...reconciliation.rows[0],key:'pilot:manual',status:'MATCHED',pilotEventId:'pilot-manual',truckUnit:'900',purchaseDate:'2026-07-20',differenceMinor:'0',historyDiffersFromPosted:false,matchMethod:'MANUAL_OWNER_MATCH',manualMatch:{id:'manual-match-1',reason:'OWNER confirmed the immutable source identity.',actor:fixture.owner.displayName,createdAt:'2026-09-24T12:30:00.000Z'}},
     );
     reconciliation.total = reconciliation.rows.length;
-    const controlLabels:Record<string,string>={MATCHED:'Matched',UNDER_DEDUCTED:'Under-deduction',OVER_DEDUCTED:'Over-deduction',MISSING_DEDUCTION:'Missing deduction',STATEMENT_ONLY:'Statement-only within Pilot coverage',TIMING_DIFFERENCE:'Timing difference',NO_PILOT_DATA_IMPORTED:'No Pilot data imported',NEEDS_COMPANY_HISTORY:'Needs Company history',NEEDS_TRUCK_MAPPING:'Needs Truck mapping',NEEDS_RECIPIENT_MAPPING:'Needs recipient mapping',NEEDS_RECIPIENT_REVIEW:'Needs recipient routing review',PRODUCT_CLASSIFICATION_REVIEW:'Needs fuel product review',NEEDS_POLICY:'Needs policy',NEEDS_REVIEW:'Needs review'};
+    const controlLabels:Record<string,string>={MATCHED:'Matched',UNDER_DEDUCTED:'Under-deduction',OVER_DEDUCTED:'Over-deduction',MISSING_DEDUCTION:'Missing deduction',STATEMENT_ONLY:'Statement-only within Pilot coverage',PILOT_UNMATCHED:'Pilot unmatched',QM_UNMATCHED:'QM unmatched',SOURCE_COVERAGE_GAP:'Source coverage gap',TIMING_DIFFERENCE:'Timing difference',NO_PILOT_DATA_IMPORTED:'No Pilot data imported',NEEDS_COMPANY_HISTORY:'Needs Company history',NEEDS_TRUCK_MAPPING:'Needs Truck mapping',NEEDS_RECIPIENT_MAPPING:'Needs recipient mapping',NEEDS_RECIPIENT_REVIEW:'Needs recipient routing review',PRODUCT_CLASSIFICATION_REVIEW:'Needs fuel product review',NEEDS_POLICY:'Needs policy',NEEDS_REVIEW:'Needs review'};
     const controlStatuses=Object.keys(controlLabels);
     reconciliation.controls=controlStatuses.map(status=>{
-      const rows=reconciliation.rows.filter(row=>row.status===status);
-      const total=(field:'pilotActualMinor'|'expectedMinor'|'statementMinor'|'differenceMinor')=>rows.reduce((sum,row)=>sum+BigInt(row[field]??'0'),BigInt(0));
+      const rows=reconciliation.rows.filter((row:{status:string})=>row.status===status);
+      const total=(field:'pilotActualMinor'|'expectedMinor'|'statementMinor'|'differenceMinor')=>rows.reduce((sum:bigint,row:Record<string,string|null>)=>sum+BigInt(row[field]??'0'),BigInt(0));
       const semantic=status==='MISSING_DEDUCTION'?{amountMinor:(total('differenceMinor')*-BigInt(1)).toString(),amountBasis:'DISCREPANCY',amountLabel:'potential missing'}:status==='STATEMENT_ONLY'||status==='NEEDS_TRUCK_MAPPING'||status==='NO_PILOT_DATA_IMPORTED'?{amountMinor:total('statementMinor').toString(),amountBasis:'STATEMENT',amountLabel:status==='NO_PILOT_DATA_IMPORTED'?'outside Pilot coverage':'statement affected'}:{amountMinor:total('pilotActualMinor').toString(),amountBasis:'PILOT',amountLabel:'Pilot affected'};
       return {key:status,label:controlLabels[status],count:rows.length,filter:{status},amounts:[semantic]};
     });
-    const historyRows=reconciliation.rows.filter(row=>row.historyDiffersFromPosted);
-    reconciliation.controls.push({key:'HISTORICAL_POSTED_MISMATCH',label:'Historical ≠ posted Company',count:historyRows.length,filter:{history:'posted-mismatch'},amounts:[{amountMinor:historyRows.reduce((sum,row)=>sum+BigInt(row.pilotActualMinor),BigInt(0)).toString(),amountBasis:'PILOT',amountLabel:'Pilot affected'}]});
+    const historyRows=reconciliation.rows.filter((row:{historyDiffersFromPosted:boolean})=>row.historyDiffersFromPosted);
+    reconciliation.controls.push({key:'HISTORICAL_POSTED_MISMATCH',label:'Historical ≠ posted Company',count:historyRows.length,filter:{history:'posted-mismatch'},amounts:[{amountMinor:historyRows.reduce((sum:bigint,row:{pilotActualMinor:string})=>sum+BigInt(row.pilotActualMinor),BigInt(0)).toString(),amountBasis:'PILOT',amountLabel:'Pilot affected'}]});
     const policy = {id:'revision-policy',companyId:fixture.company.id,truckId:'truck',providerRecipientId:'contractor',responsibility:'RECIPIENT',discountTreatment:'COMPANY_RETENTION',companyRetentionBasisPoints:1000,effectiveFrom:'2026-07-01T00:00:00.000Z',effectiveTo:'2026-07-08T00:00:00.000Z',sourceReference:'Reviewed agreement',reason:'Initial range',revision:1,company:{name:fixture.company.name},truck:{unitNumber:'024'},approvedBy:{displayName:fixture.owner.displayName},revisions:[] as Array<Record<string,unknown>>};
+    let manualMatchRequest:Record<string,unknown>|null=null, manualUnmatchRequest:Record<string,unknown>|null=null;
     await page.route('**/api/finance/fuel-reconciliation**',async route=>{
       const requestUrl=new URL(route.request().url());
-      if(route.request().method()==='POST') return route.fulfill({status:201,json:{id:'created-policy'}});
+      if(route.request().method()==='POST') { const body=route.request().postDataJSON(); if(body.action==='MANUAL_MATCH') manualMatchRequest=body; return route.fulfill({status:201,json:{id:body.action==='MANUAL_MATCH'?'manual-created':'created-policy'}}); }
       if(route.request().method()==='PUT') return route.fulfill({json:{policyId:policy.id,expectedRevision:policy.revision,current:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-08',coveredRows:3,pilotMinor:'120000'},proposed:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-09',coveredRows:4,pilotMinor:'165000'},newlyCovered:{rows:1,pilotMinor:'45000',dates:['2026-07-08']},evidenceReferences:[{pilotEventId:'event-1',purchaseDate:'2026-07-08',supportFrom:'2026-07-08',supportTo:'2026-07-09',statementVersionId:'version-1',statementLineIds:['line-1']}]}});
-      if(route.request().method()==='PATCH') { policy.revision=2; policy.effectiveTo='2026-07-09T00:00:00.000Z'; policy.revisions=[{id:'revision-2',revision:2,before:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-08'},after:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-09'},reason:'Extended effective range based on additional corroborated Pilot ↔ QuickManage fuel transactions.',evidenceReferences:[{pilotEventId:'event-1'}],changedAt:'2026-09-23T12:00:00.000Z',actor:{displayName:fixture.owner.displayName}}]; return route.fulfill({json:policy}); }
+      if(route.request().method()==='PATCH') { const body=route.request().postDataJSON(); if(body.action==='MANUAL_UNMATCH') { manualUnmatchRequest=body; return route.fulfill({json:{id:body.matchId}}); } policy.revision=2; policy.effectiveTo='2026-07-09T00:00:00.000Z'; policy.revisions=[{id:'revision-2',revision:2,before:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-08'},after:{effectiveFrom:'2026-07-01',effectiveTo:'2026-07-09'},reason:'Extended effective range based on additional corroborated Pilot ↔ QuickManage fuel transactions.',evidenceReferences:[{pilotEventId:'event-1'}],changedAt:'2026-09-23T12:00:00.000Z',actor:{displayName:fixture.owner.displayName}}]; return route.fulfill({json:policy}); }
       if(requestUrl.searchParams.get('view')==='policies') return route.fulfill({json:[policy]});
-      const rows=reconciliation.rows.filter(row=>(!requestUrl.searchParams.get('status')||row.status===requestUrl.searchParams.get('status'))&&(!requestUrl.searchParams.get('history')||row.historyDiffersFromPosted));
+      const rows=reconciliation.rows.filter((row:{status:string;historyDiffersFromPosted:boolean;manualMatch:unknown;pilotEventId:string|null;statementEvidence:unknown;matchMethod:string|null})=>(!requestUrl.searchParams.get('status')||row.status===requestUrl.searchParams.get('status'))&&(!requestUrl.searchParams.get('history')||row.historyDiffersFromPosted)&&(!requestUrl.searchParams.get('match')||requestUrl.searchParams.get('match')==='manual'&&!!row.manualMatch||requestUrl.searchParams.get('match')==='auto'&&!!row.pilotEventId&&!!row.statementEvidence&&!row.manualMatch)&&(!requestUrl.searchParams.get('source')||(requestUrl.searchParams.get('source')==='pilot'?!!row.pilotEventId:!!row.statementEvidence))&&(!requestUrl.searchParams.get('scope')||(requestUrl.searchParams.get('scope')==='outside'?['SOURCE_COVERAGE_GAP','NO_PILOT_DATA_IMPORTED'].includes(row.status)||row.matchMethod==='NO_DEDUCTION_EXPECTED':!['SOURCE_COVERAGE_GAP','NO_PILOT_DATA_IMPORTED'].includes(row.status)&&row.matchMethod!=='NO_DEDUCTION_EXPECTED')));
       return route.fulfill({json:{...reconciliation,rows,total:rows.length}});
     });
     await page.goto('/accounting?view=statements&archive=reconciliation');
     await expect(page.getByText('Comparable Pilot Diesel + Reefer + DEF')).toBeVisible();
     await expect(page.getByText('$15.09',{exact:true}).first()).toBeVisible();
     await expect(page.getByText('TIMING DIFFERENCE',{exact:true}).first()).toBeVisible();
-    const missingControl=page.getByRole('link',{name:'Missing deduction: 1 records'});
-    await expect(missingControl).toContainText('$1,046.51 potential missing');
+    await expect(page.getByRole('heading',{name:'FUEL SOURCE COMPLETENESS'})).toBeVisible();
+    await expect(page.getByRole('link',{name:/Orphan records/})).toContainText('0');
+    await expect(page.getByRole('link',{name:/Duplicate consumption/})).toContainText('0');
+    await expect(page.getByRole('link',{name:/ALL IMPORTED DATA · PILOT/})).toHaveAttribute('href','/accounting?view=statements&archive=reconciliation&source=pilot');
+    await expect(page.getByRole('link',{name:/COMPARABLE COVERAGE · QUICKMANAGE/})).toHaveAttribute('href','/accounting?view=statements&archive=reconciliation&source=quickmanage&scope=comparable');
+    await page.getByText('Company/provider coverage matrix').click();
+    await expect(page.getByText(/PARTIAL · 1-9 Transportation Inc · PID 2026-30/)).toBeVisible();
+    const unmatchedControl=page.getByRole('link',{name:'Pilot unmatched: 1 records'});
+    await expect(unmatchedControl).toContainText('$403.92');
+    await page.getByRole('button',{name:'Select Pilot'}).click();
+    await page.getByRole('button',{name:'Select QM'}).click();
+    const manualForm=page.locator('form').filter({has:page.getByRole('heading',{name:'MANUAL MATCH'})});
+    await expect(manualForm).toContainText('80.17 gal');
+    await manualForm.getByLabel('OWNER reason').fill('OWNER confirmed these immutable records are the same purchase.');
+    await manualForm.getByLabel(/I confirm these are the same fuel purchase/).check();
+    await manualForm.getByRole('button',{name:'Save audited manual match'}).click();
+    await expect.poll(()=>manualMatchRequest).toMatchObject({action:'MANUAL_MATCH',pilotEventId:'pilot-unmatched',archiveLineId:'line-qm-unmatched'});
+    const manualRow=page.getByRole('row').filter({hasText:'900'}).last();
+    await manualRow.getByText('Evidence and calculation').click();
+    await expect(manualRow.getByText('MANUAL MATCH AUDIT')).toBeVisible();
+    await manualRow.getByPlaceholder('Audited reason to undo this match').fill('OWNER is returning this pairing to the review queues.');
+    await manualRow.getByRole('button',{name:'Undo / unmatch'}).click();
+    await expect.poll(()=>manualUnmatchRequest).toMatchObject({action:'MANUAL_UNMATCH',matchId:'manual-match-1'});
     for (const control of reconciliation.controls) {
       await page.goto('/accounting?view=statements&archive=reconciliation');
       const link=page.getByRole('link',{name:`${control.label}: ${control.count} records`});
@@ -102,6 +137,12 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       await page.goto(href!);
       await expect(page.getByRole('status')).toContainText(`${control.label} · ${control.count} matching reconciliation rows`);
     }
+    await page.goto('/accounting?view=statements&archive=reconciliation');
+    await page.getByRole('link',{name:/ALL IMPORTED DATA · PILOT/}).click();
+    await expect(page).toHaveURL(/source=pilot/);
+    await page.goto('/accounting?view=statements&archive=reconciliation');
+    await page.getByRole('link',{name:/Outside comparable/}).click();
+    await expect(page).toHaveURL(/scope=outside/);
     await page.goto('/accounting?view=statements&archive=reconciliation');
     const recipientReviewControl=page.getByRole('link',{name:'Needs recipient routing review: 1 records'});
     await recipientReviewControl.focus(); await page.keyboard.press('Enter');
@@ -120,6 +161,12 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await expect(timingRow.getByText(/invoice PILOT-1/)).toBeVisible();
     await expect(timingRow.getByText(/PID 30/)).toBeVisible();
     await expect(timingRow.getByText(/Current Company Current Company/)).toBeVisible();
+    const canonicalLink = timingRow.getByRole('region',{name:'Canonical identity link'});
+    await expect(canonicalLink).toContainText('Canonical identity link; source evidence unchanged.');
+    await expect(canonicalLink).toContainText('e8d2c3c4-45b0-4f1c-ab84-72cb893f8360');
+    await expect(canonicalLink).toContainText('canonical-truck');
+    await expect(canonicalLink).toContainText('Repeated immutable source evidence');
+    await expect(canonicalLink).toContainText('2 evidence references');
     for (const [rowText, explanation] of [['7455','Matched the Pilot Sunday date-only row'],['NEEDS RECIPIENT REVIEW','Recipient responsibility requires review'],['PRODUCT CLASSIFICATION REVIEW','No over- or under-deduction conclusion is made']]) {
       const row = page.getByRole('row').filter({hasText:rowText}).last();
       await row.getByText('Evidence and calculation').click();

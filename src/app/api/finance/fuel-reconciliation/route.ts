@@ -16,7 +16,10 @@ export async function GET(request: Request) {
       pid: params.get('pid') ?? undefined, date: params.get('date') ?? undefined, truck: params.get('truck') ?? undefined,
       recipient: params.get('recipient') ?? undefined, status: params.get('status') ?? undefined,
       responsibility: params.get('responsibility') ?? undefined, policy: params.get('policy') ?? undefined,
-      history: params.get('history') ?? undefined,
+      history: params.get('history') ?? undefined, match: params.get('match') ?? undefined,
+      queue: params.get('queue') ?? undefined,
+      source: params.get('source') ?? undefined,
+      scope: params.get('scope') ?? undefined,
     }));
   } catch (error) { return financialRouteError(error); }
 }
@@ -25,8 +28,10 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const historicalMapping = body.action === 'RESOLVE_HISTORICAL_TRUCK_MAPPING';
-    const context = await financialControlAuthorization.requireContext(historicalMapping ? 'OWNER' : 'ADMIN');
+    const manualMatch = body.action === 'MANUAL_MATCH';
+    const context = await financialControlAuthorization.requireContext(historicalMapping || manualMatch ? 'OWNER' : 'ADMIN');
     if (historicalMapping) return reply(await fuelDeductionReconciliation.createHistoricalTruckMapping(body, context), 201);
+    if (manualMatch) return reply(await fuelDeductionReconciliation.createManualMatch(body, context), 201);
     return reply(await fuelDeductionReconciliation.createPolicy(body, context), 201);
   } catch (error) { return financialRouteError(error); }
 }
@@ -42,8 +47,12 @@ export async function PUT(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const context = await financialControlAuthorization.requireContext('ADMIN');
     const body = await request.json();
+    if (body.action === 'MANUAL_UNMATCH') {
+      const ownerContext = await financialControlAuthorization.requireContext('OWNER');
+      return reply(await fuelDeductionReconciliation.unmatchManualMatch(body, ownerContext));
+    }
+    const context = await financialControlAuthorization.requireContext('ADMIN');
     const policyId = typeof body.policyId === 'string' ? body.policyId : '';
     return reply(await fuelDeductionReconciliation.revisePolicy(policyId, body, context));
   } catch (error) { return financialRouteError(error); }
