@@ -9,10 +9,12 @@ import { prisma } from "@/lib/prisma";
 import { FilesystemPrivateFileStorage } from "@/lib/storage/private-file-storage";
 import {
   ArchiveBridgeService,
+  assessArchiveCompanyProvenance,
   expandArchiveScope,
 } from "./archive-bridge-service";
 import { ArchiveService } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
+import { object } from "./archive-normalize";
 import { FinancialControlService } from "./financial-control-service";
 import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import { statementFixture } from "../../../tests/fixtures/quickmanage";
@@ -86,6 +88,72 @@ const confirm = () => ({
   reason: "Synthetic authoritative owner confirmation",
   historical: false,
 });
+test("only the documented 1-9 swapped-field provenance is compatible", () => {
+  const canonical = {
+    id: "cdf065bb-9002-4aa6-86b1-dd66f75e8692",
+    name: "1-9 Transportation Inc",
+  };
+  const source = {
+    id: "964e6cf7-9d60-4aba-af76-4212a6e28071",
+    carrier_name: "1-9 Transportation Inc",
+  };
+  const legacy = {
+    id: "immutable-legacy-event",
+    action: "TRUCK_IMPORTED_FROM_QUICKMANAGE",
+    metadata: {
+      provider: "QUICKMANAGE",
+      operatedBy: "1-9 Transportation Inc",
+      sourceCompanyId: "e28fb8ff-0822-4166-954a-52d9544c0b0c",
+      sourceTruckId: source.id,
+    },
+  };
+  assert.deepEqual(
+    assessArchiveCompanyProvenance(canonical, source, [legacy]),
+    {
+      conflict: false,
+      legacyEventIds: [legacy.id],
+    },
+  );
+  for (const changed of [
+    { ...legacy, action: "IMPORT" },
+    {
+      ...legacy,
+      metadata: { ...legacy.metadata, sourceTruckId: randomUUID() },
+    },
+    {
+      ...legacy,
+      metadata: { ...legacy.metadata, sourceCompanyId: randomUUID() },
+    },
+    { ...legacy, metadata: { ...legacy.metadata, operatedBy: "Other" } },
+  ]) {
+    assert.deepEqual(
+      assessArchiveCompanyProvenance(canonical, source, [changed]),
+      { conflict: true, legacyEventIds: [] },
+    );
+  }
+  assert.equal(
+    assessArchiveCompanyProvenance({ ...canonical, id: randomUUID() }, source, [
+      legacy,
+    ]).conflict,
+    true,
+  );
+  assert.equal(
+    assessArchiveCompanyProvenance(canonical, source, [legacy, legacy])
+      .conflict,
+    true,
+  );
+  assert.equal(
+    assessArchiveCompanyProvenance(canonical, source, [
+      legacy,
+      {
+        ...legacy,
+        id: "separate-conflict",
+        metadata: { ...legacy.metadata, sourceCompanyId: randomUUID() },
+      },
+    ]).conflict,
+    true,
+  );
+});
 test("unbound/unauthorized Company and non-owner bindings fail closed", async () => {
   await assert.rejects(() =>
     bridge.inventory(inventoryEvidence(companyId, [statementFixture()]), c),
@@ -123,6 +191,67 @@ test("explicit verified binding creates immutable scoped grant/audit, catalog re
       data: { providerCompanyName: "Overwrite" },
     }),
   );
+});
+test("documented 1-9 compatibility preserves provenance and records its use", async () => {
+  const canonicalId = "cdf065bb-9002-4aa6-86b1-dd66f75e8692";
+  const providerId = "964e6cf7-9d60-4aba-af76-4212a6e28071";
+  await prisma.company.create({
+    data: {
+      id: canonicalId,
+      name: "1-9 Transportation Inc",
+      memberships: { create: { userId: c.userId, role: "OWNER" } },
+    },
+  });
+  const catalogUpload = catalogEvidence(providerId);
+  catalogUpload.companies[0].carrier_name = "1-9 Transportation Inc";
+  const catalog = await bridge.catalog(catalogUpload, c);
+  const lifecycle = await prisma.truckLifecycleEvent.create({
+    data: {
+      companyId: canonicalId,
+      actorUserId: c.userId,
+      truckReference: "immutable-truck",
+      unitNumber: "8558",
+      action: "TRUCK_IMPORTED_FROM_QUICKMANAGE",
+      metadata: {
+        provider: "QUICKMANAGE",
+        operatedBy: "1-9 Transportation Inc",
+        sourceCompanyId: "e28fb8ff-0822-4166-954a-52d9544c0b0c",
+        sourceTruckId: providerId,
+      },
+    },
+  });
+  const original = await prisma.truckLifecycleEvent.findUniqueOrThrow({
+    where: { id: lifecycle.id },
+  });
+  await bridge.bind(
+    {
+      catalogId: catalog.id,
+      providerCompanyId: providerId,
+      companyId: canonicalId,
+      confirmation: "CONFIRM_COMPANY_IDENTITY",
+      reason: "OWNER-attested exact 1-9 provider identity",
+      historical: true,
+    },
+    c,
+  );
+  assert.deepEqual(
+    await prisma.truckLifecycleEvent.findUniqueOrThrow({
+      where: { id: lifecycle.id },
+    }),
+    original,
+  );
+  const audit = await prisma.financialAuditEvent.findFirstOrThrow({
+    where: {
+      companyId: canonicalId,
+      action: "ARCHIVE_BROWSER_COMPANY_CONFIRMED",
+    },
+  });
+  assert.deepEqual(object(audit.metadata).legacyProvenanceCompatibility, {
+    mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
+    lifecycleEventIds: [lifecycle.id],
+    originalEventPreserved: true,
+    currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
+  });
 });
 test("inventory identical retry/concurrency is idempotent, changes preserve old snapshots", async () => {
   const f = statementFixture(),
@@ -378,7 +507,11 @@ test("binding rejects conflicting provenance, inactive/revoked owners and foreig
       truckReference: "synthetic",
       unitNumber: "synthetic",
       action: "IMPORT",
-      metadata: { sourceCompanyId: randomUUID() },
+      metadata: {
+        provider: "QUICKMANAGE",
+        sourceCompanyId: randomUUID(),
+        sourceTruckId: provider,
+      },
     },
   });
   await assert.rejects(() => bridge.bind(input, c), /provenance/);
