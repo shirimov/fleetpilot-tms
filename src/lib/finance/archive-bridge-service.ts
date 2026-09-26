@@ -23,6 +23,63 @@ import {
   type BrowserCompany,
 } from "./archive-bridge-validation";
 
+const LEGACY_ONE_NINE_PROVENANCE = {
+  canonicalCompanyId: "cdf065bb-9002-4aa6-86b1-dd66f75e8692",
+  canonicalCompanyName: "1-9 Transportation Inc",
+  providerCompanyId: "964e6cf7-9d60-4aba-af76-4212a6e28071",
+  storedSourceCompanyId: "e28fb8ff-0822-4166-954a-52d9544c0b0c",
+  action: "TRUCK_IMPORTED_FROM_QUICKMANAGE",
+} as const;
+
+type CompanyProvenanceEvent = {
+  id: string;
+  action: string;
+  metadata: unknown;
+};
+
+export function assessArchiveCompanyProvenance(
+  canonical: { id: string; name: string },
+  source: Pick<BrowserCompany, "id" | "carrier_name">,
+  events: CompanyProvenanceEvent[],
+) {
+  const providerCompanyId = source.id.toLowerCase();
+  const legacyEventIds: string[] = [];
+  let conflict = false;
+  for (const event of events) {
+    const metadata = object(event.metadata);
+    if (metadata.sourceCompanyId == null) continue;
+    const sourceCompanyId = String(metadata.sourceCompanyId).toLowerCase();
+    if (sourceCompanyId === providerCompanyId) continue;
+    const documentedLegacyShape =
+      canonical.id === LEGACY_ONE_NINE_PROVENANCE.canonicalCompanyId &&
+      canonical.name === LEGACY_ONE_NINE_PROVENANCE.canonicalCompanyName &&
+      source.id === LEGACY_ONE_NINE_PROVENANCE.providerCompanyId &&
+      source.carrier_name === LEGACY_ONE_NINE_PROVENANCE.canonicalCompanyName &&
+      event.action === LEGACY_ONE_NINE_PROVENANCE.action &&
+      sourceCompanyId ===
+        LEGACY_ONE_NINE_PROVENANCE.storedSourceCompanyId.toLowerCase() &&
+      String(metadata.sourceTruckId).toLowerCase() === providerCompanyId &&
+      metadata.provider === "QUICKMANAGE" &&
+      metadata.operatedBy === LEGACY_ONE_NINE_PROVENANCE.canonicalCompanyName;
+    if (documentedLegacyShape) legacyEventIds.push(event.id);
+    else conflict = true;
+  }
+  // More than one matching legacy record is itself ambiguous and must fail closed.
+  if (legacyEventIds.length > 1) conflict = true;
+  return { conflict, legacyEventIds: conflict ? [] : legacyEventIds };
+}
+
+export function legacyProvenanceCompatibilityAudit(eventIds: string[]) {
+  return eventIds.length
+    ? {
+        mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
+        lifecycleEventIds: eventIds,
+        originalEventPreserved: true,
+        currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
+      }
+    : null;
+}
+
 /** Only archive callers receive this expanded scope; economics retain operational scope. */
 export async function archiveContext(minimum: "ADMIN" | "OWNER" = "ADMIN") {
   const c = await financialControlAuthorization.requireContext(minimum);
@@ -157,7 +214,7 @@ export class ArchiveBridgeService {
       this.db.archiveCompany.findMany({ where: archiveScope(c) }),
       this.db.truckLifecycleEvent.findMany({
         where: { companyId: { in: c.companyIds } },
-        select: { companyId: true, metadata: true },
+        select: { id: true, action: true, companyId: true, metadata: true },
       }),
     ]);
     const normalize = (s: string) => s.trim().toLowerCase().replace(/[.]/g, "");
@@ -173,11 +230,14 @@ export class ArchiveBridgeService {
           x.providerCompanyId === source.id,
       );
       const candidate = candidates.length === 1 ? candidates[0] : null;
-      const known = provenance
-        .filter((p) => p.companyId === candidate?.id)
-        .map((p) => object(p.metadata))
-        .filter((p) => p.sourceCompanyId);
-      const ambiguous = known.some((p) => p.sourceCompanyId !== source.id);
+      const provenanceAssessment = candidate
+        ? assessArchiveCompanyProvenance(
+            candidate,
+            source,
+            provenance.filter((p) => p.companyId === candidate.id),
+          )
+        : { conflict: false, legacyEventIds: [] };
+      const ambiguous = provenanceAssessment.conflict;
       const outside =
         candidate &&
         candidate.operatingGroupLink?.operatingGroupId !== c.operatingGroupId;
@@ -198,7 +258,9 @@ export class ArchiveBridgeService {
           ? "Explicit binding recorded."
           : ambiguous
             ? "Stored source Company identity differs; resolve provenance before confirming."
-            : "Browser-supplied identity; display-name suggestion is not verification. Review authoritative IDs and provenance before OWNER confirmation.",
+            : provenanceAssessment.legacyEventIds.length
+              ? "Current provider identity corroborates the documented legacy swapped-field provenance; the original event will remain unchanged and OWNER confirmation is still required."
+              : "Browser-supplied identity; display-name suggestion is not verification. Review authoritative IDs and provenance before OWNER confirmation.",
       };
     });
     return {
@@ -266,14 +328,14 @@ export class ArchiveBridgeService {
         );
       const provenance = await tx.truckLifecycleEvent.findMany({
         where: { companyId: canonical.id },
-        select: { metadata: true },
+        select: { id: true, action: true, metadata: true },
       });
-      if (
-        provenance.some((event) => {
-          const id = object(event.metadata).sourceCompanyId;
-          return id != null && String(id).toLowerCase() !== source.id;
-        })
-      )
+      const provenanceAssessment = assessArchiveCompanyProvenance(
+        canonical,
+        source,
+        provenance,
+      );
+      if (provenanceAssessment.conflict)
         throw new FinancialValidationError(
           "Stored source Company identity conflicts. Resolve authoritative provenance before binding.",
         );
@@ -343,6 +405,9 @@ export class ArchiveBridgeService {
             reason: input.reason,
             historical: !canonical.operatingGroupLink,
             assurance: "OWNER_ATTESTED_BROWSER_EVIDENCE",
+            legacyProvenanceCompatibility: legacyProvenanceCompatibilityAudit(
+              provenanceAssessment.legacyEventIds,
+            ),
           },
         },
       });

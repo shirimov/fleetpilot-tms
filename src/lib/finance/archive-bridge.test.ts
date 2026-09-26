@@ -9,7 +9,9 @@ import { prisma } from "@/lib/prisma";
 import { FilesystemPrivateFileStorage } from "@/lib/storage/private-file-storage";
 import {
   ArchiveBridgeService,
+  assessArchiveCompanyProvenance,
   expandArchiveScope,
+  legacyProvenanceCompatibilityAudit,
 } from "./archive-bridge-service";
 import { ArchiveService } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
@@ -85,6 +87,79 @@ const confirm = () => ({
   confirmation: "CONFIRM_COMPANY_IDENTITY",
   reason: "Synthetic authoritative owner confirmation",
   historical: false,
+});
+test("only the documented 1-9 swapped-field provenance is compatible", () => {
+  const canonical = {
+    id: "cdf065bb-9002-4aa6-86b1-dd66f75e8692",
+    name: "1-9 Transportation Inc",
+  };
+  const source = {
+    id: "964e6cf7-9d60-4aba-af76-4212a6e28071",
+    carrier_name: "1-9 Transportation Inc",
+  };
+  const legacy = {
+    id: "immutable-legacy-event",
+    action: "TRUCK_IMPORTED_FROM_QUICKMANAGE",
+    metadata: {
+      provider: "QUICKMANAGE",
+      operatedBy: "1-9 Transportation Inc",
+      sourceCompanyId: "e28fb8ff-0822-4166-954a-52d9544c0b0c",
+      sourceTruckId: source.id,
+    },
+  };
+  assert.deepEqual(
+    assessArchiveCompanyProvenance(canonical, source, [legacy]),
+    {
+      conflict: false,
+      legacyEventIds: [legacy.id],
+    },
+  );
+  for (const changed of [
+    { ...legacy, action: "IMPORT" },
+    {
+      ...legacy,
+      metadata: { ...legacy.metadata, sourceTruckId: randomUUID() },
+    },
+    {
+      ...legacy,
+      metadata: { ...legacy.metadata, sourceCompanyId: randomUUID() },
+    },
+    { ...legacy, metadata: { ...legacy.metadata, operatedBy: "Other" } },
+  ]) {
+    assert.deepEqual(
+      assessArchiveCompanyProvenance(canonical, source, [changed]),
+      { conflict: true, legacyEventIds: [] },
+    );
+  }
+  assert.equal(
+    assessArchiveCompanyProvenance({ ...canonical, id: randomUUID() }, source, [
+      legacy,
+    ]).conflict,
+    true,
+  );
+  assert.equal(
+    assessArchiveCompanyProvenance(canonical, source, [legacy, legacy])
+      .conflict,
+    true,
+  );
+  assert.equal(
+    assessArchiveCompanyProvenance(canonical, source, [
+      legacy,
+      {
+        ...legacy,
+        id: "separate-conflict",
+        metadata: { ...legacy.metadata, sourceCompanyId: randomUUID() },
+      },
+    ]).conflict,
+    true,
+  );
+  assert.deepEqual(legacyProvenanceCompatibilityAudit([legacy.id]), {
+    mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
+    lifecycleEventIds: [legacy.id],
+    originalEventPreserved: true,
+    currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
+  });
+  assert.equal(legacyProvenanceCompatibilityAudit([]), null);
 });
 test("unbound/unauthorized Company and non-owner bindings fail closed", async () => {
   await assert.rejects(() =>
@@ -378,7 +453,11 @@ test("binding rejects conflicting provenance, inactive/revoked owners and foreig
       truckReference: "synthetic",
       unitNumber: "synthetic",
       action: "IMPORT",
-      metadata: { sourceCompanyId: randomUUID() },
+      metadata: {
+        provider: "QUICKMANAGE",
+        sourceCompanyId: randomUUID(),
+        sourceTruckId: provider,
+      },
     },
   });
   await assert.rejects(() => bridge.bind(input, c), /provenance/);
