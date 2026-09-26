@@ -7,6 +7,7 @@ import {
   validateBundle,
   businessOnly,
   BRIDGE_UPLOAD_LIMIT,
+  reviewedPdfStreamFalsePositive,
 } from "./archive-bridge-validation";
 import { bridgeBody } from "./archive-bridge-http";
 import { statementFixture } from "../../../tests/fixtures/quickmanage";
@@ -27,6 +28,17 @@ test("bridge validates discovered business contracts and terminated provider ide
   const n = validateBundle(bundleEvidence(companyId, f));
   assert.equal(n.normalized.header.recipientStatus, "terminated");
   assert.equal(n.normalized.header.grossMinor, BigInt("100001"));
+});
+test("reviewed PDF stream false positives require exact statement and checksum", () => {
+  const statementId = "e599c860-01e9-4b26-bc93-e98b7d1292f9";
+  const checksum =
+    "8cf7ec575510de5b69897161e0d667b2ce45b53c3df95c5ecf96480c3f6a89a9";
+  assert.equal(reviewedPdfStreamFalsePositive(statementId, checksum), true);
+  assert.equal(reviewedPdfStreamFalsePositive(randomUUID(), checksum), false);
+  assert.equal(
+    reviewedPdfStreamFalsePositive(statementId, "0".repeat(64)),
+    false,
+  );
 });
 for (const mutation of [
   "duplicate",
