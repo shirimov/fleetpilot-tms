@@ -69,6 +69,17 @@ export function assessArchiveCompanyProvenance(
   return { conflict, legacyEventIds: conflict ? [] : legacyEventIds };
 }
 
+export function legacyProvenanceCompatibilityAudit(eventIds: string[]) {
+  return eventIds.length
+    ? {
+        mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
+        lifecycleEventIds: eventIds,
+        originalEventPreserved: true,
+        currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
+      }
+    : null;
+}
+
 /** Only archive callers receive this expanded scope; economics retain operational scope. */
 export async function archiveContext(minimum: "ADMIN" | "OWNER" = "ADMIN") {
   const c = await financialControlAuthorization.requireContext(minimum);
@@ -394,16 +405,9 @@ export class ArchiveBridgeService {
             reason: input.reason,
             historical: !canonical.operatingGroupLink,
             assurance: "OWNER_ATTESTED_BROWSER_EVIDENCE",
-            legacyProvenanceCompatibility: provenanceAssessment.legacyEventIds
-              .length
-              ? {
-                  mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
-                  lifecycleEventIds: provenanceAssessment.legacyEventIds,
-                  originalEventPreserved: true,
-                  currentProviderIdentity:
-                    "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
-                }
-              : null,
+            legacyProvenanceCompatibility: legacyProvenanceCompatibilityAudit(
+              provenanceAssessment.legacyEventIds,
+            ),
           },
         },
       });

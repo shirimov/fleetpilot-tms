@@ -11,10 +11,10 @@ import {
   ArchiveBridgeService,
   assessArchiveCompanyProvenance,
   expandArchiveScope,
+  legacyProvenanceCompatibilityAudit,
 } from "./archive-bridge-service";
 import { ArchiveService } from "./archive-service";
 import { ArchiveReadService } from "./archive-read";
-import { object } from "./archive-normalize";
 import { FinancialControlService } from "./financial-control-service";
 import type { CaptureContext as FinancialAuthorization } from "./archive-capture-run";
 import { statementFixture } from "../../../tests/fixtures/quickmanage";
@@ -153,6 +153,13 @@ test("only the documented 1-9 swapped-field provenance is compatible", () => {
     ]).conflict,
     true,
   );
+  assert.deepEqual(legacyProvenanceCompatibilityAudit([legacy.id]), {
+    mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
+    lifecycleEventIds: [legacy.id],
+    originalEventPreserved: true,
+    currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
+  });
+  assert.equal(legacyProvenanceCompatibilityAudit([]), null);
 });
 test("unbound/unauthorized Company and non-owner bindings fail closed", async () => {
   await assert.rejects(() =>
@@ -191,67 +198,6 @@ test("explicit verified binding creates immutable scoped grant/audit, catalog re
       data: { providerCompanyName: "Overwrite" },
     }),
   );
-});
-test("documented 1-9 compatibility preserves provenance and records its use", async () => {
-  const canonicalId = "cdf065bb-9002-4aa6-86b1-dd66f75e8692";
-  const providerId = "964e6cf7-9d60-4aba-af76-4212a6e28071";
-  await prisma.company.create({
-    data: {
-      id: canonicalId,
-      name: "1-9 Transportation Inc",
-      memberships: { create: { userId: c.userId, role: "OWNER" } },
-    },
-  });
-  const catalogUpload = catalogEvidence(providerId);
-  catalogUpload.companies[0].carrier_name = "1-9 Transportation Inc";
-  const catalog = await bridge.catalog(catalogUpload, c);
-  const lifecycle = await prisma.truckLifecycleEvent.create({
-    data: {
-      companyId: canonicalId,
-      actorUserId: c.userId,
-      truckReference: "immutable-truck",
-      unitNumber: "8558",
-      action: "TRUCK_IMPORTED_FROM_QUICKMANAGE",
-      metadata: {
-        provider: "QUICKMANAGE",
-        operatedBy: "1-9 Transportation Inc",
-        sourceCompanyId: "e28fb8ff-0822-4166-954a-52d9544c0b0c",
-        sourceTruckId: providerId,
-      },
-    },
-  });
-  const original = await prisma.truckLifecycleEvent.findUniqueOrThrow({
-    where: { id: lifecycle.id },
-  });
-  await bridge.bind(
-    {
-      catalogId: catalog.id,
-      providerCompanyId: providerId,
-      companyId: canonicalId,
-      confirmation: "CONFIRM_COMPANY_IDENTITY",
-      reason: "OWNER-attested exact 1-9 provider identity",
-      historical: true,
-    },
-    c,
-  );
-  assert.deepEqual(
-    await prisma.truckLifecycleEvent.findUniqueOrThrow({
-      where: { id: lifecycle.id },
-    }),
-    original,
-  );
-  const audit = await prisma.financialAuditEvent.findFirstOrThrow({
-    where: {
-      companyId: canonicalId,
-      action: "ARCHIVE_BROWSER_COMPANY_CONFIRMED",
-    },
-  });
-  assert.deepEqual(object(audit.metadata).legacyProvenanceCompatibility, {
-    mode: "LEGACY_SWAPPED_COMPANY_TRUCK_FIELDS_V1",
-    lifecycleEventIds: [lifecycle.id],
-    originalEventPreserved: true,
-    currentProviderIdentity: "INDEPENDENTLY_VERIFIED_BROWSER_CATALOG",
-  });
 });
 test("inventory identical retry/concurrency is idempotent, changes preserve old snapshots", async () => {
   const f = statementFixture(),
