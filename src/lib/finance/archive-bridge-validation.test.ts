@@ -7,6 +7,7 @@ import {
   validateBundle,
   businessOnly,
   BRIDGE_UPLOAD_LIMIT,
+  reviewedPdfStreamFalsePositive,
 } from "./archive-bridge-validation";
 import { bridgeBody } from "./archive-bridge-http";
 import { statementFixture } from "../../../tests/fixtures/quickmanage";
@@ -27,6 +28,34 @@ test("bridge validates discovered business contracts and terminated provider ide
   const n = validateBundle(bundleEvidence(companyId, f));
   assert.equal(n.normalized.header.recipientStatus, "terminated");
   assert.equal(n.normalized.header.grossMinor, BigInt("100001"));
+});
+test("reviewed PDF stream false positives require exact statement and checksum", () => {
+  const reviewed = [
+    [
+      "e599c860-01e9-4b26-bc93-e98b7d1292f9",
+      "8cf7ec575510de5b69897161e0d667b2ce45b53c3df95c5ecf96480c3f6a89a9",
+    ],
+    [
+      "ffd2ba43-3f04-41f2-82e7-b01289f40a73",
+      "3d9546d72fb3d09d3a0e487676a0a2cc67d02760b8b4b240a0b95b0a950ca197",
+    ],
+    [
+      "13468020-624c-4f76-9840-8cdce9eec9af",
+      "22629d24d31705db944dda6a1dc7510058d74f91d4712926d01ff95923a971a4",
+    ],
+    [
+      "e4640af4-f0e4-4fbc-af16-cf358451dd5e",
+      "763eb2552d341aa650f3b7b5817104fd063aacf63da19508ae8921a400b6549e",
+    ],
+  ] as const;
+  for (const [statementId, checksum] of reviewed) {
+    assert.equal(reviewedPdfStreamFalsePositive(statementId, checksum), true);
+    assert.equal(reviewedPdfStreamFalsePositive(randomUUID(), checksum), false);
+    assert.equal(
+      reviewedPdfStreamFalsePositive(statementId, "0".repeat(64)),
+      false,
+    );
+  }
 });
 for (const mutation of [
   "duplicate",

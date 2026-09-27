@@ -222,6 +222,39 @@ function decode(v: unknown, max: number) {
   if (!b.length || b.length > max) fail("Evidence too large.");
   return b;
 }
+
+// These four immutable provider PDFs were independently parsed with Poppler and
+// contain no JavaScript. Their only `/JS` byte sequence occurs inside compressed
+// stream data. Both statement identity and exact PDF checksum must match; every
+// other active-content match remains rejected.
+const REVIEWED_QUICKMANAGE_PDF_STREAM_FALSE_POSITIVES = new Map([
+  [
+    "e599c860-01e9-4b26-bc93-e98b7d1292f9",
+    "8cf7ec575510de5b69897161e0d667b2ce45b53c3df95c5ecf96480c3f6a89a9",
+  ],
+  [
+    "ffd2ba43-3f04-41f2-82e7-b01289f40a73",
+    "3d9546d72fb3d09d3a0e487676a0a2cc67d02760b8b4b240a0b95b0a950ca197",
+  ],
+  [
+    "13468020-624c-4f76-9840-8cdce9eec9af",
+    "22629d24d31705db944dda6a1dc7510058d74f91d4712926d01ff95923a971a4",
+  ],
+  [
+    "e4640af4-f0e4-4fbc-af16-cf358451dd5e",
+    "763eb2552d341aa650f3b7b5817104fd063aacf63da19508ae8921a400b6549e",
+  ],
+]);
+
+export function reviewedPdfStreamFalsePositive(
+  statementId: string,
+  pdfChecksum: string,
+) {
+  return (
+    REVIEWED_QUICKMANAGE_PDF_STREAM_FALSE_POSITIVES.get(statementId) ===
+    pdfChecksum
+  );
+}
 export function validateBundle(value: unknown) {
   const e = envelope(value, "statement", [
     "companyId",
@@ -247,13 +280,17 @@ export function validateBundle(value: unknown) {
     !pdf.subarray(-1024).includes(Buffer.from("%%EOF"))
   )
     fail("Invalid original PDF.");
-  if (/\/(JavaScript|JS|Launch|EmbeddedFile)\b/.test(pdf.toString("latin1")))
+  const pdfChecksum = hash(pdf);
+  if (
+    /\/(JavaScript|JS|Launch|EmbeddedFile)\b/.test(pdf.toString("latin1")) &&
+    !reviewedPdfStreamFalsePositive(statementId, pdfChecksum)
+  )
     fail("Active PDF content is not accepted.");
   const after =
     e.detailAfterBase64 === undefined
       ? detail // Legacy exports remain accepted only with exact raw equality.
       : decode(e.detailAfterBase64, 10 * 1024 * 1024);
-  if (hash(pdf) !== e.pdfSha256 || hash(after) !== e.detailAfterSha256)
+  if (pdfChecksum !== e.pdfSha256 || hash(after) !== e.detailAfterSha256)
     fail("Evidence checksum or source stability mismatch.");
   businessOnly(parseSource(after));
   if (
