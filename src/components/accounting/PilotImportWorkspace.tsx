@@ -127,7 +127,7 @@ export default function PilotImportWorkspace({ sources, categories, trucks, mode
         <h2 className="font-semibold">Upload official Pilot source</h2>
         <select aria-label="Pilot fuel-card source" className={field} name="sourceId" required><option value="">Select Pilot fuel-card source</option>{fuelSources.map((source) => <option key={String(source.id)} value={String(source.id)}>{String(source.name)}</option>)}</select>
         <input aria-label="Pilot provider account" className={field} name="providerAccount" inputMode="numeric" pattern="[0-9]*" placeholder="Provider account (required for portal XLSX)" />
-        <input aria-label="Pilot source file" className={field} type="file" name="file" accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" required />
+        <input aria-label="Pilot XLS file" className={field} type="file" name="file" accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" required />
         <p className="text-xs text-slate-400">Official legacy XLS, portal XLSX, or Pilot pipe-delimited CSV · 12 MB / 12,000-row Pilot limit · formulas, macros, and external links rejected.</p>
         <button className="btn" disabled={busy || fuelSources.length === 0}>Parse statement</button>
         {fuelSources.length === 0 && <p className="text-xs text-amber-200">Create an active FUEL_CARD source before importing.</p>}
