@@ -20,10 +20,12 @@ export async function POST(request: Request) {
     if (!(file instanceof File) || typeof sourceId !== 'string' || !sourceId) throw new FinancialValidationError('Pilot XLS file and fuel-card source are required.');
     const bytes = new Uint8Array(await file.arrayBuffer());
     const metadata = validateFinancialStatement(file, bytes);
-    if (metadata.extension !== '.xls') throw new FinancialValidationError('Pilot V1 requires a legacy .xls statement.');
+    if (!['.xls', '.xlsx', '.csv'].includes(metadata.extension)) throw new FinancialValidationError('Pilot import requires an official XLS, XLSX, or pipe-delimited CSV source.');
+    const providerAccount = form.get('providerAccount');
+    if (metadata.extension === '.xlsx' && (typeof providerAccount !== 'string' || !/^\d+$/.test(providerAccount.trim()))) throw new FinancialValidationError('Pilot portal XLSX requires its verified provider account number.');
     storageKey = await financialStatementStorage.put(bytes);
     const documentMetadata = { originalFilename: metadata.originalFilename, displayFilename: metadata.displayFilename, mimeType: metadata.mimeType, byteSize: metadata.byteSize, checksumSha256: metadata.checksumSha256 };
-    const invoice = await pilotImportService.createImport(bytes, { ...documentMetadata, storageKey }, sourceId, context);
+    const invoice = await pilotImportService.createImport(bytes, { ...documentMetadata, storageKey }, sourceId, context, { portalAccount: typeof providerAccount === 'string' ? providerAccount.trim() : undefined });
     storageKey = null;
     return NextResponse.json(invoice, { status: 201 });
   } catch (error) {

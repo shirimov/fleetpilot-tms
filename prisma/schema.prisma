@@ -1333,6 +1333,7 @@ enum PilotInvoiceStatus {
   NEEDS_REVIEW
   READY_TO_POST
   POSTED
+  SOURCE_ACCEPTED
   FAILED
 }
 
@@ -1994,39 +1995,44 @@ model FinancialAuditEvent {
 }
 
 model PilotProviderInvoice {
-  id                  String                   @id @default(cuid())
-  operatingGroupId    String
-  sourceId            String
-  provider            String                   @default("PILOT")
-  providerAccountHash String
-  invoiceNumber       String
-  billingDate         DateTime                 @db.Date
-  dueDate             DateTime?                @db.Date
-  periodStart         DateTime                 @db.Date
-  periodEnd           DateTime                 @db.Date
-  currency            String                   @default("USD")
-  invoiceTotalMinor   BigInt
-  parsedTotalMinor    BigInt
-  differenceMinor     BigInt
-  status              PilotInvoiceStatus       @default(UPLOADED)
-  parseVersion        String
-  expectationId       String?                  @unique
-  uploadedByUserId    String
-  postedByUserId      String?
-  postedAt            DateTime?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  operatingGroup      OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  source              FinancialSource          @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  expectation         FinancialExpectation?    @relation(fields: [expectationId], references: [id], onDelete: Restrict)
-  uploadedBy          User                     @relation("PilotInvoiceUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
-  postedBy            User?                    @relation("PilotInvoicePoster", fields: [postedByUserId], references: [id], onDelete: Restrict)
-  documents           PilotInvoiceDocument[]
-  events              PilotFuelingEvent[]
-  productLines        PilotFuelProductLine[]
-  adjustments         PilotInvoiceAdjustment[]
-  issues              PilotImportIssue[]
-  auditEvents         FinancialAuditEvent[]
+  id                       String                   @id @default(cuid())
+  operatingGroupId         String
+  sourceId                 String
+  provider                 String                   @default("PILOT")
+  providerAccountHash      String
+  providerAccountReference String?
+  invoiceNumber            String
+  billingDate              DateTime                 @db.Date
+  dueDate                  DateTime?                @db.Date
+  periodStart              DateTime                 @db.Date
+  periodEnd                DateTime                 @db.Date
+  currency                 String                   @default("USD")
+  invoiceTotalMinor        BigInt
+  parsedTotalMinor         BigInt
+  differenceMinor          BigInt
+  status                   PilotInvoiceStatus       @default(UPLOADED)
+  parseVersion             String
+  sourceFormat             String                   @default("LEGACY_XLS")
+  billingPeriodExplicit    Boolean                  @default(true)
+  observedStart            DateTime?                @db.Date
+  observedEnd              DateTime?                @db.Date
+  expectationId            String?                  @unique
+  uploadedByUserId         String
+  postedByUserId           String?
+  postedAt                 DateTime?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  operatingGroup           OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  source                   FinancialSource          @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  expectation              FinancialExpectation?    @relation(fields: [expectationId], references: [id], onDelete: Restrict)
+  uploadedBy               User                     @relation("PilotInvoiceUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+  postedBy                 User?                    @relation("PilotInvoicePoster", fields: [postedByUserId], references: [id], onDelete: Restrict)
+  documents                PilotInvoiceDocument[]
+  events                   PilotFuelingEvent[]
+  productLines             PilotFuelProductLine[]
+  adjustments              PilotInvoiceAdjustment[]
+  issues                   PilotImportIssue[]
+  auditEvents              FinancialAuditEvent[]
 
   @@unique([operatingGroupId, provider, providerAccountHash, invoiceNumber])
   @@index([operatingGroupId, status, billingDate])
@@ -2129,6 +2135,7 @@ model PilotInvoiceAdjustment {
   description        String
   transactionDate    DateTime?             @db.Date
   signedAmountMinor  BigInt
+  appliedToEvent     Boolean               @default(false)
   categoryId         String?
   transactionId      String?               @unique
   createdAt          DateTime              @default(now())

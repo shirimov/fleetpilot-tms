@@ -5,6 +5,7 @@ import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
 import { financialStatementStorage } from './financial-statement-storage';
 import { PILOT_XLS_PARSER_VERSION, pilotXlsParser, type PilotParsedInvoice, type PilotParsedRow } from './pilot-xls-parser';
+import { normalizedSourceAsInvoice, parsePilotSource, PILOT_SOURCE_PARSER_VERSION } from './pilot-source-parser';
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 import { normalizeTruckUnitNumber } from '@/lib/fleet/truck-normalization';
 import { PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
@@ -53,14 +54,18 @@ export class PilotImportService {
     private readonly statementStorage: PrivateFileStorage = financialStatementStorage,
   ) {}
 
-  async createImport(bytes: Uint8Array, metadata: DocumentMetadata, sourceId: string, context: FinancialAuthorization) {
-    const parsed = pilotXlsParser.parse(bytes);
+  async createImport(bytes: Uint8Array, metadata: DocumentMetadata, sourceId: string, context: FinancialAuthorization, options: { portalAccount?: string } = {}) {
+    const parsed = metadata.originalFilename.toLowerCase().endsWith('.xls')
+      ? pilotXlsParser.parse(bytes)
+      : normalizedSourceAsInvoice(parsePilotSource(bytes, metadata.originalFilename, options));
     try {
       const invoiceId = await this.database.$transaction(async (tx) => {
         await this.lock(tx, `pilot-invoice:${context.operatingGroupId}:${parsed.providerAccountHash}:${parsed.invoiceNumber}`);
         const source = await tx.financialSource.findFirst({ where: { id: sourceId, operatingGroupId: context.operatingGroupId, type: 'FUEL_CARD', isActive: true }, select: { id: true, currency: true } });
         if (!source) throw new FinancialValidationError('Select an active fuel-card financial source in this operating group.');
-        if (source.currency !== 'USD') throw new FinancialValidationError('Pilot V1 supports USD fuel-card sources only.');
+        if (source.currency !== 'USD') throw new FinancialValidationError('Pilot imports support USD fuel-card sources only.');
+        const sourceAccounts = await tx.pilotProviderInvoice.findMany({ where:{ sourceId }, distinct:['providerAccountHash'], select:{ providerAccountHash:true } });
+        if (sourceAccounts.length && !sourceAccounts.some(({ providerAccountHash }) => providerAccountHash === parsed.providerAccountHash)) throw new FinancialConflictError('The Pilot provider account does not match this immutable financial source history.');
         if (await tx.pilotProviderInvoice.findUnique({ where: { operatingGroupId_provider_providerAccountHash_invoiceNumber: { operatingGroupId: context.operatingGroupId, provider: 'PILOT', providerAccountHash: parsed.providerAccountHash, invoiceNumber: parsed.invoiceNumber } }, select: { id: true } })) {
           throw new FinancialConflictError('This Pilot invoice was already imported.');
         }
@@ -70,23 +75,27 @@ export class PilotImportService {
           importedByUserId: context.userId,
         } });
         const invoice = await tx.pilotProviderInvoice.create({ data: {
-          operatingGroupId: context.operatingGroupId, sourceId, providerAccountHash: parsed.providerAccountHash, invoiceNumber: parsed.invoiceNumber,
+          operatingGroupId: context.operatingGroupId, sourceId, providerAccountHash: parsed.providerAccountHash, providerAccountReference: parsed.providerAccountReference, invoiceNumber: parsed.invoiceNumber,
           billingDate: parsed.billingDate, dueDate: parsed.dueDate, periodStart: parsed.periodStart, periodEnd: parsed.periodEnd,
           invoiceTotalMinor: parsed.invoiceTotalMinor, parsedTotalMinor: parsed.parsedTotalMinor, differenceMinor: parsed.differenceMinor,
-          parseVersion: PILOT_XLS_PARSER_VERSION, uploadedByUserId: context.userId,
+          parseVersion: parsed.sourceFormat === 'LEGACY_XLS' ? PILOT_XLS_PARSER_VERSION : PILOT_SOURCE_PARSER_VERSION,
+          sourceFormat: parsed.sourceFormat, billingPeriodExplicit: parsed.billingPeriodExplicit, observedStart: parsed.observedStart, observedEnd: parsed.observedEnd,
+          uploadedByUserId: context.userId,
           documents: { create: { statementId: statement.id, role: 'STRUCTURED_SOURCE' } },
         } });
         await this.persistRows(tx, invoice.id, statement.id, parsed, context);
         const openIssues = await tx.pilotImportIssue.count({ where: { invoiceId: invoice.id, status: 'OPEN' } });
-        const status = parsed.differenceMinor === BigInt(0) && openIssues === 0 ? 'READY_TO_POST' : 'NEEDS_REVIEW';
+        const blockingSourceIssues = parsed.sourceFormat === 'LEGACY_XLS' ? openIssues : await tx.pilotImportIssue.count({ where:{ invoiceId:invoice.id, status:'OPEN', code:{ in:['INVALID_STRUCTURE','INVALID_DATE','INVALID_AMOUNT','INVALID_QUANTITY','UNKNOWN_PRODUCT','DUPLICATE_LINE','DUPLICATE_EVENT','AMOUNT_MISMATCH'] } } });
+        const status = parsed.sourceFormat !== 'LEGACY_XLS' && parsed.differenceMinor === BigInt(0) && blockingSourceIssues === 0 ? 'SOURCE_ACCEPTED'
+          : parsed.differenceMinor === BigInt(0) && openIssues === 0 ? 'READY_TO_POST' : 'NEEDS_REVIEW';
         await tx.pilotProviderInvoice.update({ where: { id: invoice.id }, data: { status } });
-        await tx.financialStatement.update({ where: { id: statement.id }, data: { importStatus: status === 'READY_TO_POST' ? 'IMPORTED' : 'NEEDS_REVIEW', importedAt: new Date(), importedRowCount: parsed.rows.length, unresolvedRowCount: openIssues } });
+        await tx.financialStatement.update({ where: { id: statement.id }, data: { importStatus: status === 'READY_TO_POST' || status === 'SOURCE_ACCEPTED' ? 'IMPORTED' : 'NEEDS_REVIEW', importedAt: new Date(), importedRowCount: parsed.rows.length, unresolvedRowCount: openIssues } });
         await tx.financialAuditEvent.createMany({ data: [
           { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoice.id, action: 'PILOT_INVOICE_UPLOADED', metadata: { statementId: statement.id, checksumSha256: metadata.checksumSha256 } },
-          { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoice.id, action: 'PILOT_INVOICE_PARSED', metadata: { parseVersion: PILOT_XLS_PARSER_VERSION, rowCount: parsed.rows.length, differenceMinor: parsed.differenceMinor.toString(), openIssueCount: openIssues } },
+          { operatingGroupId: context.operatingGroupId, companyId: context.activeCompanyId, actorUserId: context.userId, pilotProviderInvoiceId: invoice.id, action: 'PILOT_INVOICE_PARSED', metadata: { parseVersion: parsed.sourceFormat === 'LEGACY_XLS' ? PILOT_XLS_PARSER_VERSION : PILOT_SOURCE_PARSER_VERSION, sourceFormat: parsed.sourceFormat, billingPeriodExplicit: parsed.billingPeriodExplicit, observedStart: parsed.observedStart.toISOString().slice(0,10), observedEnd: parsed.observedEnd.toISOString().slice(0,10), rowCount: parsed.rows.length, differenceMinor: parsed.differenceMinor.toString(), openIssueCount: openIssues } },
         ] });
         return invoice.id;
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 300_000, maxWait: 30_000 });
       return this.getInvoice(invoiceId, context);
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002') throw new FinancialConflictError('This Pilot statement or invoice was already imported.');
@@ -102,6 +111,7 @@ export class PilotImportService {
     context: FinancialAuthorization,
     overrides?: ReparseOverrides,
   ) {
+    const duplicateEventKeys = await this.existingDuplicateEventKeys(tx, parsed, context);
     const productMappings = await tx.pilotProductMapping.findMany({
       where: {
         operatingGroupId: context.operatingGroupId,
@@ -138,7 +148,10 @@ export class PilotImportService {
     const seenEvents = new Set<string>(); const seenLines = new Set<string>(); const issues: IssueInput[] = [];
     const eventIds = new Map<string, string>();
     for (const row of parsed.rows) {
-      const record = await tx.financialImportRecord.create({ data: this.importRecord(statementId, row) });
+      const duplicateEvent = row.kind === 'PRODUCT' ? row.eventKeyHash && duplicateEventKeys.has(row.eventKeyHash)
+        : row.kind === 'ADJUSTMENT' ? row.eventKeyHash && duplicateEventKeys.has(row.eventKeyHash) : false;
+      const record = await tx.financialImportRecord.create({ data: { ...this.importRecord(statementId, row), ...(duplicateEvent ? { status: 'DUPLICATE_SUSPECTED' as const } : {}) } });
+      if (duplicateEvent) continue;
       if (row.kind === 'NON_ECONOMIC') {
         if (row.rowClass === 'UNKNOWN_AMOUNT_BEARING') issues.push({ code: 'INVALID_STRUCTURE', message: `Row ${row.sourceRowIndex} contains an unsupported amount-bearing structure and cannot be posted.` });
         continue;
@@ -149,14 +162,14 @@ export class PilotImportService {
         const adjustment = await tx.pilotInvoiceAdjustment.create({ data: {
           invoiceId, importRecordId: record.id, fingerprint: row.fingerprint, sourceLineIdentity: row.sourceLineIdentity,
           type: row.adjustmentType, description: row.description, transactionDate: row.transactionDate,
-          signedAmountMinor: row.signedAmountMinor ?? BigInt(0), categoryId,
+          signedAmountMinor: row.signedAmountMinor ?? BigInt(0), appliedToEvent: row.appliedToEvent ?? false, categoryId,
         } });
         if (seenLines.has(row.fingerprint)) issues.push({ code: 'DUPLICATE_LINE', message: `Row ${row.sourceRowIndex} duplicates another adjustment row.`, adjustmentId: adjustment.id });
         seenLines.add(row.fingerprint);
         if (row.signedAmountMinor === null || row.signedAmountMinor === BigInt(0)) issues.push({ code: 'INVALID_AMOUNT', message: `Row ${row.sourceRowIndex} has an invalid adjustment amount.`, adjustmentId: adjustment.id });
         if (!row.transactionDate && row.rawTransactionDate) issues.push({ code: 'INVALID_DATE', message: `Row ${row.sourceRowIndex} has an invalid date.`, adjustmentId: adjustment.id });
-        if (row.adjustmentType === 'OTHER') issues.push({ code: 'UNKNOWN_ADJUSTMENT', message: `Row ${row.sourceRowIndex} requires adjustment review.`, adjustmentId: adjustment.id });
-        if (!categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Row ${row.sourceRowIndex} requires an accounting category.`, adjustmentId: adjustment.id });
+        if (parsed.sourceFormat === 'LEGACY_XLS' && row.adjustmentType === 'OTHER') issues.push({ code: 'UNKNOWN_ADJUSTMENT', message: `Row ${row.sourceRowIndex} requires adjustment review.`, adjustmentId: adjustment.id });
+        if (parsed.sourceFormat === 'LEGACY_XLS' && !categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Row ${row.sourceRowIndex} requires an accounting category.`, adjustmentId: adjustment.id });
         continue;
       }
       const stableEventKey = row.eventKeyHash ?? hash([invoiceId, 'invalid-event', row.sourceRowIndex]);
@@ -198,12 +211,60 @@ export class PilotImportService {
       if (seenLines.has(row.lineFingerprint)) issues.push({ code: 'DUPLICATE_LINE', message: `Row ${row.sourceRowIndex} duplicates another product row.`, productLineId: line.id, eventId });
       seenLines.add(row.lineFingerprint);
       if (row.amountMinor === null || row.amountMinor <= BigInt(0)) issues.push({ code: 'INVALID_AMOUNT', message: `Row ${row.sourceRowIndex} has an invalid product amount.`, productLineId: line.id, eventId });
-      if (row.quantity === null || new Prisma.Decimal(row.quantity).lte(0)) issues.push({ code: 'INVALID_QUANTITY', message: `Row ${row.sourceRowIndex} has an invalid quantity.`, productLineId: line.id, eventId });
-      if (row.productType === 'UNKNOWN_PRODUCT') issues.push({ code: 'UNKNOWN_PRODUCT', message: `Product code ${row.productCode} requires review.`, productLineId: line.id, eventId });
-      if (!categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Product code ${row.productCode} requires an accounting category.`, productLineId: line.id, eventId });
+      if (['TRUCK_DIESEL','REEFER_FUEL','DEF'].includes(row.productType) && (row.quantity === null || new Prisma.Decimal(row.quantity).lte(0))) issues.push({ code: 'INVALID_QUANTITY', message: `Row ${row.sourceRowIndex} has an invalid quantity.`, productLineId: line.id, eventId });
+      if (row.productType === 'UNKNOWN_PRODUCT' && (parsed.sourceFormat === 'LEGACY_XLS' || !['138','400'].includes(row.productCode))) issues.push({ code: 'UNKNOWN_PRODUCT', message: `Product code ${row.productCode} requires review.`, productLineId: line.id, eventId });
+      if (parsed.sourceFormat === 'LEGACY_XLS' && !categoryId) issues.push({ code: 'MISSING_CATEGORY', message: `Product code ${row.productCode} requires an accounting category.`, productLineId: line.id, eventId });
     }
     if (parsed.differenceMinor !== BigInt(0)) issues.push({ code: 'AMOUNT_MISMATCH', message: `Parsed rows differ from the invoice control total by ${parsed.differenceMinor.toString()} minor units.` });
     if (issues.length) await tx.pilotImportIssue.createMany({ data: issues.map((issue) => ({ invoiceId, ...issue })) });
+  }
+
+  private async existingDuplicateEventKeys(tx: Prisma.TransactionClient, parsed: PilotParsedInvoice, context: FinancialAuthorization) {
+    const normalized = (value: unknown) => String(value ?? '').trim().replace(/^0+(?=\d)/, '');
+    const incoming = new Map<string, { eventKey: string; products: PilotParsedRow[]; adjustments: PilotParsedRow[] }>();
+    for (const row of parsed.rows) {
+      const eventKey = row.kind === 'PRODUCT' ? row.eventKeyHash : row.kind === 'ADJUSTMENT' ? row.eventKeyHash : null;
+      if (!eventKey) continue;
+      const card = row.kind === 'PRODUCT' ? normalized(row.cardReference) : normalized(row.rawMetadata['Card #']);
+      const ticket = row.kind === 'PRODUCT' ? normalized(row.ticketReference) : normalized(row.rawMetadata['Transaction #']);
+      const key = `${card}\u001f${ticket}`; const group = incoming.get(key) ?? { eventKey, products:[], adjustments:[] };
+      (row.kind === 'ADJUSTMENT' ? group.adjustments : group.products).push(row); incoming.set(key, group);
+    }
+    if (!incoming.size) return new Set<string>();
+    const existing = await tx.pilotFuelingEvent.findMany({
+      where:{ invoice:{ operatingGroupId:context.operatingGroupId, providerAccountHash:parsed.providerAccountHash, ...(parsed.sourceFormat === 'LEGACY_XLS' ? { sourceFormat:{ not:'LEGACY_XLS' } } : {}) } },
+      include:{ productLines:{ include:{ importRecord:{ select:{ rawMetadata:true } } } } },
+    });
+    const existingByKey = new Map<string, (typeof existing)[number]>();
+    for (const event of existing) {
+      const metadata = event.productLines[0]?.importRecord.rawMetadata as Record<string, unknown> | null;
+      if (!metadata) continue;
+      const card = normalized(metadata.cardNumber ?? metadata['Card #'] ?? metadata['7']);
+      const ticket = normalized(metadata.ticketNumber ?? metadata['Transaction #'] ?? metadata['23']);
+      if (ticket) existingByKey.set(`${card}\u001f${ticket}`, event);
+    }
+    const duplicates = new Set<string>();
+    for (const [key, group] of incoming) {
+      const prior = existingByKey.get(key); if (!prior) continue;
+      const products = group.products.filter((row): row is Extract<PilotParsedRow, { kind:'PRODUCT' }> => row.kind === 'PRODUCT');
+      const adjustments = group.adjustments.filter((row): row is Extract<PilotParsedRow, { kind:'ADJUSTMENT' }> => row.kind === 'ADJUSTMENT');
+      const productSignature = (items: Array<{ productType:string; quantity: unknown }>) => items.map((item) => `${item.productType}:${new Prisma.Decimal(String(item.quantity ?? 0)).toString()}`).sort();
+      const standaloneAdjustments = adjustments.filter((row) => !row.appliedToEvent);
+      const incomingRetail = products.reduce((sum,row) => sum + (row.retailAmountMinor ?? row.amountMinor ?? BigInt(0)), BigInt(0)) + adjustments.reduce((sum,row) => sum + (row.signedAmountMinor ?? BigInt(0)), BigInt(0));
+      const incomingNet = products.reduce((sum,row) => sum + (row.amountMinor ?? BigInt(0)), BigInt(0)) + standaloneAdjustments.reduce((sum,row) => sum + (row.signedAmountMinor ?? BigInt(0)), BigInt(0));
+      const incomingSavings = products.reduce((sum,row) => sum + (row.savingsMinor ?? BigInt(0)), BigInt(0)) + adjustments.filter((row) => row.appliedToEvent).reduce((sum,row) => sum + (row.signedAmountMinor ?? BigInt(0)), BigInt(0));
+      const priorRetail = prior.productLines.reduce((sum,row) => sum + (row.retailAmountMinor ?? row.amountMinor), BigInt(0));
+      const priorNet = prior.productLines.reduce((sum,row) => sum + row.amountMinor, BigInt(0));
+      const priorSavings = prior.productLines.reduce((sum,row) => sum + (row.savingsMinor ?? BigInt(0)), BigInt(0));
+      const exact = products[0]?.transactionDate?.toISOString().slice(0,10) === prior.transactionDate.toISOString().slice(0,10)
+        && normalized(products[0]?.sourceUnitNumber) === normalized(prior.sourceUnitNumber)
+        && normalized(products[0]?.locationNumber) === normalized(prior.locationNumber)
+        && JSON.stringify(productSignature(products)) === JSON.stringify(productSignature(prior.productLines))
+        && incomingRetail === priorRetail && incomingNet === priorNet && incomingSavings === priorSavings;
+      if (!exact) throw new FinancialConflictError('A Pilot transaction identity already exists with conflicting immutable source fields.');
+      duplicates.add(group.eventKey);
+    }
+    return duplicates;
   }
 
   private importRecord(statementId: string, row: PilotParsedRow) {
@@ -233,7 +294,7 @@ export class PilotImportService {
     if (!invoice) throw new FinancialNotFoundError();
     const serialized = json({
       ...invoice,
-      canReparse: invoice.status === 'NEEDS_REVIEW' && invoice.parseVersion !== PILOT_XLS_PARSER_VERSION,
+      canReparse: invoice.status === 'NEEDS_REVIEW' && invoice.parseVersion !== (invoice.sourceFormat === 'LEGACY_XLS' ? PILOT_XLS_PARSER_VERSION : PILOT_SOURCE_PARSER_VERSION),
       canRematchTrucks: invoice.status !== 'POSTED' && invoice.issues.some((issue) => issue.status === 'OPEN' && ['UNMATCHED_TRUCK', 'AMBIGUOUS_TRUCK'].includes(issue.code)),
     });
     serialized.events = serialized.events.map((event: Record<string, unknown> & { truck: { companyId: string } | null }) => {
@@ -254,7 +315,7 @@ export class PilotImportService {
         role: 'STRUCTURED_SOURCE',
         invoice: { operatingGroupId: context.operatingGroupId },
       },
-      select: { statement: { select: { storageKey: true, checksumSha256: true } } },
+      select: { invoice: { select: { providerAccountReference: true } }, statement: { select: { storageKey: true, checksumSha256: true, originalFilename: true } } },
     });
     if (!source) throw new FinancialConflictError('The immutable Pilot source document is unavailable for reparse.');
     let bytes: Uint8Array;
@@ -265,7 +326,9 @@ export class PilotImportService {
     }
     const checksumSha256 = createHash('sha256').update(bytes).digest('hex');
     if (checksumSha256 !== source.statement.checksumSha256) throw new FinancialConflictError('The immutable Pilot source document failed its checksum validation.');
-    const parsed = pilotXlsParser.parse(bytes);
+    const parsed = source.statement.originalFilename.toLowerCase().endsWith('.xls')
+      ? pilotXlsParser.parse(bytes)
+      : normalizedSourceAsInvoice(parsePilotSource(bytes, source.statement.originalFilename, { portalAccount: source.invoice.providerAccountReference ?? undefined }));
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -307,7 +370,8 @@ export class PilotImportService {
       if (hasPostedState) throw new FinancialConflictError('Posted or economically linked Pilot invoices cannot be reparsed.');
 
       this.validateReparseIdentity(invoice, parsed);
-      if (invoice.parseVersion === PILOT_XLS_PARSER_VERSION) return;
+      const currentParseVersion = parsed.sourceFormat === 'LEGACY_XLS' ? PILOT_XLS_PARSER_VERSION : PILOT_SOURCE_PARSER_VERSION;
+      if (invoice.parseVersion === currentParseVersion) return;
       if (invoice.status !== 'NEEDS_REVIEW') throw new FinancialConflictError('Only unposted Pilot invoices requiring review can be reparsed.');
 
       const manualTruckIds = [...new Set(invoice.events
@@ -373,7 +437,7 @@ export class PilotImportService {
       await tx.pilotProviderInvoice.update({ where: { id: invoiceId }, data: {
         parsedTotalMinor: parsed.parsedTotalMinor,
         differenceMinor: parsed.differenceMinor,
-        parseVersion: PILOT_XLS_PARSER_VERSION,
+        parseVersion: currentParseVersion,
         status: nextStatus,
       } });
       await tx.financialStatement.update({ where: { id: document.statementId }, data: {
@@ -384,7 +448,7 @@ export class PilotImportService {
         importedAt: new Date(),
       } });
       const after = {
-        parseVersion: PILOT_XLS_PARSER_VERSION,
+        parseVersion: currentParseVersion,
         status: nextStatus,
         invoiceTotalMinor: parsed.invoiceTotalMinor.toString(),
         parsedTotalMinor: parsed.parsedTotalMinor.toString(),
@@ -694,6 +758,7 @@ export class PilotImportService {
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const invoice = await tx.pilotProviderInvoice.findFirst({ where: { id: invoiceId, operatingGroupId: context.operatingGroupId }, include: { source: true, issues: { where: { status: 'OPEN' } }, events: { include: { truck: true, productLines: true } }, adjustments: true } });
       if (!invoice) throw new FinancialNotFoundError();
+      if (invoice.sourceFormat !== 'LEGACY_XLS') throw new FinancialConflictError('Multi-format Pilot source imports are evidence-only and cannot create Accounting economics.');
       if (invoice.status === 'POSTED') return;
       if (invoice.differenceMinor !== BigInt(0) || invoice.issues.length || invoice.status !== 'READY_TO_POST') throw new FinancialConflictError('Resolve every Pilot import issue and reconcile the invoice total before posting.');
       const productCategoryIds = [...new Set(invoice.events.flatMap((event) => event.productLines.map((line) => line.categoryId)).filter((categoryId): categoryId is string => Boolean(categoryId)))].sort();

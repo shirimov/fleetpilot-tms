@@ -596,7 +596,7 @@ export class FuelDeductionReconciliationService {
     for (const value of [filters.companyId, filters.pid, filters.truck, filters.recipient]) if (value && value.length > 200) throw new FinancialValidationError('Filter too long.');
     const [events, versions, policies, companies, historicalMappings, pilotInvoices, manualMatches] = await Promise.all([
       this.database.pilotFuelingEvent.findMany({
-        where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
+        where: { invoice: { operatingGroupId: context.operatingGroupId, status: { in: ['POSTED','SOURCE_ACCEPTED'] } } },
         include: {
           invoice: { select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true } },
           truck: { select: { id: true, unitNumber: true, companyId: true, company: { select: { name: true } } } },
@@ -624,8 +624,8 @@ export class FuelDeductionReconciliationService {
         },
       }),
       this.database.pilotProviderInvoice.findMany({
-        where: { operatingGroupId: context.operatingGroupId, status: 'POSTED' },
-        select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true },
+        where: { operatingGroupId: context.operatingGroupId, status: { in: ['POSTED','SOURCE_ACCEPTED'] } },
+        select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true, billingPeriodExplicit: true },
         orderBy: [{ periodStart: 'asc' }, { id: 'asc' }],
       }),
       this.database.fuelReconciliationManualMatch.findMany({
@@ -639,7 +639,9 @@ export class FuelDeductionReconciliationService {
     const dated = comparableEvents.filter(item => item.lines.length);
     const coverageStart = dated.length ? day(dated[0].event.transactionDate) : null;
     const coverageEnd = dated.length ? day(dated.at(-1)!.event.transactionDate) : null;
-    const pilotCoverageRanges = mergeCoverageRanges(pilotInvoices.map(invoice => ({ start: day(invoice.periodStart), end: day(invoice.periodEnd) })));
+    const pilotCoverageRanges = mergeCoverageRanges(pilotInvoices.flatMap(invoice => invoice.billingPeriodExplicit
+      ? [{ start: day(invoice.periodStart), end: day(invoice.periodEnd) }]
+      : events.filter(event => event.invoiceId === invoice.id).map(event => ({ start: day(event.transactionDate), end: day(event.transactionDate) }))));
     // Resolve every posted event so the historical-vs-posted control remains complete even
     // when an event contains only an excluded product such as reefer fuel.
     const historyRequests = events.filter(event => event.truckId).flatMap(event => {

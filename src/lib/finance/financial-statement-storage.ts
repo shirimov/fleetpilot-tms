@@ -21,7 +21,9 @@ function signatureMatches(extension: string, bytes: Uint8Array) {
   if (extension === '.xls') return [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1].every((value, index) => bytes[index] === value);
   if (extension === '.csv') {
     const sample = bytes.slice(0, Math.min(bytes.length, 4096));
-    return !sample.includes(0) && new TextDecoder('utf-8', { fatal: true }).decode(sample).includes(',');
+    if (sample.includes(0)) return false;
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(sample);
+    return decoded.includes(',') || /^H\|/m.test(decoded);
   }
   return false;
 }
