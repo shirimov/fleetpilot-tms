@@ -103,6 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
+  truckOwnerPeriods TruckOwnerPeriod[]
   fuelDeductionPolicies      FuelDeductionPolicy[]
   truckOperatingAffiliations TruckCompanyAffiliation[]
   archiveGrants              ArchiveScopeGrant[]
@@ -151,6 +152,7 @@ enum CompanyMembershipRole {
 }
 
 model User {
+  truckOwnerHistoryRevisions TruckOwnerHistoryRevision[]
   createdFuelReconciliationMatches   FuelReconciliationManualMatch[] @relation("FuelReconciliationMatchActor")
   unmatchedFuelReconciliationMatches FuelReconciliationManualMatch[] @relation("FuelReconciliationUnmatchActor")
   historicalTruckMappings            HistoricalTruckMapping[]        @relation("HistoricalTruckMappingActor")
@@ -436,6 +438,8 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  ownerPeriods TruckOwnerPeriod[]
+  ownerHistoryRevisions TruckOwnerHistoryRevision[]
   historicalArchiveMappings  HistoricalTruckMapping[]
   fuelDeductionPolicies      FuelDeductionPolicy[]
   operatingAffiliations      TruckCompanyAffiliation[]
@@ -1484,6 +1488,7 @@ enum FuelDiscountTreatment {
 }
 
 model OperatingGroup {
+  truckOwnerHistoryRevisions TruckOwnerHistoryRevision[]
   fuelReconciliationMatches FuelReconciliationManualMatch[]
   historicalTruckMappings   HistoricalTruckMapping[]
   fuelDeductionPolicies     FuelDeductionPolicy[]
@@ -1720,6 +1725,7 @@ model FinancialProgram {
 }
 
 model FinancialParty {
+  truckOwnerPeriods TruckOwnerPeriod[]
   id                         String                      @id @default(cuid())
   operatingGroupId           String
   companyId                  String?
@@ -2822,4 +2828,47 @@ model TruckCompanyHistoryRevision {
   affiliations       TruckCompanyAffiliation[]
 
   @@index([truckId, createdAt])
+}
+
+// Beneficial owner history; independent of TruckCompanyAffiliation.
+// Provider recipient IDs are explicit, audited QM bindings in Company scope.
+model TruckOwnerPeriod {
+  id                  String @id @default(cuid())
+  truckId             String
+  ownerPartyId        String
+  companyId           String
+  providerRecipientId String
+  effectiveFrom       DateTime @db.Date
+  effectiveTo         DateTime? @db.Date
+  revisionId          String
+  supersededAt        DateTime?
+  truck               Truck @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  ownerParty          FinancialParty @relation(fields: [ownerPartyId], references: [id], onDelete: Restrict)
+  company             Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  revision            TruckOwnerHistoryRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@index([truckId, supersededAt, effectiveFrom])
+  @@index([ownerPartyId, effectiveFrom])
+  @@index([companyId, providerRecipientId])
+}
+
+model TruckOwnerHistoryRevision {
+  id                 String @id @default(cuid())
+  creationTransactionId BigInt @default(dbgenerated("txid_current()"))
+  truckId            String
+  operatingGroupId   String
+  actorUserId        String
+  previousRevisionId String? @unique
+  sourceReference    String
+  reason             String
+  createdAt          DateTime @default(now())
+  truck              Truck @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  operatingGroup     OperatingGroup @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  actor              User @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  previousRevision   TruckOwnerHistoryRevision? @relation("OwnerHistoryChain", fields: [previousRevisionId], references: [id], onDelete: Restrict)
+  nextRevision       TruckOwnerHistoryRevision? @relation("OwnerHistoryChain")
+  periods            TruckOwnerPeriod[]
+
+  @@index([truckId, createdAt])
+  @@index([operatingGroupId])
 }
