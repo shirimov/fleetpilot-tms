@@ -740,6 +740,46 @@ test('preview sends multiple reference candidates to review without falling thro
   );
 });
 
+test('preview does not collapse a Driver and repeated Contractor recovery into one pair', async () => {
+  const fixture = await ambiguityFixture('non-unique-pair');
+  const driver = await fixture.archive('driver', { recipientId: 'non-unique-pair-driver', recipientType: 'DRIVER', reference: 'non-unique-pair-reference' });
+  const first = await fixture.archive('contractor-one', { reference: 'non-unique-pair-reference' });
+  const second = await fixture.archive('contractor-two', { reference: 'non-unique-pair-reference' });
+  await assertAmbiguousSourcesRemainUnconsumed(
+    await service.preview(fixture.context, { pageSize: 10000 }), fixture.event.id, [driver.id, first.id, second.id], minor(30_000),
+  );
+});
+
+test('preview preserves an OWNER manual match while overlapping Contractors keep policy unresolved', async () => {
+  const fixture = await ambiguityFixture('manual-overlap');
+  const first = await fixture.archive('one', { providerLineId: null });
+  await fixture.archive('two', { providerLineId: null, sourceTimestamp: '2026-06-10T11:00:00Z' });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: first.id } });
+  const match = await service.createManualMatch({ pilotEventId: fixture.event.id, archiveLineId: line.id, reason: 'Synthetic OWNER confirmation of one specific source line.' }, fixture.context);
+  try {
+    await fixture.archive('other-assignment', { amount: undefined, recipientId: 'manual-overlap-other-contractor' });
+    const sourceBefore = await db.archiveLine.findUniqueOrThrow({ where: { id: line.id } });
+    const result = await service.preview(fixture.context, { pageSize: 10000 });
+    const pilot = result.rows.find(row => row.pilotEventId === fixture.event.id)!;
+    assert.equal(pilot.status, 'NEEDS_REVIEW');
+    assert.equal(pilot.manualMatch?.id, match.id);
+    assert.equal(pilot.matchMethod, 'MANUAL_OWNER_MATCH');
+    assert.deepEqual(pilot.statementEvidence?.lineIds, [line.id]);
+    assert.equal(pilot.statementMinor, minor(10_000));
+    assert.equal(pilot.expectedMinor, null);
+    assert.equal(pilot.policyId, null);
+    assert.equal(pilot.recipientId, null);
+    assert.equal(pilot.differenceMinor, null);
+    assert.equal(result.rows.filter(row => row.statementEvidence?.lineIds.includes(line.id)).length, 1);
+    assert.equal(result.completeness.orphanActiveManualMatches, 0);
+    assert.equal(result.completeness.duplicateConsumedEvidence, 0);
+    assert.deepEqual(await db.archiveLine.findUniqueOrThrow({ where: { id: line.id } }), sourceBefore);
+    assert.equal((await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: match.id } })).unmatchedAt, null);
+  } finally {
+    await service.unmatchManualMatch({ matchId: match.id, reason: 'Synthetic manual-match preservation check completed.' }, fixture.context);
+  }
+});
+
 test('preview sends multiple cross-recipient identities to review without falling through to unmatched', async () => {
   const fixture = await ambiguityFixture('cross-recipient-collision');
   await fixture.archive('expected-assignment', { amount: undefined });

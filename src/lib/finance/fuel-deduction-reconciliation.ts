@@ -737,18 +737,26 @@ export class FuelDeductionReconciliationService {
         });
       }
     }
-    // Paired Driver/Contractor evidence for the same recovery remains one economic deduction with both line IDs retained.
-    const deduplicated = new Map<string, EvidenceLine>();
+    // Only a unique Driver/Contractor pair can represent one recovery. Build the
+    // whole candidate group first: a third line must not disappear into a pair.
+    const recoveryGroups = new Map<string, EvidenceLine[]>();
     for (const line of evidence) {
-      const identity = [line.companyId, line.truckId ?? line.truckUnit ?? '', line.reference ?? line.providerLineId ?? '', line.sourceDate ?? '', line.amountMinor.toString()].join('|');
-      const prior = deduplicated.get(identity);
-      if (!prior) deduplicated.set(identity, line);
-      else {
-        prior.evidenceIds.push(line.id);
-        if (prior.recipientType !== 'CONTRACTOR' && line.recipientType === 'CONTRACTOR') deduplicated.set(identity, { ...line, evidenceIds: prior.evidenceIds });
-      }
+      const identity = JSON.stringify([line.companyId, line.truckId ?? line.truckUnit, line.reference || line.providerLineId, line.sourceDate, line.amountMinor.toString()]);
+      recoveryGroups.set(identity, [...(recoveryGroups.get(identity) ?? []), line]);
     }
-    const statementLines = [...deduplicated.values()];
+    const statementLines = [...recoveryGroups.values()].flatMap(group => {
+      const driver = group.find(line => line.recipientType === 'DRIVER');
+      const contractor = group.find(line => line.recipientType === 'CONTRACTOR');
+      if (group.length !== 2 || !driver || !contractor || driver.recipientId === contractor.recipientId
+        || !(driver.reference || driver.providerLineId) || !driver.sourceDate || !(driver.truckId || driver.truckUnit)
+        || driver.sourceTimestamp !== contractor.sourceTimestamp
+        || driver.providerLineId && contractor.providerLineId && driver.providerLineId !== contractor.providerLineId
+        || driver.cardLastFour !== contractor.cardLastFour || driver.locationNumber !== contractor.locationNumber
+        || driver.city !== contractor.city || driver.state !== contractor.state
+        || driver.retailMinor !== contractor.retailMinor || !corroboratesFuelProducts(driver.products, contractor.products)
+        || driver.productClassifications.join('|') !== contractor.productClassifications.join('|')) return group;
+      return [{ ...contractor, evidenceIds: group.flatMap(line => line.evidenceIds) }];
+    });
     const statementLineByEvidenceId = new Map(statementLines.flatMap(line => line.evidenceIds.map(id => [id, line] as const)));
     const manualMatchByPilotEvent = new Map(manualMatches.map(match => [match.pilotEventId, match]));
     const manuallyReservedStatementIds = new Set(manualMatches.map(match => statementLineByEvidenceId.get(match.archiveLineId)?.id).filter((id): id is string => !!id));
@@ -838,8 +846,14 @@ export class FuelDeductionReconciliationService {
       };
       if (!event.truckId && !manualStatementLine) { rows.push({ ...base, status: 'NEEDS_TRUCK_MAPPING', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null, matchMethod: null, statementEvidence: null }); continue; }
       const assignments = (versionsByTruck.get(event.truckId!) ?? []).filter(version => day(version.workStart) <= purchaseDate && day(version.workEnd) >= purchaseDate);
+      // A statement week can legitimately span an owner transition. It is not
+      // an effective ownership boundary, so distinct Contractors cannot be
+      // resolved by PID/order or by whichever policy happens to be first.
+      const contractorAssignments = assignments.filter(item => item.recipientType === 'CONTRACTOR');
+      const contractorIdentities = new Set(contractorAssignments.map(item => JSON.stringify([item.statement.company.companyId, item.recipientId])));
+      const ambiguousContractors = contractorIdentities.size > 1;
       const periodAssignment = (() => {
-        const version = assignments.find(item => item.recipientType === 'CONTRACTOR') ?? (assignments.length === 1 ? assignments[0] : null);
+        const version = contractorIdentities.size === 1 ? contractorAssignments[0] : assignments.length === 1 ? assignments[0] : null;
         return version ? { recipientId: version.recipientId, recipientName: version.recipientName, recipientType: version.recipientType, role: version.role } : null;
       })();
       const referenceMatch = [...new Map([event.ticketHash, event.authorizationHash].filter(Boolean).flatMap(reference => (byTruckReference.get(`${event.truckId}|${reference}`) ?? []).map(line => [line.id, line] as const))).values()].filter(available);
@@ -863,6 +877,18 @@ export class FuelDeductionReconciliationService {
       if (!history || history.status !== 'EXACT') {
         rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_COMPANY_HISTORY', recipientId: matched?.recipientId ?? null, recipientName: matched?.recipientName ?? null, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
         if (matched) consume([matched]);
+        continue;
+      }
+      if (ambiguousContractors) {
+        // Preserve an explicit OWNER pairing, but do not infer ownership or a
+        // recovery policy from that pairing or from overlapping statement weeks.
+        const manual = matched && matched.id === manualStatementLine?.id ? matched : null;
+        rows.push({ ...base, ...statementAudit(manual ? [manual] : []), status: 'NEEDS_REVIEW', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: manual?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: manual ? manual.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Overlapping Contractors require an effective ownership boundary', pid: manual?.pid ?? null, statementPeriod: manual ? `${manual.workStart}–${manual.workEnd}` : null, matchMethod: manual ? 'MANUAL_OWNER_MATCH' : 'AMBIGUOUS_CONTRACTOR_ASSIGNMENT', statementEvidence: statementEvidence(manual ? [manual] : []) });
+        if (manual) consume([manual]);
+        continue;
+      }
+      if (!matched && referenceMatch.length > 1) {
+        rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Multiple fuel deductions share the Pilot reference', matchMethod: 'AMBIGUOUS_REFERENCE', statementEvidence: null });
         continue;
       }
       const purchaseDay = historyDate(purchaseDate);
@@ -920,6 +946,12 @@ export class FuelDeductionReconciliationService {
           && corroboratesFuelIdentityStrict(pilotIdentity, { cardLastFour: line.cardLastFour, locationNumber: line.locationNumber, city: line.city, state: line.state }));
         const crossRecipientIdentity = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
           && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+        // Check the full identity population before narrowing it to a unique,
+        // amount-compatible recovery or trying another exception path.
+        if (crossRecipientIdentity.length > 1) {
+          rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple cross-recipient recoveries share the structured fuel identity', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
+          continue;
+        }
         const crossRecipient = crossRecipientIdentity.length === 1 && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, crossRecipientIdentity[0].amountMinor) ? crossRecipientIdentity : [];
         if (crossRecipient.length === 1) {
           const review = crossRecipient[0]; consume([review]);
@@ -989,7 +1021,7 @@ export class FuelDeductionReconciliationService {
           rows.push({ ...base, ...statementAudit(review), productClassification: 'CONFLICT', status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: null, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: review[0].pid, statementPeriod: `${review[0].workStart}–${review[0].workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: statementEvidence(review) });
           continue;
         }
-        if (crossRecipient.length > 1 || productGroups.size > 1 || unresolvedDateEvidence) {
+        if (productGroups.size > 1 || unresolvedDateEvidence) {
           rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple or incomplete structured fuel candidates require review', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
           continue;
         }
