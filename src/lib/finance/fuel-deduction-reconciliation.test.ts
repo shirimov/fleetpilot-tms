@@ -190,14 +190,14 @@ async function addEvent(input: { key: string; date: string; truckId?: string | n
   return event;
 }
 
-async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientName?: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string; cardNumber?: string | null; merchant?: string; city?: string; state?: string }) {
+async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientName?: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; providerLineId?: string | null; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string; cardNumber?: string | null; merchant?: string; city?: string; state?: string }) {
   const document = await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'OWNER_SETTLEMENT', periodStart: historyDate(input.workStart), periodEnd: historyDate(input.workEnd), originalFilename: `${input.key}.pdf`, displayFilename: `${input.key}.pdf`, mimeType: 'application/pdf', byteSize: 1, storageKey: `test/${dbName}/${input.key}.pdf`, checksumSha256: hash(`pdf-${input.key}`), importedByUserId: userId } });
   const statement = await db.archiveStatement.create({ data: { archiveCompanyId: input.archiveCompanyId ?? archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   return db.$transaction(async tx => {
     const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `test/${dbName}/${input.key}.json`, detailChecksum: hash(`detail-${input.key}`), pdfChecksum: document.checksumSha256, bundleChecksum: hash(`bundle-${input.key}`), pid: input.pid, recipientId: input.recipientId, recipientName: input.recipientName ?? input.recipientId, recipientType: input.recipientType, role: input.role, workStart: historyDate(input.workStart), workEnd: historyDate(input.workEnd), header: {}, issues: [], parserVersion: 'test', capturedByUserId: userId } });
     await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
     if (input.duplicateProviderTruck) await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: `${input.unit}-duplicate`, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
-    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.reference ?? input.key, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: input.cardNumber === undefined ? '991234' : input.cardNumber, merchant: input.merchant ?? '100', city: input.city ?? 'Test City', state: input.state ?? 'CA' } } });
+    if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.providerLineId === undefined ? input.reference ?? input.key : input.providerLineId, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: input.cardNumber === undefined ? '991234' : input.cardNumber, merchant: input.merchant ?? '100', city: input.city ?? 'Test City', state: input.state ?? 'CA' } } });
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
 }
@@ -584,4 +584,170 @@ test('audited policy revision preserves identity/history, enforces authority and
   await assert.rejects(db.fuelDeductionPolicyRevision.update({ where: { id: history.id }, data: { reason: 'Tampered history' } }));
   await assert.rejects(db.fuelDeductionPolicyRevision.delete({ where: { id: history.id } }));
   assert.equal(await db.fuelDeductionPolicyRevision.count({ where: { policyId: policy.id } }), 2);
+});
+
+// These regressions exercise the real preview, including accepted-version selection,
+// deduplication, candidate selection, policy resolution and source disposition.
+// They deliberately retain the suite's normal disposable-database setup.
+async function ambiguityFixture(key: string, reference?: string) {
+  const unit = `REVIEW-${key.toUpperCase()}`;
+  const truck = await db.truck.create({ data: { companyId, unitNumber: unit, unitNumberNormalized: unit } });
+  await new TruckCompanyHistoryService(db).change(truck.id, {
+    action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION',
+    sourceReference: 'Synthetic ambiguity regression', reason: 'Synthetic ambiguity regression',
+    periods: [{ companyId, effectiveFrom: '2026-01-01', effectiveTo: '2026-10-01' }],
+  }, userId);
+  const recipientId = `${key}-contractor`;
+  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
+  const event = await addEvent({ key, date: '2026-06-10', truckId: truck.id, unit, amount: minor(10_000), reference, locationNumber: key });
+  const policy = await db.fuelDeductionPolicy.create({ data: {
+    operatingGroupId: groupId, companyId, truckId: truck.id, providerRecipientId: recipientId,
+    responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0,
+    effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic ambiguity regression', reason: 'Fixture', approvedByUserId: userId,
+  } });
+  const archive = (suffix: string, overrides: Partial<Parameters<typeof archiveVersion>[0]> = {}) => archiveVersion({
+    key: `${key}-${suffix}`, pid: 'review-10', recipientId, recipientType: 'CONTRACTOR',
+    workStart: '2026-06-07', workEnd: '2026-06-13', truckId: truck.id, unit,
+    amount: minor(10_000), sourceDate: '2026-06-10', sourceTimestamp: '2026-06-10T10:00:00Z',
+    dieselAmount: '100.00', dieselQuantity: '20.00', merchant: key, ...overrides,
+  });
+  return { truck, event, recipientId, context, archive, policy };
+}
+
+async function assertAmbiguousSourcesRemainUnconsumed(
+  result: Awaited<ReturnType<FuelDeductionReconciliationService['preview']>>,
+  eventId: string,
+  versionIds: string[],
+  expectedStatementMinor: bigint,
+) {
+  const pilotRows = result.rows.filter(row => row.pilotEventId === eventId);
+  assert.equal(pilotRows.length, 1, 'the fixture event must have exactly one Pilot disposition');
+  const pilot = pilotRows[0];
+  assert.ok(pilot);
+  assert.equal(pilot.pilotActualMinor, minor(10_000));
+  assert.equal(pilot.status, 'NEEDS_REVIEW');
+  assert.equal(pilot.statementEvidence, null, 'an ambiguous candidate must not be consumed');
+  assert.equal(pilot.differenceMinor, null);
+  const sourceLines = await db.archiveLine.findMany({ where: { versionId: { in: versionIds } } });
+  assert.equal(sourceLines.length, versionIds.length);
+  const sourceAmountMinor = sourceLines.reduce((sum, line) => {
+    assert.notEqual(line.amountMinor, null, 'fixture source deductions must have amounts');
+    const amount = line.amountMinor!;
+    return sum + (amount < BigInt(0) ? -amount : amount);
+  }, BigInt(0));
+  assert.equal(sourceAmountMinor, expectedStatementMinor);
+  const sourceIds = new Set(sourceLines.map(line => line.id));
+  const dispositions = result.rows.filter(row => row.statementEvidence?.lineIds.some(id => sourceIds.has(id)));
+  assert.ok(dispositions.every(row => row.pilotEventId === null));
+  assert.deepEqual(dispositions.flatMap(row => row.statementEvidence!.lineIds).sort(), [...sourceIds].sort());
+  assert.equal(dispositions.reduce((sum, row) => sum + row.statementMinor, BigInt(0)), expectedStatementMinor);
+}
+
+for (const identity of ['absent', 'shared-reference'] as const) {
+  test(`preview preserves distinct same-recipient charges with ${identity} identity for review`, async () => {
+    const fixture = await ambiguityFixture(`dedup-${identity}`);
+    const first = await fixture.archive('one', {
+      providerLineId: identity === 'absent' ? null : 'provider-one',
+      reference: identity === 'absent' ? undefined : 'reused-reference',
+    });
+    const second = await fixture.archive('two', {
+      providerLineId: identity === 'absent' ? null : 'provider-two',
+      reference: identity === 'absent' ? undefined : 'reused-reference',
+      sourceTimestamp: '2026-06-10T11:00:00Z',
+    });
+    const result = await service.preview(fixture.context, { pageSize: 10000 });
+    await assertAmbiguousSourcesRemainUnconsumed(result, fixture.event.id, [first.id, second.id], minor(20_000));
+  });
+}
+
+test('preview retains distinct provider IDs as separate ambiguous same-day evidence', async () => {
+  const fixture = await ambiguityFixture('distinct-provider');
+  const first = await fixture.archive('one', { providerLineId: 'distinct-one' });
+  const second = await fixture.archive('two', { providerLineId: 'distinct-two', sourceTimestamp: '2026-06-10T11:00:00Z' });
+  await assertAmbiguousSourcesRemainUnconsumed(
+    await service.preview(fixture.context, { pageSize: 10000 }), fixture.event.id, [first.id, second.id], minor(20_000),
+  );
+});
+
+for (const driverFirst of [true, false]) {
+  test(`preview still pairs identical Driver and Contractor recovery once with both source IDs (Driver first: ${driverFirst})`, async () => {
+    const fixture = await ambiguityFixture(`driver-contractor-${driverFirst}`);
+    // Preview orders accepted versions by PID, then ID. Distinct PIDs make
+    // both evidence orders deterministic, independent of generated IDs.
+    const driver = await fixture.archive('driver', { pid: driverFirst ? 'review-10' : 'review-20', recipientId: `paired-driver-${driverFirst}`, recipientType: 'DRIVER', reference: 'paired-review' });
+    const contractor = await fixture.archive('contractor', { pid: driverFirst ? 'review-20' : 'review-10', reference: 'paired-review' });
+    const result = await service.preview(fixture.context, { pageSize: 10000 });
+    const pilotRows = result.rows.filter(row => row.pilotEventId === fixture.event.id);
+    assert.equal(pilotRows.length, 1, 'the paired recovery must have exactly one Pilot disposition');
+    const pilot = pilotRows[0];
+    assert.ok(pilot);
+    assert.equal(pilot.pilotActualMinor, minor(10_000));
+    const sourceLines = await db.archiveLine.findMany({ where: { versionId: { in: [driver.id, contractor.id] } } });
+    assert.equal(sourceLines.length, 2);
+    const contractorLine = sourceLines.find(line => line.versionId === contractor.id);
+    assert.ok(contractorLine);
+    assert.equal(pilot.status, 'MATCHED');
+    assert.equal(pilot.recipientId, fixture.recipientId);
+    assert.equal(pilot.statementRecipientId, fixture.recipientId);
+    assert.equal(pilot.statementEvidence?.versionId, contractor.id);
+    assert.equal(pilot.statementEvidence?.groupLineId, contractorLine.id);
+    assert.equal(pilot.statementMinor, minor(10_000));
+    assert.deepEqual(pilot.statementEvidence?.lineIds.slice().sort(), sourceLines.map(line => line.id).sort());
+    for (const line of sourceLines) assert.equal(result.rows.filter(row => row.statementEvidence?.lineIds.includes(line.id)).length, 1);
+  });
+}
+
+for (const companyFirst of [true, false]) {
+  test(`preview does not resolve overlapping distinct Contractors by PID order (Company first: ${companyFirst})`, async () => {
+    const fixture = await ambiguityFixture(`overlap-${companyFirst}`);
+    const otherRecipient = `other-${fixture.recipientId}`;
+    await db.fuelDeductionPolicy.create({ data: {
+      operatingGroupId: groupId, companyId, truckId: fixture.truck.id, providerRecipientId: otherRecipient,
+      responsibility: 'COMPANY', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0,
+      effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic conflicting recipient rule', reason: 'Fixture', approvedByUserId: userId,
+    } });
+    await fixture.archive('recipient-assignment', { amount: undefined, pid: companyFirst ? 'review-20' : 'review-10' });
+    await fixture.archive('company-assignment', { amount: undefined, recipientId: otherRecipient, pid: companyFirst ? 'review-10' : 'review-20' });
+    const result = await service.preview(fixture.context, { pageSize: 10000 });
+    const pilot = result.rows.find(row => row.pilotEventId === fixture.event.id)!;
+    assert.ok(['NEEDS_REVIEW', 'NEEDS_RECIPIENT_MAPPING'].includes(pilot.status), 'distinct unresolved recipients require review, not a selected policy');
+    assert.equal(pilot.expectedMinor, null);
+    assert.equal(pilot.policyId, null);
+    assert.equal(pilot.differenceMinor, null);
+    assert.equal(pilot.statementEvidence, null);
+  });
+}
+
+test('preview keeps repeated assignments for the same Contractor usable', async () => {
+  const fixture = await ambiguityFixture('same-contractor');
+  await fixture.archive('assignment-one', { amount: undefined, pid: 'review-10' });
+  await fixture.archive('assignment-two', { amount: undefined, pid: 'review-20' });
+  const result = await service.preview(fixture.context, { pageSize: 10000 });
+  const pilot = result.rows.find(row => row.pilotEventId === fixture.event.id)!;
+  assert.equal(pilot.recipientId, fixture.recipientId);
+  assert.equal(pilot.policyId, fixture.policy.id);
+  assert.equal(pilot.expectedMinor, minor(10_000));
+  assert.equal(pilot.status, 'PILOT_UNMATCHED');
+});
+
+test('preview sends multiple reference candidates to review without falling through to unmatched', async () => {
+  const fixture = await ambiguityFixture('reference-collision', 'collision-ticket');
+  const first = await fixture.archive('one', { reference: 'collision-ticket', amount: minor(10_000) });
+  // Different amounts intentionally keep the two candidates out of one dedup group.
+  const second = await fixture.archive('two', { reference: 'collision-ticket', amount: minor(10_001), sourceTimestamp: '2026-06-10T11:00:00Z' });
+  await assertAmbiguousSourcesRemainUnconsumed(
+    await service.preview(fixture.context, { pageSize: 10000 }), fixture.event.id, [first.id, second.id], minor(20_001),
+  );
+});
+
+test('preview sends multiple cross-recipient identities to review without falling through to unmatched', async () => {
+  const fixture = await ambiguityFixture('cross-recipient-collision');
+  await fixture.archive('expected-assignment', { amount: undefined });
+  const otherUnit = 'REVIEW-CROSS-OTHER';
+  const otherTruck = await db.truck.create({ data: { companyId, unitNumber: otherUnit, unitNumberNormalized: otherUnit } });
+  const first = await fixture.archive('one', { truckId: otherTruck.id, unit: otherUnit, recipientId: 'other-one', providerLineId: 'cross-one' });
+  const second = await fixture.archive('two', { truckId: otherTruck.id, unit: otherUnit, recipientId: 'other-two', providerLineId: 'cross-two' });
+  await assertAmbiguousSourcesRemainUnconsumed(
+    await service.preview(fixture.context, { pageSize: 10000 }), fixture.event.id, [first.id, second.id], minor(20_000),
+  );
 });

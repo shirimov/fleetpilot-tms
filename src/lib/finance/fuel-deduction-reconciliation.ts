@@ -305,7 +305,6 @@ export function buildFuelReconciliationControls(rows: FuelReconciliationRow[]): 
     else if (status === 'TIMING_DIFFERENCE') amounts = [controlAmount(sumRows(matches, row => row.expectedMinor ?? BigInt(0)), 'EXPECTED', 'timing amount')];
     else if (status === 'STATEMENT_ONLY') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'statement amount')];
     else if (status === 'NO_PILOT_DATA_IMPORTED') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'outside Pilot coverage')];
-    else if (status === 'NEEDS_TRUCK_MAPPING') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'statement affected')];
     else if (['NEEDS_POLICY', 'NEEDS_COMPANY_HISTORY'].includes(status)) amounts = [controlAmount(sumRows(matches, row => row.pilotActualMinor), 'PILOT', 'Pilot affected')];
     else amounts = affectedAmounts(matches, status === 'NEEDS_REVIEW' ? 'under review' : 'affected');
     return { key: status, label: controlLabels[status], count: matches.length, filter: { status }, amounts };
