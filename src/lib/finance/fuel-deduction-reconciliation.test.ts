@@ -969,7 +969,7 @@ test('owner history rechecks ADMIN, inactive and revoked actors and refuses a pa
   const current = await owners.history(fixture.truck.id, fixture.context);
   const input = { expectedRevisionId: current.revisionId, reason: 'Synthetic', sourceReference: 'Synthetic', periods: current.periods };
   for (const kind of ['admin', 'inactive', 'revoked'] as const) {
-    const actor = await db.user.create({ data: { email: `${dbName}-${kind}@example.test`, displayName: `Synthetic ${kind}`, isActive: kind !== 'inactive', memberships: { create: { companyId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } } } });
+    const actor = await db.user.create({ data: { email: `${dbName}-owner-live-authority-${kind}@example.test`, displayName: `Synthetic ${kind}`, isActive: kind !== 'inactive', memberships: { create: { companyId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } } } });
     const context = { ...fixture.context, userId: actor.id };
     if (kind === 'revoked') await db.companyMembership.deleteMany({ where: { userId: actor.id } });
     if (kind === 'admin') assert.equal((await owners.history(fixture.truck.id, context)).revisionId, current.revisionId);
@@ -1046,7 +1046,7 @@ for (const sourceFormat of ['LEGACY_XLS', 'PIPE_INVOICE', 'PORTAL_XLSX', 'UNKNOW
     const prior = await owners.history(fixture.truck.id, fixture.context);
     await fixture.archive('prior', { amount: undefined });
     const recipientId = `new-${fixture.recipientId}`;
-    const nextParty = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: 'Synthetic Sunday owner' } });
+    const nextParty = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: `Synthetic Sunday owner ${sourceFormat}` } });
     await fixture.archive('next', { recipientId, amount: undefined, workStart: '2026-09-20', workEnd: '2026-09-26' });
     await owners.replace(fixture.truck.id, { expectedRevisionId: prior.revisionId, reason: 'Synthetic Sunday transition', sourceReference: 'Synthetic', periods: [
       { ownerPartyId: prior.periods[0].ownerPartyId, companyId, providerRecipientId: fixture.recipientId, effectiveFrom: '2026-01-01', effectiveTo: '2026-09-20' },
