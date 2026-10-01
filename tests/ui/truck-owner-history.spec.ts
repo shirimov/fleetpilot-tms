@@ -58,7 +58,7 @@ for (const mode of ['conflict', 'readback-failure'] as const) {
     await page.getByRole('button', { name: 'Review full timeline' }).click();
     await page.getByLabel('I reviewed every period and its owner / Company / Contractor binding.').check();
     await page.getByRole('button', { name: 'Save audited owner history' }).click();
-    await expect(page.getByRole('alert')).toContainText('Reload');
+    await expect(page.getByRole('dialog', { name: 'Beneficial owner history' }).getByRole('alert')).toContainText('Reload');
     await expect(page.getByRole('button', { name: 'Save audited owner history' })).toBeDisabled();
     await expect(page.getByText(/Saved and read back revision/)).toHaveCount(0);
     expect(posts).toHaveLength(1);
