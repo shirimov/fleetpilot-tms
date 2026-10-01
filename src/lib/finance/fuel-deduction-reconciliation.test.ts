@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test';
 import { AuthenticationRequiredError, AuthorizationDeniedError } from '../auth/auth-errors';
 import { financialControlAuthorization } from './financial-control-authorization';
 import { GET as ownerHistoryGET, POST as ownerHistoryPOST } from '../../app/api/trucks/[id]/owner-history/route';
+import { GET as ownerOptionsGET } from '../../app/api/trucks/[id]/owner-history/options/route';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
@@ -867,6 +868,30 @@ for (const manual of [false, true]) {
   });
 }
 
+test('owner editor options use live authority and verified scoped identities only', async () => {
+  const fixture = await ambiguityFixture('owner-editor-options');
+  await fixture.archive('contractor');
+  await fixture.archive('driver-only', { recipientType: 'DRIVER', recipientId: 'synthetic-driver-not-contractor' });
+  const owners = new TruckOwnerHistoryService(db);
+  const foreignParty = await db.financialParty.create({ data: { operatingGroupId: groupId, companyId: conflictCompanyId, type: 'OWNER_OPERATOR', name: 'Synthetic foreign editor owner' } });
+  const inactive = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: 'Synthetic inactive editor owner', isActive: false } });
+  const result = await owners.options(fixture.truck.id, fixture.context);
+  assert.equal(result.canManage, true);
+  assert.ok(result.recipients.some(r => r.id === fixture.recipientId && r.companyId === companyId));
+  assert.ok(result.recipients.every(r => r.id !== 'synthetic-driver-not-contractor' && r.companyId === companyId));
+  assert.ok(result.owners.every(p => p.id !== foreignParty.id && p.id !== inactive.id));
+  assert.ok(result.companies.every(c => c.id === companyId));
+  assert.equal(result.recipients.filter(r => r.id === fixture.recipientId && r.companyId === companyId).length, 1);
+  const current = await owners.history(fixture.truck.id, fixture.context);
+  assert.ok(result.owners.some(p => p.id === current.periods[0].ownerPartyId));
+  const admin = await db.user.create({ data: { email: `${dbName}-owner-editor-admin@example.test`, displayName: 'Synthetic read-only editor', memberships: { create: { companyId, role: 'ADMIN' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: 'ADMIN' } } } });
+  const context = { ...fixture.context, userId: admin.id };
+  assert.equal((await owners.options(fixture.truck.id, context)).canManage, false);
+  await db.companyMembership.deleteMany({ where: { userId: admin.id } });
+  await assert.rejects(owners.options(fixture.truck.id, context), AuthorizationDeniedError);
+  await assert.rejects(owners.options(fixture.truck.id, { ...fixture.context, companyIds: [] }), AuthorizationDeniedError);
+});
+
 test('owner-history entry rejects spoofed authority and corrections retain immutable audited history', async () => {
   const fixture = await ambiguityFixture('history-correction');
   await fixture.archive('recipient');
@@ -941,11 +966,15 @@ test('owner history HTTP handlers enforce auth, validate bodies and surface stal
   // Keep real handlers and real service/DB checks; replace only request identity
   // resolution and the singleton's DB selection with this disposable fixture.
   t.mock.method(truckOwnerHistoryService, 'history', owners.history.bind(owners));
+  t.mock.method(truckOwnerHistoryService, 'options', owners.options.bind(owners));
   t.mock.method(truckOwnerHistoryService, 'replace', owners.replace.bind(owners));
   const params = { params: Promise.resolve({ id: fixture.truck.id }) };
   const request = (body: string) => new Request('http://localhost/api/trucks/synthetic/owner-history', { method: 'POST', body, headers: { 'Content-Type': 'application/json' } });
   const denied = t.mock.method(financialControlAuthorization, 'requireContext', async () => { throw new AuthenticationRequiredError(); });
   assert.equal((await ownerHistoryGET(new Request('http://localhost'), params)).status, 401);
+  const deniedOptions = await ownerOptionsGET(new Request('http://localhost'), params);
+  assert.equal(deniedOptions.status, 401);
+  assert.equal(deniedOptions.headers.get('Cache-Control'), 'private, no-store');
   assert.equal((await ownerHistoryPOST(request('null'), params)).status, 401);
   denied.mock.restore();
   const requirements: string[] = [];
@@ -953,13 +982,17 @@ test('owner history HTTP handlers enforce auth, validate bodies and surface stal
   const get = await ownerHistoryGET(new Request('http://localhost'), params);
   assert.equal(get.status, 200);
   assert.equal(get.headers.get('Cache-Control'), 'private, no-store');
+  const optionsResponse = await ownerOptionsGET(new Request('http://localhost'), params);
+  assert.equal(optionsResponse.status, 200);
+  assert.equal(optionsResponse.headers.get('Cache-Control'), 'private, no-store');
+  assert.deepEqual(await optionsResponse.json(), await owners.options(fixture.truck.id, fixture.context));
   const initial = await owners.history(fixture.truck.id, fixture.context);
   for (const body of ['{', 'null', '{}', '[]']) assert.equal((await ownerHistoryPOST(request(body), params)).status, 400);
   const input = { expectedRevisionId: initial.revisionId, reason: 'Synthetic HTTP correction', sourceReference: 'Synthetic evidence', periods: initial.periods };
   assert.equal((await ownerHistoryPOST(request(JSON.stringify(input)), params)).status, 200);
   assert.equal((await ownerHistoryPOST(request(JSON.stringify(input)), params)).status, 409);
-  assert.equal(requirements[0], 'ADMIN');
-  assert.ok(requirements.slice(1).every(role => role === 'OWNER'));
+  assert.deepEqual(requirements.slice(0, 2), ['ADMIN', 'ADMIN']);
+  assert.ok(requirements.slice(2).every(role => role === 'OWNER'));
 });
 
 test('owner history rechecks ADMIN, inactive and revoked actors and refuses a partial foreign timeline', async () => {
@@ -972,8 +1005,13 @@ test('owner history rechecks ADMIN, inactive and revoked actors and refuses a pa
     const actor = await db.user.create({ data: { email: `${dbName}-owner-live-authority-${kind}@example.test`, displayName: `Synthetic ${kind}`, isActive: kind !== 'inactive', memberships: { create: { companyId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } }, operatingGroupMemberships: { create: { operatingGroupId: groupId, role: kind === 'admin' ? 'ADMIN' : 'OWNER' } } } });
     const context = { ...fixture.context, userId: actor.id };
     if (kind === 'revoked') await db.companyMembership.deleteMany({ where: { userId: actor.id } });
-    if (kind === 'admin') assert.equal((await owners.history(fixture.truck.id, context)).revisionId, current.revisionId);
-    else await assert.rejects(owners.history(fixture.truck.id, context), AuthorizationDeniedError);
+    if (kind === 'admin') {
+      assert.equal((await owners.history(fixture.truck.id, context)).revisionId, current.revisionId);
+      assert.equal((await owners.options(fixture.truck.id, context)).canManage, false);
+    } else {
+      await assert.rejects(owners.history(fixture.truck.id, context), AuthorizationDeniedError);
+      await assert.rejects(owners.options(fixture.truck.id, context), AuthorizationDeniedError);
+    }
     await assert.rejects(owners.replace(fixture.truck.id, input, context), AuthorizationDeniedError);
   }
   await db.$transaction(async tx => {
@@ -982,6 +1020,7 @@ test('owner history rechecks ADMIN, inactive and revoked actors and refuses a pa
     await tx.truckOwnerPeriod.create({ data: { truckId: fixture.truck.id, revisionId: next.id, ownerPartyId: current.periods[0].ownerPartyId, companyId: conflictCompanyId, providerRecipientId: 'synthetic-foreign', effectiveFrom: historyDate('2026-01-01') } });
   });
   await assert.rejects(owners.history(fixture.truck.id, fixture.context), AuthorizationDeniedError);
+  await assert.rejects(owners.options(fixture.truck.id, fixture.context), AuthorizationDeniedError);
   await assert.rejects(owners.replace(fixture.truck.id, input, fixture.context), AuthorizationDeniedError);
 });
 

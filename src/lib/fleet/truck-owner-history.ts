@@ -28,6 +28,35 @@ export class TruckOwnerHistoryService {
     return { allowed, truck, periods, revision };
   }
 
+  // Minimal read-only selector: dimensions lacks party Company scope and the
+  // paginated archive browser is not a complete scoped Contractor lookup.
+  async options(truckId: string, context: FinancialAuthorization) {
+    return this.database.$transaction(async tx => {
+      const readable = await this.authorize(tx, truckId, context, false);
+      let allowed = readable.allowed;
+      let canManage = false;
+      try {
+        const writable = await this.authorize(tx, truckId, context, true);
+        allowed = writable.allowed;
+        canManage = true;
+      } catch (error) {
+        if (!(error instanceof AuthorizationDeniedError) && !(error instanceof FinancialNotFoundError)) throw error;
+      }
+      const [companies, owners, versions] = await Promise.all([
+        tx.company.findMany({ where: { id: { in: allowed } }, select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+        tx.financialParty.findMany({ where: { operatingGroupId: context.operatingGroupId, type: 'OWNER_OPERATOR', isActive: true, OR: [{ companyId: null }, { companyId: { in: allowed } }] }, select: { id: true, name: true, companyId: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }] }),
+        tx.archiveVersion.findMany({ where: { sealed: true, recipientType: 'CONTRACTOR', statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: allowed } } } }, distinct: ['statementId', 'recipientId'], select: { recipientId: true, recipientName: true, statement: { select: { company: { select: { companyId: true } } } } }, orderBy: [{ capturedAt: 'desc' }, { id: 'asc' }] }),
+      ]);
+      const recipients = new Map<string, { id: string; name: string | null; companyId: string }>();
+      for (const version of versions) {
+        const companyId = version.statement.company.companyId;
+        const key = JSON.stringify([companyId, version.recipientId]);
+        if (!recipients.has(key)) recipients.set(key, { id: version.recipientId, name: version.recipientName, companyId });
+      }
+      return { canManage, companies, owners, recipients: [...recipients.values()].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id) || a.id.localeCompare(b.id)) };
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
   async history(truckId: string, context: FinancialAuthorization) {
     return this.database.$transaction(async tx => {
       const { truck, periods, revision } = await this.authorize(tx, truckId, context, false);

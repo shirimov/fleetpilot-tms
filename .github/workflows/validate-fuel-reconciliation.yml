@@ -7,6 +7,12 @@ on:
       - 'src/lib/finance/fuel-deduction-reconciliation*'
       - 'src/app/api/finance/fuel-reconciliation/**'
       - 'src/components/accounting/**'
+      - 'src/components/fleet/TruckOwnerHistory.tsx'
+      - 'src/lib/fleet/truck-owner*'
+      - 'src/lib/fleet/fuel-owner-attribution-ui.test.ts'
+      - 'src/app/api/trucks/**/owner-history/**'
+      - 'src/app/trucks/page.tsx'
+      - 'tests/ui/truck-owner-history.spec.ts'
       - 'tests/ui/accounting-workspace.spec.ts'
       - '.github/workflows/validate-fuel-reconciliation.yml'
   workflow_dispatch:
@@ -46,7 +52,7 @@ jobs:
       - run: npx prisma migrate deploy
       - run: npm test
       - run: npx tsc --noEmit
-      - run: npx eslint src/lib/finance/fuel-deduction-reconciliation.ts src/lib/finance/fuel-deduction-reconciliation.test.ts src/app/api/finance/fuel-reconciliation/route.ts src/components/accounting/FuelReconciliationWorkspace.tsx src/components/accounting/StatementArchiveWorkspace.tsx src/components/accounting/AccountingWorkspace.tsx tests/ui/accounting-workspace.spec.ts
+      - run: npx eslint src/lib/finance/fuel-deduction-reconciliation.ts src/lib/finance/fuel-deduction-reconciliation.test.ts src/app/api/finance/fuel-reconciliation/route.ts src/components/accounting/FuelReconciliationWorkspace.tsx src/components/accounting/StatementArchiveWorkspace.tsx src/components/accounting/AccountingWorkspace.tsx src/components/accounting/FuelOwnerAttribution.tsx src/components/fleet/TruckOwnerHistory.tsx src/lib/fleet/truck-owner-editor.ts src/lib/fleet/truck-owner-editor.test.ts src/lib/fleet/fuel-owner-attribution-ui.test.ts src/lib/fleet/truck-owner-history.ts src/app/api/trucks/\[id\]/owner-history/options/route.ts src/app/trucks/page.tsx tests/ui/accounting-workspace.spec.ts tests/ui/truck-owner-history.spec.ts
       - run: npm run build
       - run: npx playwright install --with-deps chromium
-      - run: npx playwright test tests/ui/accounting-workspace.spec.ts
+      - run: npx playwright test tests/ui/accounting-workspace.spec.ts tests/ui/truck-owner-history.spec.ts
