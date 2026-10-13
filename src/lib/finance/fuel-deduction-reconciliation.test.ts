@@ -201,7 +201,7 @@ async function addEvent(input: { key: string; date: string; sourceFormat?: strin
   return event;
 }
 
-async function archiveVersion(input: { key: string; pid: string; recipientId: string; recipientName?: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; providerLineId?: string | null; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string; cardNumber?: string | null; merchant?: string; city?: string; state?: string }) {
+async function archiveVersion(input: { duplicateFuelLine?: boolean; key: string; pid: string; recipientId: string; recipientName?: string; recipientType: string; role?: string; workStart: string; workEnd: string; truckId: string | null; unit: string; lineUnit?: string; vin?: string; providerTruckId?: string; duplicateProviderTruck?: boolean; archiveCompanyId?: string; mappingStatus?: string; amount?: bigint; sourceDate?: string; sourceTimestamp?: string; reference?: string; providerLineId?: string | null; dieselAmount?: string; dieselQuantity?: string; reeferAmount?: string; reeferQuantity?: string; defAmount?: string; cardNumber?: string | null; merchant?: string; city?: string; state?: string }) {
   const document = await db.financialStatement.create({ data: { operatingGroupId: groupId, sourceId, type: 'OWNER_SETTLEMENT', periodStart: historyDate(input.workStart), periodEnd: historyDate(input.workEnd), originalFilename: `${input.key}.pdf`, displayFilename: `${input.key}.pdf`, mimeType: 'application/pdf', byteSize: 1, storageKey: `test/${dbName}/${input.key}.pdf`, checksumSha256: hash(`pdf-${input.key}`), importedByUserId: userId } });
   const statement = await db.archiveStatement.create({ data: { archiveCompanyId: input.archiveCompanyId ?? archiveCompanyId, providerStatementId: input.key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   return db.$transaction(async tx => {
@@ -209,6 +209,10 @@ async function archiveVersion(input: { key: string; pid: string; recipientId: st
     await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: input.unit, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
     if (input.duplicateProviderTruck) await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: `${input.unit}-duplicate`, providerTruckId: input.providerTruckId, unit: input.unit, vin: input.vin, truckId: input.truckId, mappingStatus: input.mappingStatus ?? 'MATCHED' } });
     if (input.amount !== undefined) await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: input.providerLineId === undefined ? input.reference ?? input.key : input.providerLineId, description: 'Structured Pilot fuel recovery', sourceType: 'fuel', amountMinor: -input.amount, rawAmount: input.amount.toString(), sourceDate: input.sourceDate, reference: input.reference, sourceUnit: input.lineUnit ?? input.unit, included: true, metadata: { type: 'fuel', date: input.sourceTimestamp ?? (input.sourceDate ? `${input.sourceDate}T12:00:00Z` : null), diesel_amount: input.dieselAmount ?? input.amount.toString(), diesel_qty: input.dieselQuantity ?? '20.00', def_amount: input.defAmount ?? '0', reefer_amount: input.reeferAmount ?? '0', reefer_qty: input.reeferQuantity ?? '0', pay_amount: input.amount.toString(), card_number: input.cardNumber === undefined ? '991234' : input.cardNumber, merchant: input.merchant ?? '100', city: input.city ?? 'Test City', state: input.state ?? 'CA' } } });
+    if (input.duplicateFuelLine) {
+      const { id: originalId, ...duplicate } = await tx.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+      await tx.archiveLine.create({ data: { ...duplicate, metadata: duplicate.metadata as Record<string, string>, sourceOrder: 1, providerLineId: `${originalId}-duplicate` } });
+    }
     return tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
   });
 }
@@ -1540,4 +1544,59 @@ test('concurrent manual undo produces one audit decision and a controlled confli
   assert.ok(['FinancialConflictError', 'FinancialNotFoundError'].includes(failure.reason.name), `Expected a controlled conflict, received ${failure.reason.name}`);
   const audit = await db.financialAuditEvent.findMany({ where: { operatingGroupId: groupId, action: 'FUEL_RECONCILIATION_MANUAL_UNMATCHED', before: { path: ['matchId'], equals: match.id } } });
   assert.equal(audit.length, 1);
+});
+
+
+test('city aliases are symmetric, merchant/state scoped and shared across identity paths', () => {
+  const pilot = { cardLastFour: '0226', locationNumber: '341', city: 'North Las Veg', state: 'NV' };
+  const statement = { ...pilot, city: 'North Las Vegas' };
+  for (const match of [corroboratesFuelIdentity, corroboratesFuelIdentityStrict]) {
+    assert.equal(match(pilot, statement), true);
+    assert.equal(match(statement, pilot), true);
+    assert.equal(match({ ...pilot, city: ' north  las veg ' }, statement), true);
+    for (const city of ['North Las', 'North Las Vegas East', 'North Las Vegetable']) {
+      assert.equal(match(pilot, { ...statement, city }), false);
+    }
+    for (const patch of [{ cardLastFour: '9999' }, { locationNumber: '999' }, { state: 'CA' }]) {
+      assert.equal(match(pilot, { ...statement, ...patch }), false);
+    }
+    assert.equal(match({ ...pilot, locationNumber: '999' }, { ...statement, locationNumber: '999' }), false);
+    assert.equal(match({ ...pilot, state: 'CA' }, { ...statement, state: 'CA' }), false);
+  }
+  for (const [city, canonicalCity, state, locationNumber] of [
+    ['Colorado Spri', 'Colorado Springs', 'CO', '1110'],
+    ['Grand Junctio', 'Grand Junction', 'CO', '592'],
+    ['North Palm Sp', 'North Palm Springs', 'CA', '307'],
+    ['Lake Havasu C', 'Lake Havasu City', 'AZ', '211'],
+  ]) {
+    const source = { ...pilot, city, state, locationNumber };
+    const target = { ...source, city: canonicalCity };
+    for (const match of [corroboratesFuelIdentity, corroboratesFuelIdentityStrict]) {
+      assert.equal(match(source, target), true);
+      assert.equal(match(target, source), true);
+      assert.equal(match(source, { ...target, city: `${canonicalCity} East` }), false);
+    }
+  }
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { ...statement, cardLastFour: null }), true);
+  assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { ...statement, cardLastFour: null, city: 'North Las Vegas East' }), false);
+});
+
+test('same-truck city normalization preserves product and unique-candidate checks', async () => {
+  for (const scenario of ['match', 'product-conflict', 'duplicate'] as const) {
+    const fixture = await ambiguityFixture(`normalized-city-${scenario}`);
+    await db.pilotFuelingEvent.update({ where: { id: fixture.event.id }, data: { city: 'North Las Veg', state: 'NV', locationNumber: '341' } });
+    await fixture.archive('one', { city: 'North Las Vegas', state: 'NV', merchant: '341', dieselQuantity: scenario === 'product-conflict' ? '21.00' : '20.00', duplicateFuelLine: scenario === 'duplicate' });
+    const row = (await service.preview(fixture.context, { truck: fixture.truck.unitNumber })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+    if (scenario === 'match') {
+      assert.equal(row.status, 'MATCHED');
+      assert.equal(row.matchMethod, 'TRUCK_DATE_CORROBORATED');
+      assert.equal(row.differenceMinor, BigInt(0));
+    } else if (scenario === 'product-conflict') {
+      assert.notEqual(row.status, 'MATCHED');
+    } else {
+      assert.equal(row.status, 'NEEDS_REVIEW');
+      assert.equal(row.matchMethod, 'INSUFFICIENT_TRUCK_DATE_CORROBORATION');
+      assert.equal(row.statementEvidence, null);
+    }
+  }
 });

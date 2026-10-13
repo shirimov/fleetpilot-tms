@@ -193,19 +193,32 @@ export type CanonicalIdentityLink = {
 
 type FuelIdentity = { cardLastFour: string | null; locationNumber: string | null; city: string | null; state: string | null };
 const identityToken = (value: string | null) => value?.trim().toUpperCase() || null;
-export function corroboratesFuelIdentity(pilot: FuelIdentity, statement: FuelIdentity) {
-  const comparisons = (['cardLastFour', 'locationNumber', 'city', 'state'] as const)
-    .map(key => [identityToken(pilot[key]), identityToken(statement[key])] as const)
-    .filter((values): values is readonly [string, string] => values[0] !== null && values[1] !== null);
-  return comparisons.length >= 2 && comparisons.every(([left, right]) => left === right);
-}
-
-const compatibleCity = (left: string | null, right: string | null) => {
-  const a = identityToken(left)?.replace(/[^A-Z0-9]/g, '') ?? null;
-  const b = identityToken(right)?.replace(/[^A-Z0-9]/g, '') ?? null;
-  if (!a || !b) return true;
-  return a === b || (Math.min(a.length, b.length) >= 8 && (a.startsWith(b) || b.startsWith(a)));
+// Explicit provider city aliases, scoped to the observed merchant and state.
+// Never infer equivalence from a shared prefix: similarly named cities may differ.
+const fuelCityAliases: Readonly<Record<string, string>> = {
+  'NV|341|NORTH LAS VEG': 'NORTH LAS VEGAS',
+  'CO|1110|COLORADO SPRI': 'COLORADO SPRINGS',
+  'CO|592|GRAND JUNCTIO': 'GRAND JUNCTION',
+  'CA|307|NORTH PALM SP': 'NORTH PALM SPRINGS',
+  'AZ|211|LAKE HAVASU C': 'LAKE HAVASU CITY',
 };
+const cityToken = (value: string | null) => identityToken(value)?.replace(/\s+/g, ' ') ?? null;
+const compatibleCity = (left: FuelIdentity, right: FuelIdentity) => {
+  const a = cityToken(left.city), b = cityToken(right.city);
+  if (!a || !b || a === b) return true;
+  const state = identityToken(left.state), merchant = identityToken(left.locationNumber);
+  if (!state || state !== identityToken(right.state) || !merchant || merchant !== identityToken(right.locationNumber)) return false;
+  const canonical = (city: string) => fuelCityAliases[`${state}|${merchant}|${city}`] ?? city;
+  return canonical(a) === canonical(b);
+};
+
+export function corroboratesFuelIdentity(pilot: FuelIdentity, statement: FuelIdentity) {
+  const comparableKeys = (['cardLastFour', 'locationNumber', 'city', 'state'] as const)
+    .filter(key => identityToken(pilot[key]) !== null && identityToken(statement[key]) !== null);
+  return comparableKeys.length >= 2 && comparableKeys.every(key => key === 'city'
+    ? compatibleCity(pilot, statement)
+    : identityToken(pilot[key]) === identityToken(statement[key]));
+}
 
 export function corroboratesFuelIdentityStrict(pilot: FuelIdentity, statement: FuelIdentity) {
   const card = [identityToken(pilot.cardLastFour), identityToken(statement.cardLastFour)];
@@ -213,7 +226,7 @@ export function corroboratesFuelIdentityStrict(pilot: FuelIdentity, statement: F
   if (!card[0] || !card[1] || card[0] !== card[1] || !location[0] || !location[1] || location[0] !== location[1]) return false;
   const states = [identityToken(pilot.state), identityToken(statement.state)];
   if (states[0] && states[1] && states[0] !== states[1]) return false;
-  return compatibleCity(pilot.city, statement.city);
+  return compatibleCity(pilot, statement);
 }
 
 export function corroboratesFuelIdentityWithUnavailableStatementCard(pilot: FuelIdentity, statement: FuelIdentity) {
@@ -223,7 +236,7 @@ export function corroboratesFuelIdentityWithUnavailableStatementCard(pilot: Fuel
   if (!location[0] || !location[1] || location[0] !== location[1]) return false;
   if (!states[0] || !states[1] || states[0] !== states[1]) return false;
   if (!identityToken(pilot.city) || !identityToken(statement.city)) return false;
-  return compatibleCity(pilot.city, statement.city);
+  return compatibleCity(pilot, statement);
 }
 
 export type FuelReconciliationRow = {
