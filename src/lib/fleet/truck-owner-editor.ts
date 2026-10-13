@@ -39,10 +39,10 @@ export async function saveOwnerHistory(truckId: string, change: ReturnType<typeo
   // A successful POST is not a verified save. Do not retry an uncertain write.
   const readback = await ownerHistoryRequest<OwnerHistorySnapshot>(url, undefined, transport);
   if (saved.truckId !== truckId || !saved.revisionId || saved.revisionId === change.expectedRevisionId || readback.truckId !== truckId || readback.revisionId !== saved.revisionId
-    || readback.periods.length !== change.periods.length || readback.periods.some((period, index) => {
+    || readback.periods.length !== change.periods.length || new Set(readback.periods.map(period => period.id)).size !== readback.periods.length || readback.periods.some((period, index) => {
       const expected = change.periods[index];
       return (Object.keys(expected) as (keyof OwnerPeriod)[]).some(key => period[key] !== expected[key])
-        || period.revisionId !== saved.revisionId || period.sourceReference !== change.sourceReference || period.reason !== change.reason || !period.actorUserId || !period.id || !period.createdAt;
+        || period.revisionId !== saved.revisionId || period.sourceReference !== change.sourceReference || period.reason !== change.reason || !period.actorUserId || typeof period.id !== 'string' || !period.id || !period.createdAt;
     })) throw new Error('Save readback differs from the reviewed timeline. Reload and review; do not resubmit blindly.');
   return readback;
 }

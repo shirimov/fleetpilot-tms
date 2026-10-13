@@ -100,7 +100,10 @@ test('posted five-invoice fixture: read views preserve all economics, attributio
 test('Fuel pagination order is deterministic when company names and numeric Truck labels tie', async () => {
   const truck = (id: string, unitNumber: string) => ({id,unitNumber,companyId:'company',company:{name:'Same company'},status:'ACTIVE'});
   const events = [truck('b','01'),truck('a','1')].map(truck=>({id:truck.id,truckId:truck.id,truck,productLines:[]}));
-  const database = {pilotProviderInvoice:{findMany:async()=>[{id:'invoice',invoiceTotalMinor:BigInt(0),expectation:null,adjustments:[],events}]}};
+  const database = {
+    operatingGroupCompany: { findMany: async () => [{ companyId: 'company' }] },
+    pilotProviderInvoice: { findMany: async () => [{ id: 'invoice', invoiceTotalMinor: BigInt(0), expectation: null, adjustments: [], events }] },
+  };
   const service = new FuelReadService(database as unknown as typeof prisma);
   const context = {userId:'user',activeCompanyId:'company',companyIds:['company'],operatingGroupId:'group',role:'OWNER' as const};
   assert.deepEqual((await service.overview(context)).byTruck.rows.map(row=>row.id),['a','b']);

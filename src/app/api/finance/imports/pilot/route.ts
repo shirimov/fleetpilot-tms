@@ -11,9 +11,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  let storageKey: string | null = null;
   try {
     const context = await financialControlAuthorization.requireContext();
+    await pilotImportService.requireInvoiceAccess(context);
     const form = await request.formData();
     const file = form.get('file');
     const sourceId = form.get('sourceId');
@@ -23,13 +23,12 @@ export async function POST(request: Request) {
     if (!['.xls', '.xlsx', '.csv'].includes(metadata.extension)) throw new FinancialValidationError('Pilot import requires an official XLS, XLSX, or pipe-delimited CSV source.');
     const providerAccount = form.get('providerAccount');
     if (metadata.extension === '.xlsx' && (typeof providerAccount !== 'string' || !/^\d+$/.test(providerAccount.trim()))) throw new FinancialValidationError('Pilot portal XLSX requires its verified provider account number.');
-    storageKey = await financialStatementStorage.put(bytes);
+    const storageKey = await financialStatementStorage.put(bytes);
     const documentMetadata = { originalFilename: metadata.originalFilename, displayFilename: metadata.displayFilename, mimeType: metadata.mimeType, byteSize: metadata.byteSize, checksumSha256: metadata.checksumSha256 };
     const invoice = await pilotImportService.createImport(bytes, { ...documentMetadata, storageKey }, sourceId, context, { portalAccount: typeof providerAccount === 'string' ? providerAccount.trim() : undefined });
-    storageKey = null;
     return NextResponse.json(invoice, { status: 201 });
   } catch (error) {
-    if (storageKey) await financialStatementStorage.delete(storageKey).catch(() => undefined);
+    // A create/readback error can follow a commit. Retain original source bytes on uncertainty.
     return financialRouteError(error);
   }
 }

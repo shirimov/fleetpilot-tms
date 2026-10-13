@@ -132,7 +132,16 @@ export default function FuelReconciliationWorkspace({ companies, trucks }: { com
       setPolicies(await request<Policy[]>("/api/finance/fuel-reconciliation?view=policies")); setRevising(null); setRevisionPreview(null);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Policy revision could not be saved."); } finally { setBusy(false); }
   }
-  const refreshPreview = async () => setResult(await request<Result>(`/api/finance/fuel-reconciliation?${new URLSearchParams([...new URLSearchParams(query)].filter(([key]) => ["page","company","pid","date","truck","recipient","responsibility","status","policy","history","match","queue","source","scope"].includes(key)))}`));
+  const refreshPreview = async () => {
+    setResult(null); setPreviewError("");
+    try {
+      setResult(await request<Result>(`/api/finance/fuel-reconciliation?${new URLSearchParams([...new URLSearchParams(query)].filter(([key]) => ["page","company","pid","date","truck","recipient","responsibility","status","policy","history","match","queue","source","scope"].includes(key)))}`, { cache: "no-store" }));
+    } catch (caught) {
+      // The mutation already succeeded. Do not display stale actionable rows or
+      // describe a read failure as a failed save that should be submitted again.
+      setPreviewError(caught instanceof Error ? caught.message : "Fuel preview could not be refreshed.");
+    }
+  };
   async function saveManualMatch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selectedPilot?.pilotEventId || !selectedQuickManage?.statementEvidence?.groupLineId) return;
     setBusy(true); setError(""); const form = event.currentTarget;

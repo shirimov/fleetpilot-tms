@@ -1339,3 +1339,144 @@ test('preview sends multiple cross-recipient identities to review without fallin
     await service.preview(fixture.context, { pageSize: 10000 }), fixture.event.id, [first.id, second.id], minor(20_000),
   );
 });
+
+// Synthetic local pagination regression using the normal service and DB factories.
+test('OWNER can manually reserve unresolved evidence beyond the first preview page', async () => {
+  const control = await ambiguityFixture('page-boundary-control');
+  const controlOne = await control.archive('one');
+  const controlTwo = await control.archive('two', { sourceTimestamp: '2026-06-10T11:00:00Z' });
+  const controlLine = await db.archiveLine.findFirstOrThrow({ where: { versionId: controlOne.id } });
+  const small = await service.preview(control.context, { pageSize: 10000 });
+  await assertAmbiguousSourcesRemainUnconsumed(small, control.event.id, [controlOne.id, controlTwo.id], minor(20_000));
+  const reason = 'Synthetic OWNER confirmation of one specific immutable fuel source.';
+  const reserved = await service.createManualMatch({ pilotEventId: control.event.id, archiveLineId: controlLine.id, reason }, control.context);
+  let targetMatch: Awaited<ReturnType<typeof service.createManualMatch>> | undefined;
+  try {
+    const persisted = await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: reserved.id } });
+    const positive = await service.preview(control.context, { truck: control.truck.unitNumber, pageSize: 10000 });
+    const controlRow = positive.rows.find(row => row.pilotEventId === control.event.id)!;
+    assert.equal(controlRow.manualMatch?.id, reserved.id);
+    assert.deepEqual(controlRow.statementEvidence?.lineIds, [controlLine.id]);
+    assert.equal(positive.rows.filter(row => !row.pilotEventId && row.statementEvidence).length, 1);
+
+    const target = await ambiguityFixture('page-boundary-target');
+    const one = await target.archive('one');
+    const two = await target.archive('two', { sourceTimestamp: '2026-06-10T11:00:00Z' });
+    const sources = await db.archiveLine.findMany({ where: { versionId: { in: [one.id, two.id] } }, orderBy: { id: 'asc' } });
+    assert.equal(sources.length, 2);
+    const selected = sources.find(line => line.versionId === one.id)!;
+    const other = sources.find(line => line.versionId === two.id)!;
+    const eventBefore = await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: target.event.id } });
+    // Real posted early unmapped evidence crosses the actual 10,000-row cap.
+    for (let i = 0; i < 10000; i += 1) {
+      await addEvent({ key: `page-boundary-pad-${i}`, date: '2026-01-02', truckId: null, unit: `PAGE-PAD-${i}`, amount: minor(100) });
+    }
+    const first = await service.preview(target.context, { page: 1, pageSize: 10000 });
+    const later = await service.preview(target.context, { page: 2, pageSize: 10000 });
+    assert.equal(first.rows.length, 10000);
+    assert.equal(first.rows.some(row => row.pilotEventId === target.event.id || row.statementEvidence?.lineIds.includes(selected.id)), false);
+    await assertAmbiguousSourcesRemainUnconsumed(later, target.event.id, [one.id, two.id], minor(20_000));
+    assert.ok(later.rows.some(row => !row.pilotEventId && row.statementEvidence?.groupLineId === selected.id));
+
+    await assert.doesNotReject(async () => {
+      targetMatch = await service.createManualMatch({ pilotEventId: target.event.id, archiveLineId: selected.id, reason }, target.context);
+    }, 'eligible unresolved evidence beyond page one must remain manually reservable');
+    assert.ok(targetMatch);
+    const paired = await service.preview(target.context, { page: 2, pageSize: 10000 });
+    const row = paired.rows.find(item => item.pilotEventId === target.event.id)!;
+    assert.equal(row.manualMatch?.id, targetMatch.id);
+    assert.equal(row.matchMethod, 'MANUAL_OWNER_MATCH');
+    assert.deepEqual(row.statementEvidence?.lineIds, [selected.id]);
+    assert.equal(paired.rows.filter(item => item.statementEvidence?.lineIds.includes(selected.id)).length, 1);
+    const remaining = paired.rows.filter(item => item.statementEvidence?.lineIds.includes(other.id));
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].pilotEventId, null);
+    assert.deepEqual(remaining[0].statementEvidence?.lineIds, [other.id]);
+    assert.equal(paired.rows.find(item => item.pilotEventId === control.event.id)?.manualMatch?.id, reserved.id);
+    assert.deepEqual(await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: reserved.id } }), persisted);
+    assert.deepEqual(await db.archiveLine.findMany({ where: { versionId: { in: [one.id, two.id] } }, orderBy: { id: 'asc' } }), sources);
+    assert.deepEqual(await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: target.event.id } }), eventBefore);
+    assert.deepEqual(paired.completeness.allImported, later.completeness.allImported);
+    for (const result of [small, positive, first, later, paired]) {
+      assert.equal(result.completeness.orphanRecords, 0);
+      assert.equal(result.completeness.duplicateConsumedEvidence, 0);
+      for (const conservation of Object.values(result.completeness.conservation)) {
+        assert.equal(conservation.countDifference, 0);
+        assert.equal(conservation.gallonsDifferenceHundredths, minor(0));
+        assert.equal(conservation.retailDifferenceMinor, minor(0));
+        assert.equal(conservation.dollarDifferenceMinor, minor(0));
+      }
+      assert.equal(result.completeness.conservation.quickManage.sourceRecordCountDifference, 0);
+    }
+  } finally {
+    if (targetMatch) await service.unmatchManualMatch({ matchId: targetMatch.id, reason: 'Synthetic boundary test reservation cleanup.' }, control.context);
+    await service.unmatchManualMatch({ matchId: reserved.id, reason: 'Synthetic positive control reservation cleanup.' }, control.context);
+  }
+});
+
+test('manual pairing rechecks Company OWNER authority after preview before writing', async () => {
+  const fixture = await ambiguityFixture('manual-revoked-after-preview');
+  const version = await fixture.archive('deduction', { cardNumber: '9999' });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+  // Retain ownership of another Company so a group-wide "some OWNER" check is insufficient.
+  const previousMembership = await db.companyMembership.findUnique({ where: { userId_companyId: { userId, companyId: conflictCompanyId } } });
+  await db.companyMembership.upsert({ where: { userId_companyId: { userId, companyId: conflictCompanyId } }, create: { userId, companyId: conflictCompanyId, role: 'OWNER' }, update: { role: 'OWNER' } });
+  let revoked = false;
+  const transport = new Proxy(db, {
+    get(target, property) {
+      if (property !== '$transaction') return Reflect.get(target, property);
+      return (callback: (tx: Parameters<Parameters<typeof db.$transaction>[0]>[0]) => Promise<unknown>, options: object) => target.$transaction(async tx => {
+        const intercepted = new Proxy(tx, {
+          get(transaction, key) {
+            if (key !== '$queryRaw') return Reflect.get(transaction, key);
+            return async (query: TemplateStringsArray, ...values: unknown[]) => {
+              if (!revoked && values.some(value => typeof value === 'string' && value.startsWith('fuel-manual-pilot:'))) {
+                await db.companyMembership.delete({ where: { userId_companyId: { userId, companyId } } });
+                revoked = true;
+              }
+              return transaction.$queryRaw(query, ...values);
+            };
+          },
+        });
+        return callback(intercepted);
+      }, options);
+    },
+  });
+  try {
+    await assert.rejects(new FuelDeductionReconciliationService(transport).createManualMatch({ pilotEventId: fixture.event.id, archiveLineId: line.id, reason: 'Synthetic review completed before Company authority was revoked.' }, fixture.context));
+    assert.equal(revoked, true);
+    assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: fixture.event.id } }), 0);
+  } finally {
+    await db.companyMembership.upsert({ where: { userId_companyId: { userId, companyId } }, create: { userId, companyId, role: 'OWNER' }, update: { role: 'OWNER' } });
+    if (previousMembership) await db.companyMembership.update({ where: { id: previousMembership.id }, data: { role: previousMembership.role } });
+    else await db.companyMembership.delete({ where: { userId_companyId: { userId, companyId: conflictCompanyId } } });
+  }
+});
+
+test('accepted multiformat source can be manually paired without posting economics', async () => {
+  const fixture = await ambiguityFixture('manual-source-accepted');
+  const version = await fixture.archive('deduction', { cardNumber: '9999' });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+  await db.pilotProviderInvoice.update({ where: { id: fixture.event.invoiceId }, data: { status: 'SOURCE_ACCEPTED', sourceFormat: 'PIPE_INVOICE', postedByUserId: null, postedAt: null } });
+  const before = await db.financialTransaction.findMany({ where: { operatingGroupId: groupId } });
+  const match = await service.createManualMatch({ pilotEventId: fixture.event.id, archiveLineId: line.id, reason: 'Synthetic accepted source and immutable deduction confirmed by receipt.' }, fixture.context);
+  assert.equal(match.pilotEventId, fixture.event.id);
+  assert.equal((await service.preview(fixture.context, { truck: fixture.truck.unitNumber })).rows.find(row => row.pilotEventId === fixture.event.id)?.manualMatch?.id, match.id);
+  assert.equal((await db.pilotProviderInvoice.findUniqueOrThrow({ where: { id: fixture.event.invoiceId } })).status, 'SOURCE_ACCEPTED');
+  assert.deepEqual(await db.financialTransaction.findMany({ where: { operatingGroupId: groupId } }), before);
+  await service.unmatchManualMatch({ matchId: match.id, reason: 'Synthetic accepted-source workflow verification completed.' }, fixture.context);
+});
+
+test('concurrent manual undo produces one audit decision and a controlled conflict', async () => {
+  const fixture = await ambiguityFixture('manual-concurrent-undo');
+  const version = await fixture.archive('deduction', { cardNumber: '9999' });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+  const match = await service.createManualMatch({ pilotEventId: fixture.event.id, archiveLineId: line.id, reason: 'Synthetic concurrency fixture establishes this reviewed pairing.' }, fixture.context);
+  const results = await Promise.allSettled([1, 2].map(() => service.unmatchManualMatch({ matchId: match.id, reason: 'Synthetic concurrent undo preserves a single immutable decision.' }, fixture.context)));
+  assert.deepEqual(results.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+  const failure = results.find(result => result.status === 'rejected');
+  assert.ok(failure?.status === 'rejected');
+  assert.ok(['FinancialConflictError', 'FinancialNotFoundError'].includes(failure.reason.name), `Expected a controlled conflict, received ${failure.reason.name}`);
+  const audit = await db.financialAuditEvent.findMany({ where: { operatingGroupId: groupId, action: 'FUEL_RECONCILIATION_MANUAL_UNMATCHED', before: { path: ['matchId'], equals: match.id } } });
+  assert.equal(audit.length, 1);
+});

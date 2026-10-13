@@ -2,10 +2,16 @@ import { prisma } from '@/lib/prisma';
 import type { PrismaClient } from '@prisma/client';
 import type { FinancialAuthorization } from './financial-control-authorization';
 import { pageNumber } from './accounting-read-model';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 
 export class FuelReadService {
   constructor(private readonly database: PrismaClient = prisma) {}
   async overview(context: FinancialAuthorization, requestedPage: unknown = 1) {
+    // Invoice totals and provider adjustments are group-wide, not Company allocations.
+    const companies: { companyId: string }[] = await this.database.operatingGroupCompany.findMany({
+      where: { operatingGroupId: context.operatingGroupId }, select: { companyId: true },
+    });
+    if (!companies.length || companies.some(({ companyId }) => !context.companyIds.includes(companyId))) throw new AuthorizationDeniedError();
     const invoices = await this.database.pilotProviderInvoice.findMany({
       where: { operatingGroupId: context.operatingGroupId, status: 'POSTED' },
       select: { id: true, invoiceTotalMinor: true, expectation: { select: { status: true } },

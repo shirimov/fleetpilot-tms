@@ -406,6 +406,19 @@ export class FuelDeductionReconciliationService {
   constructor(private readonly database: PrismaClient = prisma) { this.history = new TruckCompanyHistoryService(database); }
 
   private async requireOwner(context: FinancialAuthorization, client: PrismaClient | Prisma.TransactionClient = this.database) {
+    // The route's Company scope may be stale by the time a manual decision writes.
+    // Lock the actor and each scoped membership until commit so revocation either
+    // precedes the decision (and denies it) or follows the committed decision.
+    if (client !== this.database) {
+      const users = await client.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id = ${context.userId} FOR SHARE`;
+      const groups = await client.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "OperatingGroupMembership" WHERE "operatingGroupId" = ${context.operatingGroupId} AND "userId" = ${context.userId} FOR SHARE`;
+      if (!users[0]?.isActive || groups[0]?.role !== 'OWNER' || !context.companyIds.includes(context.activeCompanyId)) throw new FinancialNotFoundError();
+      for (const companyId of [...new Set(context.companyIds)].sort()) {
+        const links = await client.$queryRaw<Array<{ operatingGroupId: string }>>`SELECT "operatingGroupId" FROM "OperatingGroupCompany" WHERE "companyId" = ${companyId} FOR SHARE`;
+        const memberships = await client.$queryRaw<Array<{ role: string }>>`SELECT role::text FROM "CompanyMembership" WHERE "companyId" = ${companyId} AND "userId" = ${context.userId} FOR SHARE`;
+        if (links[0]?.operatingGroupId !== context.operatingGroupId || memberships[0]?.role !== 'OWNER') throw new FinancialNotFoundError();
+      }
+    }
     const owner = await client.user.findFirst({
       where: {
         id: context.userId, isActive: true,
@@ -424,7 +437,7 @@ export class FuelDeductionReconciliationService {
     const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
     if (!pilotEventId || !archiveLineId || reason.length < 10 || reason.length > 2000) throw new FinancialValidationError('Pilot transaction, QM fuel line, and a meaningful reason are required.');
     await this.requireOwner(context);
-    const preview = await this.preview(context, { pageSize: 10000 });
+    const preview = await this.evaluate(context);
     const pilotRow = preview.rows.find(row => row.pilotEventId === pilotEventId && !row.statementEvidence);
     const quickManageRow = preview.rows.find(row => !row.pilotEventId && row.statementEvidence?.groupLineId === archiveLineId);
     if (!pilotRow || !quickManageRow) throw new FinancialConflictError('Both records must still be visible in the unmatched or review queues. Refresh and try again.');
@@ -434,7 +447,7 @@ export class FuelDeductionReconciliationService {
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`fuel-manual-qm:${archiveLineId}`}, 0))::text`;
         const owner = await this.requireOwner(context, tx);
         const [event, line, activePilot, activeLine] = await Promise.all([
-          tx.pilotFuelingEvent.findFirst({ where: { id: pilotEventId, invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } }, select: { id: true, transaction: { select: { companyId: true } } } }),
+          tx.pilotFuelingEvent.findFirst({ where: { id: pilotEventId, invoice: { operatingGroupId: context.operatingGroupId, status: { in: ['POSTED', 'SOURCE_ACCEPTED'] } } }, select: { id: true, transaction: { select: { companyId: true } } } }),
           tx.archiveLine.findFirst({ where: { id: archiveLineId, version: { sealed: true, statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } } } }, include: { version: { include: { statement: { select: { acceptedProviderVersion: true } } } } } }),
           tx.fuelReconciliationManualMatch.findFirst({ where: { pilotEventId, unmatchedAt: null }, select: { id: true } }),
           tx.fuelReconciliationManualMatch.findFirst({ where: { archiveLineId, unmatchedAt: null }, select: { id: true } }),
@@ -455,16 +468,21 @@ export class FuelDeductionReconciliationService {
     const matchId = typeof input.matchId === 'string' ? input.matchId : '';
     const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
     if (!matchId || reason.length < 10 || reason.length > 2000) throw new FinancialValidationError('Active match and a meaningful unmatch reason are required.');
-    return this.database.$transaction(async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`fuel-manual-match:${matchId}`}, 0))::text`;
-      const owner = await this.requireOwner(context, tx);
-      const match = await tx.fuelReconciliationManualMatch.findFirst({ where: { id: matchId, operatingGroupId: context.operatingGroupId, unmatchedAt: null }, include: { pilotEvent: { select: { transaction: { select: { companyId: true } } } } } });
-      if (!match) throw new FinancialConflictError('The manual match is no longer active.');
-      const unmatchedAt = new Date();
-      const updated = await tx.fuelReconciliationManualMatch.update({ where: { id: match.id }, data: { unmatchedAt, unmatchedByUserId: owner.id, unmatchReason: reason } });
-      await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: match.pilotEvent.transaction?.companyId ?? null, actorUserId: owner.id, action: 'FUEL_RECONCILIATION_MANUAL_UNMATCHED', before: { matchId: match.id, pilotEventId: match.pilotEventId, archiveLineId: match.archiveLineId }, after: { unmatchedAt: unmatchedAt.toISOString() }, metadata: { reason } } });
-      return updated;
-    }, { isolationLevel: 'Serializable' });
+    try {
+      return await this.database.$transaction(async tx => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`fuel-manual-match:${matchId}`}, 0))::text`;
+        const owner = await this.requireOwner(context, tx);
+        const match = await tx.fuelReconciliationManualMatch.findFirst({ where: { id: matchId, operatingGroupId: context.operatingGroupId, unmatchedAt: null, archiveLine: { version: { statement: { company: { operatingGroupId: context.operatingGroupId, companyId: { in: context.companyIds } } } } } }, include: { pilotEvent: { select: { transaction: { select: { companyId: true } } } } } });
+        if (!match) throw new FinancialNotFoundError();
+        const unmatchedAt = new Date();
+        const updated = await tx.fuelReconciliationManualMatch.update({ where: { id: match.id }, data: { unmatchedAt, unmatchedByUserId: owner.id, unmatchReason: reason } });
+        await tx.financialAuditEvent.create({ data: { operatingGroupId: context.operatingGroupId, companyId: match.pilotEvent.transaction?.companyId ?? null, actorUserId: owner.id, action: 'FUEL_RECONCILIATION_MANUAL_UNMATCHED', before: { matchId: match.id, pilotEventId: match.pilotEventId, archiveLineId: match.archiveLineId }, after: { unmatchedAt: unmatchedAt.toISOString() }, metadata: { reason } } });
+        return updated;
+      }, { isolationLevel: 'Serializable' });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2034') throw new FinancialConflictError('The manual match changed concurrently. Refresh and try again.');
+      throw error;
+    }
   }
 
   async createHistoricalTruckMapping(input: Record<string, unknown>, context: FinancialAuthorization) {
@@ -586,6 +604,13 @@ export class FuelDeductionReconciliationService {
     if (!Number.isSafeInteger(page) || page < 1 || page > 100000) throw new FinancialValidationError('Invalid page.');
     const pageSize = Number(filters.pageSize ?? 50);
     if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 10000) throw new FinancialValidationError('Invalid page size.');
+    const result = await this.evaluate(context, filters);
+    const start = (page - 1) * pageSize;
+    return { ...result, rows: result.rows.slice(start, start + pageSize), page, pageSize };
+  }
+
+  // Manual eligibility must use every disposition; pagination is a public view concern.
+  private async evaluate(context: FinancialAuthorization, filters: FuelReconciliationFilters = {}) {
     if (filters.status && !reconciliationStatuses.includes(filters.status as FuelReconciliationStatus)) throw new FinancialValidationError('Invalid reconciliation status.');
     if (filters.policy && !['known', 'missing'].includes(filters.policy)) throw new FinancialValidationError('Invalid policy filter.');
     if (filters.responsibility && !['COMPANY', 'RECIPIENT', 'DRIVER', 'CONTRACTOR'].includes(filters.responsibility)) throw new FinancialValidationError('Invalid responsibility filter.');
@@ -1109,7 +1134,6 @@ export class FuelDeductionReconciliationService {
     // proves that no supported reefer amount was excluded.
     const reeferMinor = BigInt(0);
     const providerCreditMinor = events.length ? await this.database.pilotInvoiceAdjustment.aggregate({ where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } }, _sum: { signedAmountMinor: true } }).then(result => result._sum.signedAmountMinor ?? BigInt(0)) : BigInt(0);
-    const start = (page - 1) * pageSize;
     const totals = (items: FuelReconciliationRow[]) => ({ count: items.length, pilotActualMinor: items.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)), expectedMinor: items.reduce((sum, row) => sum + (row.expectedMinor ?? BigInt(0)), BigInt(0)), statementMinor: items.reduce((sum, row) => sum + row.statementMinor, BigInt(0)), differenceMinor: items.reduce((sum, row) => sum + (row.differenceMinor ?? BigInt(0)), BigInt(0)) });
     const byStatus = Object.fromEntries(reconciliationStatuses.map(status => [status, totals(rows.filter(row => row.status === status))]));
     const byCompany = [...new Set(rows.map(row => row.companyId).filter(Boolean))].map(companyId => {
@@ -1227,7 +1251,7 @@ export class FuelDeductionReconciliationService {
       missingQuickManageCoverage,
       coverageMatrix,
     };
-    return { coverage: { start: coverageStart, end: coverageEnd, pilotRanges: pilotCoverageRanges }, completeness, summary: { ...allTotals, statementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, comparableStatementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, outsideCoverageStatementMinor, rawStatementDeductionMinor, rawFuelStatementMinor, unsupportedFuelStatementCount: unsupportedFuelStatementLines.length, unsupportedFuelStatementMinor, comparablePilotMinor: dated.reduce((sum, item) => sum + item.lines.reduce((part, line) => part + line.amountMinor, BigInt(0)), BigInt(0)), reeferExcludedMinor: reeferMinor, providerCreditExcludedMinor: providerCreditMinor, historicalPostedDifferences }, controls: buildFuelReconciliationControls(rows), byStatus, byCompany, rows: filtered.slice(start, start + pageSize), total: filtered.length, page, pageSize };
+    return { coverage: { start: coverageStart, end: coverageEnd, pilotRanges: pilotCoverageRanges }, completeness, summary: { ...allTotals, statementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, comparableStatementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, outsideCoverageStatementMinor, rawStatementDeductionMinor, rawFuelStatementMinor, unsupportedFuelStatementCount: unsupportedFuelStatementLines.length, unsupportedFuelStatementMinor, comparablePilotMinor: dated.reduce((sum, item) => sum + item.lines.reduce((part, line) => part + line.amountMinor, BigInt(0)), BigInt(0)), reeferExcludedMinor: reeferMinor, providerCreditExcludedMinor: providerCreditMinor, historicalPostedDifferences }, controls: buildFuelReconciliationControls(rows), byStatus, byCompany, rows: filtered, total: filtered.length };
   }
 
   async policies(context: FinancialAuthorization) {

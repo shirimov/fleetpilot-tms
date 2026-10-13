@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Prisma, PrismaClient, type PilotImportIssueCode } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
+import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
 import type { FinancialAuthorization } from './financial-control-authorization';
 import { FinancialConflictError, FinancialNotFoundError, FinancialValidationError } from './financial-control-errors';
 import { financialStatementStorage } from './financial-statement-storage';
@@ -9,7 +10,7 @@ import { normalizedSourceAsInvoice, parsePilotSource, PILOT_SOURCE_PARSER_VERSIO
 import type { PrivateFileStorage } from '@/lib/storage/private-file-storage';
 import { normalizeTruckUnitNumber } from '@/lib/fleet/truck-normalization';
 import { PILOT_GROUP_MAPPING_ACCOUNT } from './pilot-product-mapping-service';
-import { AuthorizationDeniedError } from '@/lib/auth/auth-errors';
+import { requirePilotInvoiceAccess } from './pilot-invoice-authorization';
 
 type DocumentMetadata = {
   originalFilename: string;
@@ -55,11 +56,13 @@ export class PilotImportService {
   ) {}
 
   async createImport(bytes: Uint8Array, metadata: DocumentMetadata, sourceId: string, context: FinancialAuthorization, options: { portalAccount?: string } = {}) {
+    await this.requireInvoiceAccess(context);
     const parsed = metadata.originalFilename.toLowerCase().endsWith('.xls')
       ? pilotXlsParser.parse(bytes)
       : normalizedSourceAsInvoice(parsePilotSource(bytes, metadata.originalFilename, options));
     try {
       const invoiceId = await this.database.$transaction(async (tx) => {
+        await this.requireInvoiceAccess(context, tx);
         await this.lock(tx, `pilot-invoice:${context.operatingGroupId}:${parsed.providerAccountHash}:${parsed.invoiceNumber}`);
         const source = await tx.financialSource.findFirst({ where: { id: sourceId, operatingGroupId: context.operatingGroupId, type: 'FUEL_CARD', isActive: true }, select: { id: true, currency: true } });
         if (!source) throw new FinancialValidationError('Select an active fuel-card financial source in this operating group.');
@@ -280,12 +283,18 @@ export class PilotImportService {
     };
   }
 
+  async requireInvoiceAccess(context: FinancialAuthorization, database: PrismaClient | Prisma.TransactionClient = this.database) {
+    await requirePilotInvoiceAccess(context, database);
+  }
+
   async listInvoices(context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     const rows = await this.database.pilotProviderInvoice.findMany({ where: { operatingGroupId: context.operatingGroupId }, orderBy: [{ billingDate: 'desc' }, { createdAt: 'desc' }], include: { _count: { select: { events: true, productLines: true, adjustments: true, issues: true } } } });
     return json(rows);
   }
 
   async getInvoice(invoiceId: string, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     const invoice = await this.database.pilotProviderInvoice.findFirst({ where: { id: invoiceId, operatingGroupId: context.operatingGroupId }, include: {
       source: { select: { id: true, name: true } }, documents: { include: { statement: { select: { id: true, originalFilename: true } } } },
       events: { orderBy: [{ transactionDate: 'asc' }, { id: 'asc' }], include: { truck: { select: { id: true, unitNumber: true, companyId: true, status: true, company: { select: { name: true } } } }, productLines: { include: { category: { select: { id: true, name: true } } } } } },
@@ -309,6 +318,7 @@ export class PilotImportService {
   }
 
   async reparseInvoice(invoiceId: string, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     const source = await this.database.pilotInvoiceDocument.findFirst({
       where: {
         invoiceId,
@@ -343,6 +353,7 @@ export class PilotImportService {
 
   private async reparseInvoiceTransaction(invoiceId: string, parsed: PilotParsedInvoice, checksumSha256: string, context: FinancialAuthorization) {
     await this.database.$transaction(async (tx) => {
+      await this.requireInvoiceAccess(context, tx);
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const invoice = await tx.pilotProviderInvoice.findFirst({
         where: { id: invoiceId, operatingGroupId: context.operatingGroupId },
@@ -493,7 +504,9 @@ export class PilotImportService {
   }
 
   async rematchTrucks(invoiceId: string, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     await this.database.$transaction(async (tx) => {
+      await this.requireInvoiceAccess(context, tx);
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const invoice = await tx.pilotProviderInvoice.findFirst({
         where: { id: invoiceId, operatingGroupId: context.operatingGroupId },
@@ -560,6 +573,7 @@ export class PilotImportService {
   }
 
   async resolveIssue(invoiceId: string, issueId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         return await this.resolveIssueTransaction(invoiceId, issueId, input, context);
@@ -572,6 +586,7 @@ export class PilotImportService {
 
   private async resolveIssueTransaction(invoiceId: string, issueId: string, input: Record<string, unknown>, context: FinancialAuthorization) {
     return this.database.$transaction(async (tx) => {
+      await this.requireInvoiceAccess(context, tx);
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const issue = await tx.pilotImportIssue.findFirst({ where: { id: issueId, invoiceId, invoice: { operatingGroupId: context.operatingGroupId } }, include: { invoice: { select: { status: true } } } });
       if (!issue) throw new FinancialNotFoundError();
@@ -650,7 +665,9 @@ export class PilotImportService {
   }
 
   async applyProductMappings(invoiceId: string, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     await this.database.$transaction(async (tx) => {
+      await this.requireInvoiceAccess(context, tx);
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const [users, groupMemberships, groupCompany, companyMembership] = await Promise.all([
         tx.$queryRaw<Array<{ isActive: boolean }>>`SELECT "isActive" FROM "User" WHERE id=${context.userId} FOR UPDATE`,
@@ -742,6 +759,7 @@ export class PilotImportService {
   }
 
   async postInvoice(invoiceId: string, context: FinancialAuthorization) {
+    await this.requireInvoiceAccess(context);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await this.postInvoiceTransaction(invoiceId, context);
@@ -755,6 +773,7 @@ export class PilotImportService {
 
   private async postInvoiceTransaction(invoiceId: string, context: FinancialAuthorization) {
     await this.database.$transaction(async (tx) => {
+      await this.requireInvoiceAccess(context, tx);
       await this.lock(tx, `pilot-invoice:${invoiceId}`);
       const invoice = await tx.pilotProviderInvoice.findFirst({ where: { id: invoiceId, operatingGroupId: context.operatingGroupId }, include: { source: true, issues: { where: { status: 'OPEN' } }, events: { include: { truck: true, productLines: true } }, adjustments: true } });
       if (!invoice) throw new FinancialNotFoundError();
