@@ -148,3 +148,26 @@ test('whole-invoice reads require every Company and recheck revoked membership i
   await prisma.companyMembership.delete({ where: { userId_companyId: { userId: f.owner.id, companyId: f.otherCompany.id } } });
   expect((await page.request.get(url)).status()).toBe(403);
 });
+
+
+test('Truck Owner Operator statement reconciles without ownership history and retains its source type', async ({ page }) => {
+  const f = await fuelWorkflowFixture({ confirmOwner: false, ownerOperatorStatement: true, corroborated: true });
+  const before = await fuelEconomics(f.group.id);
+  await signIn(page, f.owner);
+  await page.goto('/accounting?view=statements&archive=reconciliation');
+  const row = page.locator('#fuel-reconciliation-table tbody tr').filter({ hasText: f.truck.unitNumber });
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('strong').first()).toHaveText('MATCHED');
+  await row.getByText('Evidence and calculation', { exact: true }).click();
+  await expect(row.getByText(/Ownership history is informational/)).toBeVisible();
+  const preview = await (await page.request.get(endpoint)).json();
+  const disposition = preview.rows.find((r: { pilotEventId: string }) => r.pilotEventId === f.event.id);
+  expect(disposition.status).toBe('MATCHED');
+  expect(disposition.expectedMinor).toBe('10000');
+  expect(disposition.ownerAttribution).toBeNull();
+  expect(disposition.statementEvidence.lineIds).toEqual([f.line.id]);
+  expect((await prisma.archiveVersion.findUniqueOrThrow({ where: { id: f.version.id } })).recipientType).toBe('DRIVER');
+  expect(f.version.recipientType).toBe('DRIVER');
+  expect(await prisma.truckOwnerPeriod.count({ where: { truckId: f.truck.id } })).toBe(0);
+  expect(await fuelEconomics(f.group.id)).toEqual(before);
+});

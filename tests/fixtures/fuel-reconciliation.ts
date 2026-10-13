@@ -5,7 +5,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const date = (value: string) => new Date(`${value}T00:00:00Z`);
 
 // Synthetic records only. The browser suite requires a dedicated local database.
-export async function fuelWorkflowFixture() {
+export async function fuelWorkflowFixture(options: { confirmOwner?: boolean; ownerOperatorStatement?: boolean; corroborated?: boolean } = {}) {
   const key = randomUUID();
   const company = await db.company.create({ data: { name: `Fuel workflow ${key}` } });
   const otherCompany = await db.company.create({ data: { name: `Other fuel company ${key}` } });
@@ -18,11 +18,13 @@ export async function fuelWorkflowFixture() {
   const companyRevision = await tx.truckCompanyHistoryRevision.create({ data: { truckId: truck.id, action: 'CONFIRM', source: 'MANUAL_CONFIRMATION', sourceReference: 'Synthetic browser fixture', reason: 'Synthetic browser fixture', actorUserId: owner.id } });
   await tx.truckCompanyAffiliation.create({ data: { truckId: truck.id, companyId: company.id, effectiveFrom: date('2026-01-01'), effectiveTo: date('2027-01-01'), revisionId: companyRevision.id } });
   });
-  const party = await db.financialParty.create({ data: { operatingGroupId: group.id, companyId: company.id, name: 'Synthetic contractor', type: 'OWNER_OPERATOR' } });
-  await db.$transaction(async tx => {
-  const revision = await tx.truckOwnerHistoryRevision.create({ data: { truckId: truck.id, operatingGroupId: group.id, actorUserId: owner.id, sourceReference: 'Synthetic ownership', reason: 'Synthetic browser fixture' } });
-  await tx.truckOwnerPeriod.create({ data: { truckId: truck.id, ownerPartyId: party.id, companyId: company.id, providerRecipientId: key, effectiveFrom: date('2026-01-01'), revisionId: revision.id } });
-  });
+  if (options.confirmOwner !== false) {
+    const party = await db.financialParty.create({ data: { operatingGroupId: group.id, companyId: company.id, name: 'Synthetic contractor', type: 'OWNER_OPERATOR' } });
+    await db.$transaction(async tx => {
+    const revision = await tx.truckOwnerHistoryRevision.create({ data: { truckId: truck.id, operatingGroupId: group.id, actorUserId: owner.id, sourceReference: 'Synthetic ownership', reason: 'Synthetic browser fixture' } });
+    await tx.truckOwnerPeriod.create({ data: { truckId: truck.id, ownerPartyId: party.id, companyId: company.id, providerRecipientId: key, effectiveFrom: date('2026-01-01'), revisionId: revision.id } });
+    });
+  }
   await db.fuelDeductionPolicy.create({ data: { operatingGroupId: group.id, companyId: company.id, truckId: truck.id, providerRecipientId: key, responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: date('2026-01-01'), sourceReference: 'Synthetic agreement', reason: 'Synthetic browser fixture', approvedByUserId: owner.id } });
   const document = await db.financialStatement.create({ data: { operatingGroupId: group.id, sourceId: source.id, type: 'FUEL_STATEMENT', periodStart: date('2026-06-01'), periodEnd: date('2026-06-30'), originalFilename: 'synthetic.csv', displayFilename: 'synthetic.csv', mimeType: 'text/csv', byteSize: 1, storageKey: `synthetic/${key}.csv`, checksumSha256: hash(key), importedByUserId: owner.id } });
   const record = await db.financialImportRecord.create({ data: { statementId: document.id, sourceRowIndex: 1, rawAmount: '100.00', fingerprintSha256: hash(`record-${key}`) } });
@@ -33,10 +35,10 @@ export async function fuelWorkflowFixture() {
   const archiveCompany = await db.archiveCompany.create({ data: { operatingGroupId: group.id, companyId: company.id, sourceId: source.id, accountKey: key, providerCompanyId: key, providerCompanyName: company.name } });
   const statement = await db.archiveStatement.create({ data: { archiveCompanyId: archiveCompany.id, providerStatementId: key, latestProviderVersion: 1, acceptedProviderVersion: 1 } });
   const { version, line } = await db.$transaction(async tx => {
-  const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `synthetic/${key}.json`, detailChecksum: hash(`detail-${key}`), pdfChecksum: hash(key), bundleChecksum: hash(`bundle-${key}`), pid: key, recipientId: key, recipientName: 'Synthetic contractor', recipientType: 'CONTRACTOR', workStart: date('2026-06-07'), workEnd: date('2026-06-13'), header: {}, issues: [], parserVersion: 'synthetic', capturedByUserId: owner.id } });
+  const version = await tx.archiveVersion.create({ data: { statementId: statement.id, providerVersion: 1, documentId: document.id, detailStorageKey: `synthetic/${key}.json`, detailChecksum: hash(`detail-${key}`), pdfChecksum: hash(key), bundleChecksum: hash(`bundle-${key}`), pid: key, recipientId: key, recipientName: 'Synthetic contractor', recipientType: options.ownerOperatorStatement ? 'DRIVER' : 'CONTRACTOR', role: options.ownerOperatorStatement ? 'Owner Operator' : null, workStart: date('2026-06-07'), workEnd: date('2026-06-13'), header: {}, issues: [], parserVersion: 'synthetic', capturedByUserId: owner.id } });
   await tx.archiveTruck.create({ data: { versionId: version.id, sourceKey: key, unit: truck.unitNumber, truckId: truck.id, mappingStatus: 'MATCHED' } });
-  // Conflicting card prevents an automatic match even though the amounts agree.
-  const line = await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: key, description: 'Synthetic unresolved fuel deduction', sourceType: 'fuel', amountMinor: -BigInt(10000), rawAmount: '100.00', sourceDate: '2026-06-10', sourceUnit: truck.unitNumber, included: true, metadata: { type: 'fuel', date: '2026-06-10T12:00:00Z', diesel_amount: '100.00', diesel_qty: '20.00', def_amount: '0', reefer_amount: '0', reefer_qty: '0', pay_amount: '100.00', card_number: '9999', merchant: '100', city: 'Synthetic City', state: 'CA' } } });
+  // By default a conflicting card prevents matching despite equal amounts.
+  const line = await tx.archiveLine.create({ data: { versionId: version.id, kind: 'DEDUCTION', sourceArray: 'fuel_transactions', sourceOrder: 0, providerLineId: key, description: 'Synthetic unresolved fuel deduction', sourceType: 'fuel', amountMinor: -BigInt(10000), rawAmount: '100.00', sourceDate: '2026-06-10', sourceUnit: truck.unitNumber, included: true, metadata: { type: 'fuel', date: '2026-06-10T12:00:00Z', diesel_amount: '100.00', diesel_qty: '20.00', def_amount: '0', reefer_amount: '0', reefer_qty: '0', pay_amount: '100.00', card_number: options.corroborated ? '991234' : '9999', merchant: '100', city: 'Synthetic City', state: 'CA' } } });
   await tx.archiveVersion.update({ where: { id: version.id }, data: { sealed: true } });
     return { version, line };
   });

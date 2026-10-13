@@ -1,5 +1,20 @@
 # Fuel Deduction Reconciliation
 
+## Current phase rule — October 13, 2026
+
+Fuel is charged through the identified Truck's corresponding QuickManage owner statement for the relevant period. Confirmed legal ownership and a timezone-confirmed ownership business date are **not prerequisites**. The archived statement mapping, historical operating Company, corroborated purchase identity, and approved effective-dated fuel pricing remain prerequisites. Ownership history remains independently recorded and visible for later review; it does not select a recipient or policy.
+
+- A uniquely mapped CONTRACTOR statement, or a DRIVER statement explicitly identified as Owner Operator, can establish the Truck's owner statement. The original recipient type is preserved. An unidentified Driver role stays in review. Existing Company Driver zero-recovery behavior is retained, but cannot mask a differently typed late-posted deduction.
+- Multiple possible owner statements remain `NEEDS_REVIEW / AMBIGUOUS_TRUCK_STATEMENT`, including repeated same-recipient statements. A legal owner history entry or applicable policy cannot break this ambiguity. An existing manual identity link remains visible with its audit, but cannot settle it.
+- A reviewed/ambiguous Truck mapping cannot establish the period statement. An explicit fuel-line Truck unit that conflicts with the statement's mapped Truck cannot silently fall back to that Truck.
+- Cross-Truck, cross-recipient and cross-Company evidence remains in review at every date, including before the former historical-routing cutoff. Identity links do not authorize reassignment or financial changes.
+- Existing strict provider-calendar matching, product corroboration, approved Diesel/Reefer handling, retention arithmetic and five-cent amount tolerance remain unchanged. Equal amounts alone never establish identity.
+
+This phase rule supersedes ownership eligibility gates and historical routing acceptance. Earlier dated results and descriptions below are historical evidence, not the current result. Source evidence, recipient types, Company authorization and financial/audit records are not rewritten by preview.
+
+The isolated October 13 production snapshot recomputed on PostgreSQL 17.5 restores 499 of the prior 505 MATCHED dispositions: $291,373.38 Pilot actual and $294,045.16 policy-expected/QuickManage deductions. The other six remain cross-recipient review ($2,513.76 Pilot / $2,539.46 QuickManage). Of the old 427 ownership-blocked purchases, 422 restore and five remain review; of the old 78 business-date-blocked purchases, 77 restore and one remains review. All 44 DRIVER / Owner Operator cases restore without relabeling. No production deployment, migration or financial correction is authorized by this verification.
+
+
 This control compares posted Pilot Diesel and DEF purchases with immutable QuickManage statement evidence. It does not create or change expenses, transactions, expected money, bank matches, receivables, recoveries, allocations, or statement evidence.
 
 ## Scope and evidence

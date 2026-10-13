@@ -11,7 +11,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { TruckCompanyHistoryService, historyDate } from '../fleet/truck-company-history';
 import { truckOwnerHistoryService, TruckOwnerHistoryService } from '../fleet/truck-owner-history';
-import { acceptsHistoricalCrossRecipientRouting, classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelIdentityWithUnavailableStatementCard, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, subtractCoverageRanges, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
+import { classifyFuelDeductionLine, corroboratesFuelIdentity, corroboratesFuelIdentityStrict, corroboratesFuelIdentityWithUnavailableStatementCard, corroboratesFuelProducts, discrepancyStatus, expectedFuelDeduction, expectedFuelDeductionForComponents, fuelAmountsWithinOwnerTolerance, fuelMonetaryToleranceMinor, FuelDeductionReconciliationService, isDieselReeferClassificationDifference, quickManageDateRelation, resolveApplicableFuelPolicy, subtractCoverageRanges, type FuelReconciliationRow } from './fuel-deduction-reconciliation';
 
 test('structured classifier rejects unaccepted and incomplete statement lines', () => {
   assert.equal(classifyFuelDeductionLine({ sourceArray: 'fuel_transactions', kind: 'DEDUCTION', included: true, amountMinor: BigInt(1509) }), false);
@@ -130,10 +130,7 @@ test('a missing QuickManage card is unavailable corroboration only when location
   assert.equal(corroboratesFuelIdentityWithUnavailableStatementCard(pilot, { cardLastFour: null, locationNumber: '1194', city: null, state: 'AZ' }), false);
 });
 
-test('OWNER rules accept only pre-cutoff routing and only Diesel/Reefer classification differences', () => {
-  assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-21'), true);
-  assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-22'), false);
-  assert.equal(acceptsHistoricalCrossRecipientRouting('2026-09-23'), false);
+test('approved classification rules accept only Diesel/Reefer differences', () => {
   assert.equal(isDieselReeferClassificationDifference(['TRUCK_DIESEL'], ['REEFER_FUEL']), true);
   assert.equal(isDieselReeferClassificationDifference(['REEFER_FUEL'], ['TRUCK_DIESEL']), true);
   assert.equal(isDieselReeferClassificationDifference(['TRUCK_DIESEL', 'DEF'], ['REEFER_FUEL', 'DEF']), true);
@@ -282,15 +279,15 @@ before(async () => {
   caseEventIds.product = (await addEvent({ key: 'product', date: '2026-07-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_000) })).id;
   await archiveVersion({ key: 'product-line', pid: '29', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(8_500), sourceDate: '2026-07-15', dieselQuantity: '28.05' });
   caseEventIds.dieselToReefer = (await addEvent({ key: 'diesel-to-reefer', date: '2026-08-10', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'TRUCK_DIESEL', quantity: '20.00', amount: minor(7_000) })).id;
-  await archiveVersion({ key: 'diesel-to-reefer-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_000), sourceDate: '2026-08-10', dieselAmount: '0', dieselQuantity: '0', reeferAmount: '70.00', reeferQuantity: '20.00' });
+  await archiveVersion({ key: 'diesel-to-reefer-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-10', workEnd: '2026-08-10', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_000), sourceDate: '2026-08-10', dieselAmount: '0', dieselQuantity: '0', reeferAmount: '70.00', reeferQuantity: '20.00' });
   caseEventIds.reeferToDiesel = (await addEvent({ key: 'reefer-to-diesel', date: '2026-08-11', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'REEFER_FUEL', quantity: '20.00', amount: minor(7_100) })).id;
-  await archiveVersion({ key: 'reefer-to-diesel-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_100), sourceDate: '2026-08-11', dieselAmount: '71.00', dieselQuantity: '20.00' });
+  await archiveVersion({ key: 'reefer-to-diesel-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-11', workEnd: '2026-08-11', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(7_100), sourceDate: '2026-08-11', dieselAmount: '71.00', dieselQuantity: '20.00' });
   caseEventIds.defMismatch = (await addEvent({ key: 'def-mismatch', date: '2026-08-12', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'DEF', quantity: '6.00', amount: minor(3_000) })).id;
-  await archiveVersion({ key: 'def-mismatch-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_000), sourceDate: '2026-08-12', dieselAmount: '0', dieselQuantity: '0', defAmount: '40.00' });
+  await archiveVersion({ key: 'def-mismatch-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-12', workEnd: '2026-08-12', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_000), sourceDate: '2026-08-12', dieselAmount: '0', dieselQuantity: '0', defAmount: '40.00' });
   caseEventIds.dieselToDef = (await addEvent({ key: 'diesel-to-def', date: '2026-08-13', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'TRUCK_DIESEL', quantity: '6.00', amount: minor(3_100) })).id;
-  await archiveVersion({ key: 'diesel-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_100), sourceDate: '2026-08-13', dieselAmount: '0', dieselQuantity: '0', defAmount: '31.00' });
+  await archiveVersion({ key: 'diesel-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-13', workEnd: '2026-08-13', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_100), sourceDate: '2026-08-13', dieselAmount: '0', dieselQuantity: '0', defAmount: '31.00' });
   caseEventIds.reeferToDef = (await addEvent({ key: 'reefer-to-def', date: '2026-08-14', truckId: truckIds.product, unit: 'UNIT-PRODUCT', product: 'REEFER_FUEL', quantity: '6.00', amount: minor(3_200) })).id;
-  await archiveVersion({ key: 'reefer-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-09', workEnd: '2026-08-15', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_200), sourceDate: '2026-08-14', dieselAmount: '0', dieselQuantity: '0', defAmount: '32.00' });
+  await archiveVersion({ key: 'reefer-to-def-line', pid: '32', recipientId: 'contractor-product', recipientType: 'CONTRACTOR', workStart: '2026-08-14', workEnd: '2026-08-14', truckId: truckIds.product, unit: 'UNIT-PRODUCT', amount: minor(3_200), sourceDate: '2026-08-14', dieselAmount: '0', dieselQuantity: '0', defAmount: '32.00' });
   caseEventIds.ambiguous = (await addEvent({ key: 'ambiguous', date: '2026-07-19', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000) })).id;
   await archiveVersion({ key: 'ambiguous-one', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T10:00:00Z' });
   await archiveVersion({ key: 'ambiguous-two', pid: '29', recipientId: 'contractor-ambiguous', recipientType: 'CONTRACTOR', workStart: '2026-07-12', workEnd: '2026-07-18', truckId: truckIds.ambiguous, unit: 'UNIT-AMBIGUOUS', amount: minor(6_000), sourceDate: '2026-07-18', sourceTimestamp: '2026-07-18T11:00:00Z' });
@@ -737,16 +734,16 @@ for (const companyFirst of [true, false]) {
   });
 }
 
-test('preview keeps repeated assignments for the same Contractor usable', async () => {
+test('preview reviews multiple possible statements even for the same Contractor', async () => {
   const fixture = await ambiguityFixture('same-contractor');
   await fixture.archive('assignment-one', { amount: undefined, pid: 'review-10' });
   await fixture.archive('assignment-two', { amount: undefined, pid: 'review-20' });
   const result = await service.preview(fixture.context, { pageSize: 10000 });
   const pilot = result.rows.find(row => row.pilotEventId === fixture.event.id)!;
-  assert.equal(pilot.recipientId, fixture.recipientId);
-  assert.equal(pilot.policyId, fixture.policy.id);
-  assert.equal(pilot.expectedMinor, minor(10_000));
-  assert.equal(pilot.status, 'PILOT_UNMATCHED');
+  assert.equal(pilot.status, 'NEEDS_REVIEW');
+  assert.equal(pilot.matchMethod, 'AMBIGUOUS_TRUCK_STATEMENT');
+  assert.equal(pilot.policyId, null);
+  assert.equal(pilot.expectedMinor, null);
 });
 
 test('preview sends multiple reference candidates to review without falling through to unmatched', async () => {
@@ -799,41 +796,104 @@ test('preview preserves an OWNER manual match while overlapping Contractors keep
   }
 });
 
-test('preview reviews a deduction posted to the wrong owner without changing confirmed attribution', async () => {
+test('legal owner attribution does not override the actual Truck statement or its approved pricing', async () => {
   const fixture = await ambiguityFixture('wrong-owner');
   const version = await fixture.archive('other', { recipientId: 'wrong-owner-recipient' });
+  const source = await db.archiveLine.findMany({ where: { versionId: version.id } });
+  const row = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+  assert.equal(row.status, 'NEEDS_POLICY');
+  assert.equal(row.recipientId, 'wrong-owner-recipient');
+  assert.ok(row.ownerAttribution?.periodId);
+  assert.equal(row.expectedMinor, null, 'the legal owner policy cannot price a different statement recipient');
+  await db.fuelDeductionPolicy.create({ data: { operatingGroupId: groupId, companyId, truckId: fixture.truck.id, providerRecipientId: 'wrong-owner-recipient', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), approvedByUserId: userId, reason: 'Synthetic approved statement policy', sourceReference: 'Synthetic' } });
+  const priced = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+  assert.equal(priced.status, 'MATCHED');
+  assert.equal(priced.recipientId, 'wrong-owner-recipient');
+  assert.deepEqual(priced.ownerAttribution, row.ownerAttribution);
+  assert.deepEqual(await db.archiveLine.findMany({ where: { versionId: version.id } }), source);
+});
+
+for (const recipientType of ['CONTRACTOR', 'DRIVER']) {
+  test(`unique Truck owner statement reconciles without legal ownership history (${recipientType})`, async () => {
+    const fixture = await ambiguityFixture(`no-owner-${recipientType}`, undefined, false);
+    const version = await fixture.archive('one', { recipientType, role: recipientType === 'DRIVER' ? 'Owner Operator' : undefined });
+    const result = await service.preview(fixture.context, { pageSize: 10000 });
+    const row = result.rows.find(item => item.pilotEventId === fixture.event.id)!;
+    assert.equal(row.status, 'MATCHED');
+    assert.equal(row.ownerAttribution, null);
+    assert.equal(row.recipientId, fixture.recipientId);
+    assert.equal(row.policyId, fixture.policy.id);
+    assert.equal(row.statementEvidence?.versionId, version.id);
+    assert.equal(row.expectedMinor, minor(10_000));
+    assert.equal((await db.archiveVersion.findUniqueOrThrow({ where: { id: version.id } })).recipientType, recipientType);
+    assert.equal(await db.truckOwnerPeriod.count({ where: { truckId: fixture.truck.id } }), 0);
+  });
+}
+
+for (const conflict of ['owner-operator', 'same-recipient']) {
+  test(`multiple possible Truck owner statements remain review despite confirmed ownership (${conflict})`, async () => {
+    const fixture = await ambiguityFixture(`statement-conflict-${conflict}`);
+    await fixture.archive('contractor');
+    await fixture.archive('competing', {
+      amount: undefined,
+      recipientType: conflict === 'owner-operator' ? 'DRIVER' : 'CONTRACTOR',
+      role: conflict === 'owner-operator' ? 'Owner Operator' : undefined,
+    });
+    const context = { ...fixture.context, companyIds: [companyId, conflictCompanyId] };
+    const row = (await service.preview(context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+    assert.equal(row.status, 'NEEDS_REVIEW');
+    assert.equal(row.matchMethod, 'AMBIGUOUS_TRUCK_STATEMENT');
+    assert.equal(row.expectedMinor, null);
+    assert.equal(row.statementEvidence, null);
+    assert.ok(row.ownerAttribution);
+  });
+}
+
+test('Company scope guard rejects using a foreign statement as the Truck owner statement', async () => {
+  const fixture = await ambiguityFixture('statement-company-scope');
+  await assert.rejects(fixture.archive('foreign', { archiveCompanyId: conflictArchiveCompanyId }), /Archive Truck scope mismatch/);
+});
+
+test('explicit cross-Truck source unit cannot silently fall back to the single mapped Truck', async () => {
+  const fixture = await ambiguityFixture('source-truck-conflict', undefined, false);
+  await fixture.archive('conflicting-unit', { lineUnit: 'ANOTHER-TRUCK' });
   const result = await service.preview(fixture.context, { pageSize: 10000 });
   const row = result.rows.find(item => item.pilotEventId === fixture.event.id)!;
   assert.equal(row.status, 'NEEDS_RECIPIENT_REVIEW');
-  assert.equal(row.recipientId, fixture.recipientId);
-  assert.equal(row.statementRecipientId, 'wrong-owner-recipient');
-  assert.ok(row.ownerAttribution?.periodId);
-  assert.equal(row.statementEvidence?.versionId, version.id);
-  assert.equal(row.expectedMinor, minor(10_000));
+  assert.equal(row.matchMethod, 'CROSS_RECIPIENT_STRUCTURED_IDENTITY');
+  assert.equal(row.statementTruckUnit, 'ANOTHER-TRUCK');
   assert.equal(row.differenceMinor, null);
 });
 
-test('preview with no confirmed owner preserves a unique source line for review without assigning its Contractor', async () => {
-  const fixture = await ambiguityFixture('missing-owner');
-  const version = await fixture.archive('one');
-  const result = await service.preview(fixture.context, { pageSize: 10000 });
-  await assertAmbiguousSourcesRemainUnconsumed(result, fixture.event.id, [version.id], minor(10_000));
-  const row = result.rows.find(item => item.pilotEventId === fixture.event.id)!;
-  assert.equal(row.matchMethod, 'NO_CONFIRMED_OWNER');
-  assert.equal(row.ownerAttribution, null);
+test('a standalone Driver without Owner Operator evidence is not treated as an owner statement', async () => {
+  const fixture = await ambiguityFixture('unconfirmed-driver', undefined, false);
+  await fixture.archive('driver', { recipientType: 'DRIVER' });
+  const row = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+  assert.equal(row.status, 'NEEDS_RECIPIENT_REVIEW');
+  assert.equal(row.expectedMinor, null);
+  assert.ok(row.statementEvidence, 'purchase identity is retained independently of responsibility');
+});
+
+test('a Truck mapping flagged for review cannot establish a period statement', async () => {
+  const fixture = await ambiguityFixture('ambiguous-truck-statement', undefined, false);
+  await fixture.archive('ambiguous', { mappingStatus: 'NEEDS_REVIEW' });
+  const row = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
+  assert.equal(row.status, 'NEEDS_RECIPIENT_MAPPING');
   assert.equal(row.recipientId, null);
-  assert.equal(row.policyId, null);
+  assert.equal(row.statementEvidence, null);
+  assert.equal(row.expectedMinor, null);
 });
 
 for (const manual of [false, true]) {
-  test(`current Company Driver cannot hide a late Contractor requiring owner history (manual: ${manual})`, async () => {
+  test(`current Company Driver cannot hide a late Contractor with a different typed recipient (manual: ${manual})`, async () => {
     const key = `mixed-missing-owner-${manual}`;
     const fixture = await ambiguityFixture(key, `ticket-${key}`, false);
     const posted = await fixture.archive('late-contractor', {
       workStart: '2026-06-14', workEnd: '2026-06-20', reference: `ticket-${key}`,
     });
     const source = await db.archiveLine.findFirstOrThrow({ where: { versionId: posted.id } });
-    // Reserve through the normal service while the missing-owner row is unresolved,
+    if (manual) await fixture.archive('competing-late', { workStart: '2026-06-14', workEnd: '2026-06-20', reference: `ticket-${key}`, sourceTimestamp: '2026-06-10T11:00:00Z' });
+    // Reserve through the normal service while the late-posting row is unresolved,
     // before introducing the assignment which previously masked the Contractor.
     const match = manual ? await service.createManualMatch({ pilotEventId: fixture.event.id, archiveLineId: source.id, reason: 'Synthetic explicit source reservation without ownership inference.' }, fixture.context) : null;
     const persisted = match ? await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: match.id } }) : null;
@@ -841,12 +901,12 @@ for (const manual of [false, true]) {
     const competingEvent = match ? await addEvent({ key: `${key}-competing`, date: '2026-06-10', truckId: fixture.truck.id, unit: fixture.truck.unitNumber, amount: minor(10_000), reference: `ticket-${key}`, locationNumber: key }) : null;
     const result = await service.preview(fixture.context, { pageSize: 10000 });
     const row = result.rows.find(item => item.pilotEventId === fixture.event.id)!;
-    assert.equal(row.status, 'NEEDS_REVIEW');
+    assert.equal(row.status, 'NEEDS_RECIPIENT_REVIEW');
     assert.equal(row.ownerAttribution, null);
     assert.equal(row.expectedMinor, null, 'Company-driver zero recovery must not mask matched Contractor evidence');
     assert.equal(row.responsibility, null);
     assert.equal(row.policyId, null);
-    assert.equal(row.recipientId, null);
+    assert.equal(row.recipientId, `${key}-driver`);
     assert.equal(row.differenceMinor, null);
     if (match) {
       assert.equal(row.matchMethod, 'MANUAL_OWNER_MATCH');
@@ -856,11 +916,11 @@ for (const manual of [false, true]) {
       assert.equal(result.rows.filter(item => item.statementEvidence?.lineIds.includes(source.id)).length, 1);
       const competingRow = result.rows.find(item => item.pilotEventId === competingEvent!.id);
       assert.ok(competingRow);
-      assert.equal(competingRow.statementEvidence, null, 'a competing event cannot consume the manually reserved Contractor line');
+      assert.ok(!competingRow.statementEvidence?.lineIds.includes(source.id), 'a competing event cannot consume the manually reserved Contractor line');
       assert.deepEqual(await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: match.id } }), persisted);
     } else {
-      assert.equal(row.matchMethod, 'NO_CONFIRMED_OWNER');
-      await assertAmbiguousSourcesRemainUnconsumed(result, fixture.event.id, [posted.id], minor(10_000));
+      assert.equal(row.matchMethod, 'REFERENCE');
+      assert.deepEqual(row.statementEvidence?.lineIds, [source.id]);
     }
     assert.equal(result.completeness.orphanActiveManualMatches, 0);
     assert.equal(result.completeness.duplicateConsumedEvidence, 0);
@@ -922,7 +982,7 @@ test('owner-history entry rejects spoofed authority and corrections retain immut
   assert.deepEqual([await db.financialTransaction.count(), await db.financialAllocation.count(), await db.financialExpectation.count()], economicsBefore);
 });
 
-test('preview resolves a confirmed owner boundary despite overlapping weeks and late posting', async () => {
+test('legal owner boundary does not override a conflicting period statement and late posting', async () => {
   const fixture = await ambiguityFixture('owner-boundary');
   const oldOwner = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: 'Synthetic previous owner' } });
   const newOwner = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: 'Synthetic next owner' } });
@@ -940,11 +1000,11 @@ test('preview resolves a confirmed owner boundary despite overlapping weeks and 
   const sourceBefore = await db.archiveLine.findMany({ where: { versionId: posted.id } });
   const result = await service.preview(fixture.context, { pageSize: 10000 });
   const row = result.rows.find(item => item.pilotEventId === fixture.event.id)!;
-  assert.equal(row.recipientId, fixture.recipientId);
+  assert.equal(row.recipientId, 'previous-recipient');
   assert.equal(row.ownerAttribution?.ownerPartyId, newOwner.id);
   assert.equal(row.ownerAttribution?.revisionId, revision.revisionId);
-  assert.equal(row.expectedMinor, minor(10_000));
-  assert.equal(row.status, 'TIMING_DIFFERENCE');
+  assert.equal(row.expectedMinor, null);
+  assert.equal(row.status, 'NEEDS_RECIPIENT_REVIEW');
   assert.equal(row.statementEvidence?.versionId, posted.id);
   const priorEvent = await addEvent({ key: 'owner-before-boundary', date: '2026-06-09', truckId: fixture.truck.id, unit: fixture.truck.unitNumber, amount: minor(10_000), reference: 'owner-before-ticket', locationNumber: 'owner-before' });
   await db.fuelDeductionPolicy.create({ data: { operatingGroupId: groupId, companyId, truckId: fixture.truck.id, providerRecipientId: 'previous-recipient', responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), sourceReference: 'Synthetic previous owner policy', reason: 'Fixture', approvedByUserId: userId } });
@@ -1061,7 +1121,7 @@ test('synthetic active manual pairing survives owner correction without changing
   assert.equal(row.recipientId, nextRecipient);
   assert.equal(row.statementRecipientId, fixture.recipientId);
   assert.equal(row.matchMethod, 'MANUAL_OWNER_MATCH');
-  assert.equal(row.expectedMinor, before.expectedMinor);
+  assert.equal(row.expectedMinor, null);
   assert.equal(row.pilotActualMinor, before.pilotActualMinor);
   assert.equal(row.statementMinor, before.statementMinor);
   assert.deepEqual(row.manualMatch, before.manualMatch);
@@ -1079,25 +1139,26 @@ test('synthetic active manual pairing survives owner correction without changing
 });
 
 for (const sourceFormat of ['LEGACY_XLS', 'PIPE_INVOICE', 'PORTAL_XLSX', 'UNKNOWN']) {
-  test(`preview fails closed at synthetic Sunday owner transition for ${sourceFormat}`, async () => {
+  test(`Sunday legal owner uncertainty does not gate a corroborated Truck statement for ${sourceFormat}`, async () => {
     const fixture = await ambiguityFixture(`date-boundary-${sourceFormat}`);
     const owners = new TruckOwnerHistoryService(db);
     const prior = await owners.history(fixture.truck.id, fixture.context);
     await fixture.archive('prior', { amount: undefined });
     const recipientId = `new-${fixture.recipientId}`;
     const nextParty = await db.financialParty.create({ data: { operatingGroupId: groupId, type: 'OWNER_OPERATOR', name: `Synthetic Sunday owner ${sourceFormat}` } });
-    await fixture.archive('next', { recipientId, amount: undefined, workStart: '2026-09-20', workEnd: '2026-09-26' });
+    await fixture.archive('next', { recipientId, sourceDate: '2026-09-20', sourceTimestamp: '2026-09-20T10:00:00Z', merchant: `sunday-${sourceFormat}`, workStart: '2026-09-20', workEnd: '2026-09-26' });
     await owners.replace(fixture.truck.id, { expectedRevisionId: prior.revisionId, reason: 'Synthetic Sunday transition', sourceReference: 'Synthetic', periods: [
       { ownerPartyId: prior.periods[0].ownerPartyId, companyId, providerRecipientId: fixture.recipientId, effectiveFrom: '2026-01-01', effectiveTo: '2026-09-20' },
       { ownerPartyId: nextParty.id, companyId, providerRecipientId: recipientId, effectiveFrom: '2026-09-20', effectiveTo: null },
     ] }, fixture.context);
     const event = await addEvent({ key: `sunday-${sourceFormat}`, date: '2026-09-20', sourceFormat, truckId: fixture.truck.id, unit: fixture.truck.unitNumber, amount: minor(10_000), locationNumber: `sunday-${sourceFormat}` });
+    await db.fuelDeductionPolicy.create({ data: { operatingGroupId: groupId, companyId, truckId: fixture.truck.id, providerRecipientId: recipientId, responsibility: 'RECIPIENT', discountTreatment: 'FULL_PASS_THROUGH', companyRetentionBasisPoints: 0, effectiveFrom: historyDate('2026-01-01'), approvedByUserId: userId, reason: 'Synthetic', sourceReference: 'Synthetic' } });
     const row = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === event.id)!;
-    assert.equal(row.status, 'NEEDS_REVIEW');
-    assert.equal(row.matchMethod, 'NEEDS_BUSINESS_DATE');
+    assert.equal(row.status, 'MATCHED');
+    assert.equal(row.matchMethod, 'TRUCK_DATE_CORROBORATED');
     assert.equal(row.ownerAttribution, null);
-    assert.equal(row.expectedMinor, null);
-    assert.equal(row.statementEvidence, null);
+    assert.equal(row.expectedMinor, minor(10_000));
+    assert.ok(row.statementEvidence);
   });
 }
 
@@ -1227,13 +1288,13 @@ test('owner snapshots reject post-commit edits, incomplete replacement and inval
 });
 
 for (const path of ['reference', 'structured'] as const) {
-  test(`confirmed owner mismatch stays review through historical ${path} matching`, async () => {
+  test(`conflicting Truck statement stays review through historical ${path} matching`, async () => {
     const fixture = await ambiguityFixture(`owner-mismatch-${path}`);
     await fixture.archive('assignment', { amount: undefined });
     const other = await db.truck.create({ data: { companyId, unitNumber: `SYNTHETIC-${path}` } });
     const posted = await fixture.archive('wrong-owner', {
       recipientId: `synthetic-wrong-${path}`,
-      ...(path === 'reference' ? { reference: `ticket-owner-mismatch-${path}` } : { truckId: other.id, unit: other.unitNumber }),
+      ...(path === 'reference' ? { reference: `ticket-owner-mismatch-${path}`, workStart: '2026-06-14', workEnd: '2026-06-20' } : { truckId: other.id, unit: other.unitNumber }),
     });
     const sourceBefore = await db.archiveLine.findMany({ where: { versionId: posted.id } });
     const preview = await service.preview(fixture.context, { pageSize: 10000 });
@@ -1243,7 +1304,7 @@ for (const path of ['reference', 'structured'] as const) {
     assert.equal(row.recipientId, fixture.recipientId);
     assert.equal(row.statementRecipientId, `synthetic-wrong-${path}`);
     assert.ok(row.ownerAttribution);
-    assert.equal(row.expectedMinor, minor(10_000));
+    assert.equal(row.expectedMinor, path === 'reference' ? null : minor(10_000));
     assert.equal(row.statementMinor, minor(10_000));
     assert.equal(row.differenceMinor, null);
     assert.deepEqual(row.statementEvidence?.lineIds, sourceBefore.map(line => line.id));
@@ -1253,7 +1314,7 @@ for (const path of ['reference', 'structured'] as const) {
 }
 
 for (const path of ['direct', 'reference', 'historical-structured'] as const) {
-  test(`same-ID standalone Driver is not the confirmed Contractor through ${path} matching`, async () => {
+  test(`same-ID standalone Driver is not the Truck statement Contractor through ${path} matching`, async () => {
     const key = `typed-owner-${path}`;
     const fixture = await ambiguityFixture(key);
     await fixture.archive('contractor-assignment', { amount: undefined });
@@ -1271,7 +1332,7 @@ for (const path of ['direct', 'reference', 'historical-structured'] as const) {
     assert.equal(row.recipientId, fixture.recipientId);
     assert.equal(row.statementRecipientId, fixture.recipientId, 'equal ID text does not make DRIVER and CONTRACTOR the same identity');
     assert.ok(row.ownerAttribution?.periodId);
-    assert.equal(row.expectedMinor, minor(10_000));
+    assert.equal(row.expectedMinor, path === 'historical-structured' ? minor(10_000) : null);
     assert.equal(row.statementMinor, minor(10_000));
     assert.equal(row.differenceMinor, null);
     assert.deepEqual(row.statementEvidence?.lineIds, [source.id]);
@@ -1317,14 +1378,14 @@ test('synthetic missing-card cross-Company standalone Driver cannot confirm a sc
   assert.deepEqual(await db.archiveLine.findUniqueOrThrow({ where: { id: source.id } }), source);
 });
 
-test('historical structured routing remains compatible for the confirmed recipient on another Truck', async () => {
+test('historical routing to another Truck requires review even with the same recipient', async () => {
   const fixture = await ambiguityFixture('compatible-routing');
   await fixture.archive('assignment', { amount: undefined });
   const other = await db.truck.create({ data: { companyId, unitNumber: 'SYNTHETIC-COMPATIBLE' } });
   await fixture.archive('posted', { truckId: other.id, unit: other.unitNumber });
   const row = (await service.preview(fixture.context, { pageSize: 10000 })).rows.find(item => item.pilotEventId === fixture.event.id)!;
-  assert.equal(row.status, 'MATCHED');
-  assert.equal(row.matchMethod, 'HISTORICAL_CROSS_RECIPIENT_RECOVERED');
+  assert.equal(row.status, 'NEEDS_RECIPIENT_REVIEW');
+  assert.equal(row.matchMethod, 'CROSS_RECIPIENT_STRUCTURED_IDENTITY');
   assert.equal(row.statementRecipientId, fixture.recipientId);
 });
 

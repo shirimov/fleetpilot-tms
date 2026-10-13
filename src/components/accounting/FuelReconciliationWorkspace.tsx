@@ -69,13 +69,13 @@ const money = (value: string | null | undefined) => value == null ? "—" : `$${
 const gallons = (hundredths: string) => `${BigInt(hundredths) / BigInt(100)}.${(BigInt(hundredths) % BigInt(100)).toString().padStart(2, "0")}`;
 const statuses = ["MATCHED","UNDER_DEDUCTED","OVER_DEDUCTED","MISSING_DEDUCTION","STATEMENT_ONLY","PILOT_UNMATCHED","QM_UNMATCHED","SOURCE_COVERAGE_GAP","TIMING_DIFFERENCE","NO_PILOT_DATA_IMPORTED","NEEDS_COMPANY_HISTORY","NEEDS_TRUCK_MAPPING","NEEDS_RECIPIENT_MAPPING","NEEDS_RECIPIENT_REVIEW","PRODUCT_CLASSIFICATION_REVIEW","NEEDS_POLICY","NEEDS_REVIEW"];
 const matchExplanations: Record<string, string> = {
+  AMBIGUOUS_TRUCK_STATEMENT: "Multiple possible statements cover this Truck and period. Review the statement mapping before reconciliation.",
+  UNCONFIRMED_TRUCK_STATEMENT: "The Truck, Company or statement recipient role needs confirmation.",
   PILOT_SUNDAY_QUICKMANAGE_SATURDAY: "Matched the Pilot Sunday date-only row to QuickManage's preceding Saturday source timestamp using Truck, recipient, card, location, geography, and product quantities.",
-  HISTORICAL_CROSS_RECIPIENT_RECOVERED: "Recovered — historical cross-recipient settlement accepted under the OWNER rule through September 21, 2026. The original Pilot Truck and deducted statement recipient remain visible for audit.",
   CROSS_RECIPIENT_STRUCTURED_IDENTITY: "The same card, location, date convention, product quantity, and policy amount appear on another Truck or recipient statement. Recipient responsibility requires review.",
   DIESEL_REEFER_CLASSIFICATION_ACCEPTED: "Recovered — strong transaction identity confirms the same fuel purchase. Pilot and QuickManage Diesel/Reefer classifications remain different for audit and do not create a financial discrepancy.",
   PRODUCT_CLASSIFICATION_CONFLICT: "Pilot and QuickManage identify the same card/location transaction but assign its Diesel, DEF, or Reefer components differently. No over- or under-deduction conclusion is made.",
   AMBIGUOUS_STRUCTURED_IDENTITY: "More than one structured evidence candidate remains, so the matcher failed closed.",
-  CROSS_COMPANY_RECOVERY_CONFIRMED: "Recovery is confirmed by the preceding Saturday QuickManage transaction despite its unavailable card field. The source Company remains visible and requires review.",
   WEEKEND_COMPANY_HISTORY_GAP: "The Pilot row is dated Sunday, but the preceding Saturday has no confirmed operating Company. Missing deduction is withheld until that provider-calendar boundary is resolved.",
   MANUAL_OWNER_MATCH: "An OWNER paired these immutable Pilot and QuickManage source records. Policy logic evaluates the amount separately.",
   MISSING_QUICKMANAGE_COVERAGE: "QuickManage source coverage is unavailable for this Company/date, so no financial Missing conclusion is made.",
