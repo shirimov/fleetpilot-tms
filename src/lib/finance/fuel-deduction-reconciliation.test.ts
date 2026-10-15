@@ -1600,3 +1600,158 @@ test('same-truck city normalization preserves product and unique-candidate check
     }
   }
 });
+
+async function acceptedChargeFixture(key: string, overrides: Partial<Parameters<typeof archiveVersion>[0]> = {}) {
+  const unit = `ACCEPT-${key}`;
+  const vin = `1M8${hash(key).slice(0, 14).toUpperCase()}`;
+  const truck = await db.truck.create({ data: { companyId, unitNumber: unit, vin, vinNormalized: vin } });
+  const event = await addEvent({ key: `accepted-${key}`, date: '2026-09-15', unit: 'OLD-LABEL', amount: minor(10000), locationNumber: key });
+  await db.pilotProviderInvoice.update({ where: { id: event.invoiceId }, data: { status: 'SOURCE_ACCEPTED', postedAt: null, postedByUserId: null } });
+  const version = await archiveVersion({ key: `accepted-${key}`, pid: '2026-38', recipientId: `recipient-${key}`, recipientType: 'DRIVER', role: 'Owner Operator', workStart: '2026-09-13', workEnd: '2026-09-19', truckId: truck.id, unit, vin, sourceDate: '2026-09-15', amount: minor(10900), dieselQuantity: '20.00', merchant: key, ...overrides });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+  const context = { userId, activeCompanyId: companyId, operatingGroupId: groupId, role: 'OWNER' as const, companyIds: [companyId] };
+  const request = { approvedThrough: '2026-10-14', reason: 'Synthetic explicit historical charge acceptance; not an operating Company timeline or future price.', aiGenerated: true, charges: [{ pilotEventId: event.id, archiveLineId: line.id, amountMinor: '10900' }] };
+  return { truck, event, version, line, context, request };
+}
+
+test('accepted source evidence proves a provider mapping without posting or assigning Pilot source records', async () => {
+  const providerTruckId = randomUUID();
+  const one = await acceptedChargeFixture('mapping-source-one', { truckId: null, providerTruckId, mappingStatus: 'NEEDS_REVIEW' });
+  const two = await addEvent({ key: 'mapping-source-two', date: '2026-09-16', unit: 'OTHER-OLD-LABEL', amount: minor(11000), locationNumber: 'mapping-source-two' });
+  await db.pilotProviderInvoice.update({ where: { id: two.invoiceId }, data: { status: 'SOURCE_ACCEPTED', postedAt: null, postedByUserId: null } });
+  const version = await archiveVersion({ key: 'mapping-source-two', pid: '2026-38', recipientId: 'mapping-source-recipient', recipientType: 'CONTRACTOR', workStart: '2026-09-13', workEnd: '2026-09-19', truckId: null, providerTruckId, mappingStatus: 'NEEDS_REVIEW', unit: one.truck.unitNumber, vin: one.truck.vin!, sourceDate: '2026-09-16', amount: minor(11000), merchant: 'mapping-source-two' });
+  const line = await db.archiveLine.findFirstOrThrow({ where: { versionId: version.id } });
+  const refs = [{ pilotEventId: one.event.id, statementVersionId: one.version.id, statementLineIds: [one.line.id] }, { pilotEventId: two.id, statementVersionId: version.id, statementLineIds: [line.id] }];
+  // Both provider observations must agree on the physical unit/VIN.
+  // The first fixture already uses the canonical unit of one.truck.
+  const request = { providerTruckId, truckId: one.truck.id, sourceReference: 'Two accepted, unposted immutable purchases and exact provider VIN.', reason: 'Synthetic source acceptance is independent of Accounting posting.', evidenceReferences: refs };
+  await assert.rejects(service.createHistoricalTruckMapping({ ...request, evidenceReferences: refs.slice(0, 1) }, one.context));
+  await assert.rejects(service.createHistoricalTruckMapping(request, { ...one.context, role: 'MEMBER' }));
+  const duplicate = await addEvent({ key: 'mapping-source-duplicate', date: '2026-09-16', unit: 'UNKNOWN', amount: minor(11000), locationNumber: 'mapping-source-two' });
+  await assert.rejects(service.createHistoricalTruckMapping(request, one.context), /ambiguous between Pilot/);
+  await db.pilotProviderInvoice.update({ where: { id: duplicate.invoiceId }, data: { status: 'FAILED' } });
+  const foreignTruck = await db.truck.create({ data: { companyId: conflictCompanyId, unitNumber: 'MAPPING-INACCESSIBLE' } });
+  await db.pilotFuelingEvent.update({ where: { id: one.event.id }, data: { truckId: foreignTruck.id } });
+  await assert.rejects(service.createHistoricalTruckMapping(request, one.context));
+  await db.pilotFuelingEvent.update({ where: { id: one.event.id }, data: { truckId: null } });
+  const sources = await db.pilotFuelingEvent.findMany({ where: { id: { in: [one.event.id, two.id] } }, orderBy: { id: 'asc' } });
+  const before = await db.financialTransaction.count();
+  const mapping = await service.createHistoricalTruckMapping(request, one.context);
+  assert.equal(mapping.truckId, one.truck.id);
+  assert.deepEqual(await db.pilotFuelingEvent.findMany({ where: { id: { in: [one.event.id, two.id] } }, orderBy: { id: 'asc' } }), sources);
+  assert.equal(await db.financialTransaction.count(), before);
+  assert.equal((await db.pilotProviderInvoice.findUniqueOrThrow({ where: { id: two.invoiceId } })).status, 'SOURCE_ACCEPTED');
+});
+
+test('historical charge acceptance keeps source, posted records, recipient type and operating history unchanged', async () => {
+  const f = await acceptedChargeFixture('exact-history-free');
+  const before = [await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: f.event.id } }), await db.archiveLine.findUniqueOrThrow({ where: { id: f.line.id } }), await db.financialTransaction.count(), await db.truckCompanyAffiliation.count(), await db.fuelDeductionPolicy.count()];
+  const [match] = await service.acceptHistoricalStatementCharges(f.request, f.context);
+  const row = (await service.preview(f.context, { truck: f.truck.unitNumber, pageSize: 10000 })).rows.find(row => row.pilotEventId === f.event.id)!;
+  assert.equal(row.status, 'MATCHED'); assert.equal(row.statementMinor, minor(10900)); assert.equal(row.expectedMinor, minor(10900));
+  assert.equal(row.truckId, f.truck.id); assert.equal(row.historicalCompanyId, null); assert.equal(row.responsibility, 'DRIVER');
+  assert.equal(row.matchMethod, 'HISTORICAL_STATEMENT_CHARGE_ACCEPTED');
+  assert.deepEqual([await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: f.event.id } }), await db.archiveLine.findUniqueOrThrow({ where: { id: f.line.id } }), await db.financialTransaction.count(), await db.truckCompanyAffiliation.count(), await db.fuelDeductionPolicy.count()], before);
+  assert.equal(await db.financialAuditEvent.count({ where: { action: 'FUEL_HISTORICAL_STATEMENT_CHARGE_ACCEPTED', after: { path: ['matchId'], equals: match.id } } }), 1);
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, f.context));
+  await assert.rejects(db.fuelReconciliationManualMatch.update({ where: { id: match.id }, data: { acceptedChargeMinor: minor(1), unmatchedAt: new Date(), unmatchedByUserId: userId, unmatchReason: 'Attempt to change economics during undo.' } }));
+  await service.unmatchManualMatch({ matchId: match.id, reason: 'Synthetic approval reversal preserves immutable acceptance.' }, f.context);
+  assert.equal((await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: match.id } })).acceptedChargeMinor, minor(10900));
+});
+
+for (const failure of ['card', 'products', 'duplicate-deduction', 'duplicate-purchase', 'unmapped-truck', 'cutoff', 'amount', 'unaccepted-source'] as const) {
+  test(`historical charge approval cannot bypass ${failure}`, async () => {
+    const f = await acceptedChargeFixture(`denied-${failure}`, failure === 'card' ? { cardNumber: '9999' } : failure === 'products' ? { dieselQuantity: '21.00' } : failure === 'duplicate-deduction' ? { duplicateFuelLine: true } : failure === 'unmapped-truck' ? { truckId: null, mappingStatus: 'NEEDS_REVIEW' } : {});
+    if (failure === 'duplicate-purchase') await addEvent({ key: 'accepted-duplicate-purchase-copy', date: '2026-09-15', unit: 'OTHER', amount: minor(10000), locationNumber: 'denied-duplicate-purchase' });
+    if (failure === 'cutoff') f.request.approvedThrough = '2026-09-14';
+    if (failure === 'amount') f.request.charges[0].amountMinor = '10901';
+    if (failure === 'unaccepted-source') await db.pilotProviderInvoice.update({ where: { id: f.event.invoiceId }, data: { status: 'FAILED' } });
+    await assert.rejects(service.acceptHistoricalStatementCharges(f.request, f.context));
+    assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: f.event.id } }), 0);
+  });
+}
+
+test('historical charge decisions recheck Company authority and reject forged scope', async () => {
+  const f = await acceptedChargeFixture('authority');
+  const outsider = await db.user.create({ data: { email: `${dbName}-charge-outsider@example.test`, displayName: 'No charge authority' } });
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, { ...f.context, userId: outsider.id }));
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, { ...f.context, role: 'MEMBER' }));
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, { ...f.context, companyIds: [conflictCompanyId] }));
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, { ...f.context, operatingGroupId: 'foreign-group' }));
+  const membership = await db.companyMembership.findUniqueOrThrow({ where: { userId_companyId: { userId, companyId } } });
+  await db.companyMembership.update({ where: { id: membership.id }, data: { role: 'MEMBER' } });
+  try { await assert.rejects(service.acceptHistoricalStatementCharges(f.request, f.context)); }
+  finally { await db.companyMembership.update({ where: { id: membership.id }, data: { role: membership.role } }); }
+  assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: f.event.id } }), 0);
+});
+
+test('concurrent historical approvals reserve the purchase and deduction exactly once', async () => {
+  const f = await acceptedChargeFixture('concurrent');
+  const result = await Promise.allSettled([service.acceptHistoricalStatementCharges(f.request, f.context), service.acceptHistoricalStatementCharges(f.request, f.context)]);
+  assert.deepEqual(result.map(item => item.status).sort(), ['fulfilled', 'rejected']);
+  assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: f.event.id, unmatchedAt: null } }), 1);
+  const rows = (await service.preview(f.context, { truck: f.truck.unitNumber, pageSize: 10000 })).rows;
+  assert.equal(rows.filter(row => row.statementEvidence?.lineIds.includes(f.line.id)).length, 1);
+});
+
+test('historical charge acceptance flags a Company conflict without rewriting operating history', async () => {
+  const f = await acceptedChargeFixture('operating-conflict');
+  await db.companyMembership.upsert({ where: { userId_companyId: { userId, companyId: conflictCompanyId } }, create: { userId, companyId: conflictCompanyId, role: 'OWNER' }, update: { role: 'OWNER' } });
+  await db.pilotFuelingEvent.update({ where: { id: f.event.id }, data: { truckId: f.truck.id, truckMatchStatus: 'MATCHED' } });
+  await new TruckCompanyHistoryService(db).change(f.truck.id, { action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Independent synthetic operating timeline.', reason: 'Operating Company differs from accepted charge Company.', periods: [{ companyId: conflictCompanyId, effectiveFrom: '2026-09-01', effectiveTo: '2026-10-01' }] }, userId);
+  const history = await db.truckCompanyAffiliation.findMany({ where: { truckId: f.truck.id } });
+  const context = { ...f.context, companyIds: [companyId, conflictCompanyId] };
+  await service.acceptHistoricalStatementCharges(f.request, context);
+  const row = (await service.preview(context, { truck: f.truck.unitNumber, pageSize: 10000 })).rows.find(row => row.pilotEventId === f.event.id)!;
+  assert.equal(row.status, 'MATCHED'); assert.equal(row.companyId, companyId); assert.equal(row.historicalCompanyId, conflictCompanyId);
+  assert.equal(row.chargeCompanyDiffersFromHistory, true);
+  assert.deepEqual(await db.truckCompanyAffiliation.findMany({ where: { truckId: f.truck.id } }), history);
+});
+
+test('historical charge acceptance cannot use inaccessible Company evidence or consume another manual reservation', async () => {
+  const foreignTruck = await db.truck.create({ data: { companyId: conflictCompanyId, unitNumber: 'FOREIGN-CHARGE' } });
+  const foreign = await acceptedChargeFixture('inaccessible-company', { archiveCompanyId: conflictArchiveCompanyId, truckId: foreignTruck.id, unit: foreignTruck.unitNumber, vin: '' });
+  await assert.rejects(service.acceptHistoricalStatementCharges(foreign.request, foreign.context));
+  const f = await acceptedChargeFixture('reserved-deduction');
+  const other = await addEvent({ key: 'reservation-other-event', date: '2026-09-15', unit: 'OTHER', amount: minor(12345), locationNumber: 'different-merchant' });
+  const reservation = await service.createManualMatch({ pilotEventId: other.id, archiveLineId: f.line.id, reason: 'Synthetic explicit reservation; target cannot consume the same deduction.' }, f.context);
+  await assert.rejects(service.acceptHistoricalStatementCharges(f.request, f.context));
+  assert.equal((await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: reservation.id } })).unmatchedAt, null);
+});
+
+test('historical charge batches roll back every approval if one evidence pair is invalid', async () => {
+  const good = await acceptedChargeFixture('atomic-good');
+  const bad = await acceptedChargeFixture('atomic-bad', { dieselQuantity: '21.00' });
+  await assert.rejects(service.acceptHistoricalStatementCharges({ ...good.request, charges: [...good.request.charges, ...bad.request.charges] }, good.context));
+  assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: { in: [good.event.id, bad.event.id] } } }), 0);
+});
+
+test('historical charge acceptance supersedes only the same identity-only pairing with both audit decisions preserved', async () => {
+  const f = await acceptedChargeFixture('promote-identity');
+  const pairing = await service.createManualMatch({ pilotEventId: f.event.id, archiveLineId: f.line.id, reason: 'Synthetic exact purchase identity without financial charge approval.' }, f.context);
+  const [approval] = await service.acceptHistoricalStatementCharges(f.request, f.context);
+  const original = await db.fuelReconciliationManualMatch.findUniqueOrThrow({ where: { id: pairing.id } });
+  assert.notEqual(approval.id, original.id); assert.ok(original.unmatchedAt); assert.equal(original.acceptedChargeMinor, null);
+  for (const key of ['pilotEventId', 'archiveLineId', 'reason', 'createdByUserId', 'createdAt'] as const) assert.deepEqual(original[key], pairing[key]);
+  assert.equal(approval.acceptedChargeMinor, minor(10900));
+  assert.equal(await db.financialAuditEvent.count({ where: { action: 'FUEL_RECONCILIATION_MANUAL_UNMATCHED', before: { path: ['matchId'], equals: pairing.id } } }), 1);
+  assert.equal(await db.fuelReconciliationManualMatch.count({ where: { pilotEventId: f.event.id, unmatchedAt: null } }), 1);
+});
+
+test('historical charge displays the charged truck history independently of an outdated Pilot assignment', async () => {
+  const f = await acceptedChargeFixture('different-truck-history');
+  await db.companyMembership.upsert({ where: { userId_companyId: { userId, companyId: conflictCompanyId } }, create: { userId, companyId: conflictCompanyId, role: 'OWNER' }, update: { role: 'OWNER' } });
+  const old = await db.truck.create({ data: { companyId, unitNumber: 'OLD-PILOT-ASSIGNMENT' } });
+  const history = new TruckCompanyHistoryService(db);
+  for (const [truckId, operatingCompany] of [[old.id, companyId], [f.truck.id, conflictCompanyId]]) {
+    await history.change(truckId, { action: 'CONFIRM', expectedRevisionId: null, source: 'MANUAL_CONFIRMATION', sourceReference: 'Independent synthetic operating history.', reason: 'History must follow the displayed charged truck.', periods: [{ companyId: operatingCompany, effectiveFrom: '2026-09-01', effectiveTo: '2026-10-01' }] }, userId);
+  }
+  const original = await db.pilotFuelingEvent.update({ where: { id: f.event.id }, data: { truckId: old.id, truckMatchStatus: 'MATCHED' } });
+  const context = { ...f.context, companyIds: [companyId, conflictCompanyId] };
+  await service.acceptHistoricalStatementCharges(f.request, context);
+  const row = (await service.preview(context, { truck: f.truck.unitNumber, pageSize: 10000 })).rows.find(row => row.pilotEventId === f.event.id)!;
+  assert.equal(row.status, 'MATCHED'); assert.equal(row.truckId, f.truck.id); assert.equal(row.historicalCompanyId, conflictCompanyId);
+  assert.equal(row.chargeCompanyDiffersFromHistory, true); assert.equal(row.currentCompanyId, companyId);
+  assert.equal(row.pilotSourceUnit, 'OLD-LABEL'); assert.equal(row.ownerAttribution, null);
+  assert.deepEqual(await db.pilotFuelingEvent.findUniqueOrThrow({ where: { id: f.event.id } }), original);
+});

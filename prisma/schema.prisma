@@ -2607,21 +2607,24 @@ model ArchiveLine {
 /// Reconciliation-only pairing. Source evidence and posted Accounting remain unchanged.
 /// Identity fields are immutable; an audited unmatch only closes the active pairing.
 model FuelReconciliationManualMatch {
-  id                String            @id @default(cuid())
-  operatingGroupId  String
-  pilotEventId      String
-  archiveLineId     String
-  reason            String
-  createdByUserId   String
-  createdAt         DateTime          @default(now())
-  unmatchedByUserId String?
-  unmatchReason     String?
-  unmatchedAt       DateTime?
-  operatingGroup    OperatingGroup    @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  pilotEvent        PilotFuelingEvent @relation(fields: [pilotEventId], references: [id], onDelete: Restrict)
-  archiveLine       ArchiveLine       @relation(fields: [archiveLineId], references: [id], onDelete: Restrict)
-  createdBy         User              @relation("FuelReconciliationMatchActor", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  unmatchedBy       User?             @relation("FuelReconciliationUnmatchActor", fields: [unmatchedByUserId], references: [id], onDelete: Restrict)
+  // Exact historical charge approval, separate from operating history and future pricing.
+  acceptedChargeMinor   BigInt?
+  acceptedChargeThrough DateTime?         @db.Date
+  id                    String            @id @default(cuid())
+  operatingGroupId      String
+  pilotEventId          String
+  archiveLineId         String
+  reason                String
+  createdByUserId       String
+  createdAt             DateTime          @default(now())
+  unmatchedByUserId     String?
+  unmatchReason         String?
+  unmatchedAt           DateTime?
+  operatingGroup        OperatingGroup    @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  pilotEvent            PilotFuelingEvent @relation(fields: [pilotEventId], references: [id], onDelete: Restrict)
+  archiveLine           ArchiveLine       @relation(fields: [archiveLineId], references: [id], onDelete: Restrict)
+  createdBy             User              @relation("FuelReconciliationMatchActor", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  unmatchedBy           User?             @relation("FuelReconciliationUnmatchActor", fields: [unmatchedByUserId], references: [id], onDelete: Restrict)
 
   @@index([operatingGroupId, createdAt, id])
   @@index([pilotEventId, unmatchedAt])

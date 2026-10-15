@@ -27,9 +27,11 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const historicalCharge = body.action === 'ACCEPT_HISTORICAL_STATEMENT_CHARGES';
     const historicalMapping = body.action === 'RESOLVE_HISTORICAL_TRUCK_MAPPING';
     const manualMatch = body.action === 'MANUAL_MATCH';
-    const context = await financialControlAuthorization.requireContext(historicalMapping || manualMatch ? 'OWNER' : 'ADMIN');
+    const context = await financialControlAuthorization.requireContext(historicalCharge || historicalMapping || manualMatch ? 'OWNER' : 'ADMIN');
+    if (historicalCharge) return reply(await fuelDeductionReconciliation.acceptHistoricalStatementCharges(body, context), 201);
     if (historicalMapping) return reply(await fuelDeductionReconciliation.createHistoricalTruckMapping(body, context), 201);
     if (manualMatch) return reply(await fuelDeductionReconciliation.createManualMatch(body, context), 201);
     return reply(await fuelDeductionReconciliation.createPolicy(body, context), 201);
