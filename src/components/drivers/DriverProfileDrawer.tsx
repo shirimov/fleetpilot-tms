@@ -1,5 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import DriverDocumentsPanel from "./DriverDocumentsPanel";
+import DriverQualificationPanel from "./DriverQualificationPanel";
+import DriverActivityPanel from "./DriverActivityPanel";
+import { documentLabels } from "@/lib/drivers/qualification";
 import ModalLayer from "@/components/ui/ModalLayer";
 import {
   displayDate,
@@ -56,10 +60,12 @@ export default function DriverProfileDrawer({
   driver,
   onClose,
   onEdit,
+  onDataChanged,
 }: {
   driver: DriverRecord;
   onClose: () => void;
   onEdit: (driver: DriverRecord) => void;
+  onDataChanged?: () => void;
 }) {
   const [profile, setProfile] = useState<DriverProfile | null>(null);
   const [tab, setTab] = useState<Tab>("Overview");
@@ -82,6 +88,10 @@ export default function DriverProfileDrawer({
       });
     return () => controller.abort();
   }, [driver.id, attempt]);
+  function changed() {
+    setAttempt((value) => value + 1);
+    onDataChanged?.();
+  }
   return (
     <ModalLayer
       className="drivers-ui driver-drawer-layer"
@@ -238,11 +248,70 @@ export default function DriverProfileDrawer({
                       {displayDate(profile.createdAt)}
                     </Field>
                   </dl>
-                  <div className="driver-info">
-                    Employment dates, employment type and duty status are not
-                    recorded in the current Drivers backend. Record creation is
-                    not a hire date.
-                  </div>
+                  <h3>Employment & team</h3>
+                  <dl className="driver-field-grid">
+                    <Field label="Employment status">
+                      {profile.employmentStatus?.replaceAll("_", " ") ||
+                        "Not recorded"}
+                    </Field>
+                    <Field label="Driver type">
+                      {profile.driverType?.replaceAll("_", " ") ||
+                        "Not recorded"}
+                    </Field>
+                    <Field label="Employment start">
+                      {displayDate(profile.employmentStartDate || null)}
+                    </Field>
+                    <Field label="Termination date">
+                      {displayDate(profile.terminationDate || null)}
+                    </Field>
+                    <Field label="Home terminal">{profile.homeTerminal}</Field>
+                    <Field label="Driver team">
+                      {profile.team?.name || "Unassigned"}
+                    </Field>
+                    <Field label="Emergency contact">
+                      {profile.canReadDocuments === false
+                        ? "Restricted"
+                        : profile.emergencyContactName}
+                    </Field>
+                    <Field label="Emergency phone / relationship">
+                      {profile.canReadDocuments === false
+                        ? "Restricted"
+                        : [
+                            profile.emergencyContactPhone,
+                            profile.emergencyContactRelation,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                    </Field>
+                  </dl>
+                  <p className="driver-info">
+                    Employment status is separate from ELD duty status. Duty
+                    data is not connected.
+                  </p>
+                  {profile.documentAlerts && (
+                    <section className="driver-alert-summary">
+                      <h3>Document alerts</h3>
+                      <div className="driver-field-grid">
+                        <Field label="Expired">
+                          {String(profile.documentAlerts.expired)}
+                        </Field>
+                        <Field label="Expiring within 30 / 60 / 90 days">{`${profile.documentAlerts.within30} / ${profile.documentAlerts.within60} / ${profile.documentAlerts.within90}`}</Field>
+                      </div>
+                      <p className="driver-muted">
+                        Missing from the internal checklist:{" "}
+                        {profile.documentAlerts.missingRequired
+                          .map(
+                            (type) =>
+                              documentLabels[
+                                type as keyof typeof documentLabels
+                              ],
+                          )
+                          .join(", ") || "None"}
+                        . Counts use current versions only; 30/60/90-day windows
+                        are cumulative. Files do not establish compliance.
+                      </p>
+                    </section>
+                  )}
                   <h3>
                     Recent assignments{" "}
                     <button
@@ -278,21 +347,19 @@ export default function DriverProfileDrawer({
                   )}
                 </>
               )}
-              {tab === "Documents" && (
-                <>
-                  <h3>Driver documents</h3>
-                  <dl className="driver-field-grid">
-                    <Field label="CDL number">{profile.licenseNum}</Field>
-                    <Field label="CDL expiration">Not recorded</Field>
-                  </dl>
-                  <Missing title="Document tracking needs backend support">
-                    Medical certificates, MVR reports, expiration dates and
-                    secure driver file uploads are not supported by the current
-                    model. A CDL number alone does not establish qualification
-                    or document validity.
+              {tab === "Documents" &&
+                (profile.canReadDocuments === false ? (
+                  <Missing title="Document access restricted">
+                    Private documents and CDL details are limited to authorized
+                    fleet/safety readers and administrators.
                   </Missing>
-                </>
-              )}
+                ) : (
+                  <DriverDocumentsPanel
+                    driverId={driver.id}
+                    canEdit={driver.canEdit !== false}
+                    onChanged={changed}
+                  />
+                ))}
               {tab === "Assignments & Trips" && (
                 <>
                   <h3>Assignments & trips</h3>
@@ -443,14 +510,20 @@ export default function DriverProfileDrawer({
                     </a>
                   </>
                 )}
+              {tab === "Safety" && profile.canReadDocuments !== false && (
+                <DriverQualificationPanel
+                  driverId={driver.id}
+                  canEdit={driver.canEdit !== false}
+                  onChanged={changed}
+                />
+              )}
               {tab === "Safety" && (
                 <>
                   <h3>Safety & qualification</h3>
                   <div className="driver-info">
-                    Qualification, MVR status, violations and safety scores are
-                    not recorded here. Orientation completion does not establish
-                    compliance. The future Fleet → Safety integration is not
-                    connected.
+                    Incident history and safety scores belong to the future
+                    Fleet → Safety module. Orientation completion and
+                    qualification files do not establish compliance.
                   </div>
                   <h3>Orientation records</h3>
                   {profile.driverOrientations.length ? (
@@ -487,11 +560,18 @@ export default function DriverProfileDrawer({
                         </p>
                       </article>
                     ))}
-                  <Missing title="Driver notes and attachments need backend support">
-                    General driver notes, attachments and an audit timeline are
-                    not supported yet. Existing orientation notes appear above
-                    when recorded.
-                  </Missing>
+                  {profile.canReadDocuments !== false ? (
+                    <DriverActivityPanel driverId={driver.id} />
+                  ) : (
+                    <p className="driver-info">
+                      Private documents and audit history require authorized
+                      fleet/safety access.
+                    </p>
+                  )}
+                  <p className="driver-muted">
+                    Driver files are managed in Documents. Existing orientation
+                    notes are preserved above.
+                  </p>
                   <dl className="driver-field-grid">
                     <Field label="Record created">
                       {displayDate(profile.createdAt)}

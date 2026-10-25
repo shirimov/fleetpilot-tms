@@ -11,6 +11,7 @@ export type DriverAccess = {
   canRead: boolean;
   canEdit: boolean;
   canViewCompensation: boolean;
+  canReadDocuments: boolean;
 };
 
 // Job roles grant Drivers reads only, never company administration or writes.
@@ -30,7 +31,12 @@ export class DriverAuthorizationService {
 
   async accessFor(context: CompanyAuthorization): Promise<DriverAccess> {
     if (context.role === "ADMIN" || context.role === "OWNER") {
-      return { canRead: true, canEdit: true, canViewCompensation: true };
+      return {
+        canRead: true,
+        canEdit: true,
+        canViewCompensation: true,
+        canReadDocuments: true,
+      };
     }
     const employee = await this.database.employee.findFirst({
       where: {
@@ -40,9 +46,15 @@ export class DriverAuthorizationService {
         employmentStatus: "ACTIVE",
         role: { in: [...DRIVER_READER_ROLES] },
       },
-      select: { id: true },
+      select: { id: true, role: true },
     });
-    return { canRead: !!employee, canEdit: false, canViewCompensation: false };
+    return {
+      canRead: !!employee,
+      canEdit: false,
+      canViewCompensation: false,
+      canReadDocuments:
+        !!employee && ["MANAGER", "SAFETY", "ADMIN"].includes(employee.role),
+    };
   }
 
   async requireRead() {
@@ -56,7 +68,9 @@ export function isDriverReadPath(pathname: string) {
   return (
     pathname === "/drivers" ||
     pathname === "/api/drivers" ||
-    /^\/api\/drivers\/[^/]+\/?$/.test(pathname)
+    /^\/api\/drivers\/[^/]+(?:\/(?:documents(?:\/[^/]+(?:\/versions\/[^/]+)?)?|qualification|activity))?\/?$/.test(
+      pathname,
+    )
   );
 }
 export const driverAuthorizationService = new DriverAuthorizationService();

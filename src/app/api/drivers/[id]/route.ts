@@ -1,8 +1,7 @@
+import { saveDriver } from "@/lib/drivers/driver-mutations";
+import { driverRouteError } from "@/lib/drivers/route-response";
+import { documentAlerts } from "@/lib/drivers/qualification";
 import { driverAuthorizationService } from "@/lib/drivers/driver-authorization";
-import {
-  DriverValidationError,
-  parseDriverInput,
-} from "@/lib/drivers/validation";
 import { driverProfileQuery } from "@/lib/drivers/profile-query";
 import { PRIVATE_NO_STORE_HEADERS } from "@/lib/security/cache-headers";
 import { prisma } from "@/lib/prisma";
@@ -16,39 +15,13 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const context = await fleetAuthorizationService.requireDriver(id);
-    await fleetAuthorizationService.requireCompany("ADMIN");
-    const body = parseDriverInput(await request.json());
-    if (body.truckId) {
-      const truck = await prisma.truck.findFirst({
-        where: { id: body.truckId, companyId: context.companyId },
-        select: { id: true },
-      });
-      if (!truck)
-        return NextResponse.json(
-          { error: "Truck is not available in the selected company." },
-          { status: 400 },
-        );
-    }
-    const driver = await prisma.driver.update({
-      where: { id, companyId: context.companyId },
-      data: {
-        ...body,
-      },
-    });
-    return NextResponse.json(driver, { headers: PRIVATE_NO_STORE_HEADERS });
+    const context = await fleetAuthorizationService.requireCompany("ADMIN");
+    return NextResponse.json(
+      await saveDriver(context, await request.json(), id),
+      { headers: PRIVATE_NO_STORE_HEADERS },
+    );
   } catch (error) {
-    if (error instanceof DriverValidationError || error instanceof SyntaxError)
-      return NextResponse.json(
-        {
-          error:
-            error instanceof DriverValidationError
-              ? error.message
-              : "Invalid JSON.",
-        },
-        { status: 400 },
-      );
-    return fleetRouteErrorResponse(error, "Failed to update driver");
+    return driverRouteError(error);
   }
 }
 
@@ -85,9 +58,22 @@ export async function GET(
     );
     if (!driver)
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const { documents, ...record } = driver;
     return NextResponse.json(
       {
-        ...driver,
+        ...record,
+        documentAlerts: documentAlerts(documents),
+        canReadDocuments: context.access.canReadDocuments,
+        licenseNum: context.access.canReadDocuments ? driver.licenseNum : null,
+        emergencyContactName: context.access.canReadDocuments
+          ? driver.emergencyContactName
+          : null,
+        emergencyContactPhone: context.access.canReadDocuments
+          ? driver.emergencyContactPhone
+          : null,
+        emergencyContactRelation: context.access.canReadDocuments
+          ? driver.emergencyContactRelation
+          : null,
         canEdit: context.access.canEdit,
         canViewCompensation: context.access.canViewCompensation,
         payType: context.access.canViewCompensation ? driver.payType : null,

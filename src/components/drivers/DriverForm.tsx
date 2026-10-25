@@ -11,6 +11,15 @@ const defaultForm = {
   payType: "PERCENTAGE",
   payRate: "",
   truckId: "",
+  employmentStatus: "",
+  driverType: "",
+  employmentStartDate: "",
+  terminationDate: "",
+  homeTerminal: "",
+  emergencyContactName: "",
+  emergencyContactPhone: "",
+  emergencyContactRelation: "",
+  teamName: "",
 };
 export default function DriverForm({
   driver,
@@ -32,6 +41,15 @@ export default function DriverForm({
           payType: driver.payType || "PERCENTAGE",
           payRate: String(driver.payRate),
           truckId: driver.truckId || "",
+          employmentStatus: driver.employmentStatus || "",
+          driverType: driver.driverType || "",
+          employmentStartDate: driver.employmentStartDate?.slice(0, 10) || "",
+          terminationDate: driver.terminationDate?.slice(0, 10) || "",
+          homeTerminal: driver.homeTerminal || "",
+          emergencyContactName: driver.emergencyContactName || "",
+          emergencyContactPhone: driver.emergencyContactPhone || "",
+          emergencyContactRelation: driver.emergencyContactRelation || "",
+          teamName: driver.team?.name || "",
         }
       : defaultForm,
   );
@@ -86,7 +104,10 @@ export default function DriverForm({
         {
           method: driver ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
+          body: JSON.stringify({
+            ...form,
+            ...(driver ? { expectedUpdatedAt: driver.updatedAt } : {}),
+          }),
         },
       );
       if (!response.ok) {
@@ -281,6 +302,94 @@ export default function DriverForm({
             />
           </div>
 
+          <div className="driver-info">
+            Assigned company: the currently selected company. Employment status
+            is separate from ELD duty status.
+          </div>
+          <div className="driver-field-grid">
+            <label>
+              Employment status
+              <select
+                aria-label="Employment status"
+                className="w-full mt-1"
+                value={form.employmentStatus}
+                onChange={(e) =>
+                  setForm({ ...form, employmentStatus: e.target.value })
+                }
+              >
+                <option value="">Not recorded</option>
+                <option value="ACTIVE">Active</option>
+                <option value="INACTIVE">Inactive</option>
+                <option value="TERMINATED">Terminated</option>
+                <option value="ON_LEAVE">On Leave</option>
+              </select>
+            </label>
+            <label>
+              Driver type
+              <select
+                aria-label="Driver type"
+                className="w-full mt-1"
+                value={form.driverType}
+                onChange={(e) =>
+                  setForm({ ...form, driverType: e.target.value })
+                }
+              >
+                <option value="">Not recorded</option>
+                <option value="COMPANY">Company</option>
+                <option value="OWNER_OPERATOR">Owner-Operator</option>
+                <option value="LEASE_OPERATOR">Lease-Operator</option>
+              </select>
+            </label>
+            <label>
+              Employment start
+              <input
+                aria-label="Employment start date"
+                className="w-full mt-1"
+                type="date"
+                value={form.employmentStartDate}
+                onChange={(e) =>
+                  setForm({ ...form, employmentStartDate: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              Termination date
+              <input
+                aria-label="Termination date"
+                className="w-full mt-1"
+                type="date"
+                value={form.terminationDate}
+                onChange={(e) =>
+                  setForm({ ...form, terminationDate: e.target.value })
+                }
+              />
+            </label>
+          </div>
+          {(
+            [
+              ["homeTerminal", "Home terminal"],
+              ["teamName", "Driver team"],
+              ["emergencyContactName", "Emergency contact name"],
+              ["emergencyContactPhone", "Emergency contact phone"],
+              ["emergencyContactRelation", "Emergency contact relationship"],
+            ] as const
+          ).map(([key, label]) => (
+            <label className="block" key={key}>
+              {label}
+              <input
+                aria-label={label}
+                maxLength={key === "emergencyContactPhone" ? 50 : 100}
+                className="w-full mt-1"
+                value={form[key]}
+                onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+              />
+              {key === "teamName" && (
+                <small className="driver-muted">
+                  Creates or reuses a team in the selected company.
+                </small>
+              )}
+            </label>
+          ))}
           <div className="flex gap-3 pt-2">
             <button
               disabled={saving || trucksLoading || truckError}

@@ -547,6 +547,9 @@ test.afterAll(async () => {
   await prisma.load.deleteMany({
     where: { companyId: { in: [companyA, companyB].filter(Boolean) } },
   });
+  await prisma.driverAudit.deleteMany({
+    where: { driverId: { in: driverIds } },
+  });
   await prisma.driver.deleteMany({ where: { id: { in: driverIds } } });
   await prisma.truck.deleteMany({
     where: { id: { in: [truckA, truckB].filter(Boolean) } },

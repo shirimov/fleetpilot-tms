@@ -1,4 +1,83 @@
-# Drivers redesign delivery
+# Drivers Phase 2 delivery
+
+Branch `feature/drivers-ui-redesign`, Draft [PR #99](https://github.com/shirimov/fleetpilot-tms/pull/99). No merge, deployment, production connection or production migration was performed. The Phase 2 report below supersedes the historical Phase 1 report retained at the end.
+
+## Functional additions
+
+- **Employment:** Active, Inactive, Terminated, On Leave; Company, Owner-Operator, Lease-Operator; start/termination dates; home terminal; emergency contact name/phone/relationship; existing selected company/truck assignment; company-scoped DriverTeam relation. Unknown legacy values remain unknown. Employment and truck assignment remain separate from ELD duty status.
+- **Documents:** CDL front/back, medical certificate, MVR, application, employment agreement, road test and titled other qualification documents. Administrators can upload, replace and correct issue/expiration dates. Each replacement/date correction appends a version, preserving old files and metadata. Paginated version history supports authorized downloads. Images support private preview; PDFs always download as attachments.
+- **Expiration:** Current-version-only expired, cumulative 30/60/90-day, missing internal checklist and unknown-expiration tracking. Dashboard window selector counts documents across the entire selected-company roster independently of search filters. Driver-level alerts appear in Overview and Documents. UTC calendar dates include the expiration day; expiration begins the following UTC day.
+- **Qualification:** Attributed append-only human review records with Pending, Reviewed or Needs Follow-up outcomes and notes. No outcome, file, expiration date or completed orientation establishes legal compliance. Existing orientation summaries remain. Broad incident/safety management stays in the future Fleet Safety module.
+- **Activity:** Employment updates, uploads/replacements/date corrections, downloads/previews and qualification reviews are attributed and timestamped. Employment history records status/type/date transitions; audit metadata excludes contact/CDL values. Review, version and activity lists paginate at 20 records per page.
+- **Preserved:** Approved navy/white/blue dashboard, global navigation, roster and six-tab responsive drawer; search/filter/sort/pagination; add/edit and truck assignment; scoped loads/settlements/orientation notes; loading/error/empty states. Employment badges/filter supplement assignment indicators. No fictitious duty/location/MVR-clear/safety values are introduced.
+
+## Additive database migration
+
+`20261025070000_drivers_employment_documents` adds nullable employment/contact/terminal/team fields and DriverTeam, DriverDocument, DriverDocumentVersion, DriverQualificationReview and DriverAudit tables (48 repository migrations total). Existing records, financial fields and integration mappings are retained; no fabricated backfill or destructive alteration occurs.
+
+Explicit composite driver/company and team/company foreign keys enforce tenant ownership for new relations. Indexes support scoped/history/expiration queries. Unique document slots/version sequences and database date/file-size checks protect metadata. Employment/team changes and audits share transactions. Document writes lock the scoped driver and check the expected version before appending version/audit records. Stale writes return 409. UI employment edits use updatedAt conflict checks; legacy clients may omit that optional field.
+
+The verifier first applies the previous 47 migrations, inserts synthetic legacy driver/truck/load/settlement fixtures, applies migration 48, and compares persisted values, including null new employment fields. No `db push`, production seed, schema reset or unrelated schema repair is used.
+
+## Access and private storage
+
+| Selected-company identity | Operational reads | CDL/emergency contacts/documents/reviews/activity | Write | Compensation |
+| --- | --- | --- | --- | --- |
+| Active OWNER / ADMIN membership | Yes | Yes | Yes | Scoped |
+| MEMBER with linked active Employee role MANAGER / SAFETY / ADMIN | Yes | Read only | No | No |
+| MEMBER with linked active Employee role DISPATCHER / LEAD_DISPATCH / UPDATER | Yes, including aggregate alerts | No | No | No |
+| Unlinked/inactive/terminated/foreign employee or unsupported role | No | No | No | No |
+
+Employee roles do not grant company administration. Active membership, employee linkage and selected company are checked on every request. Foreign driver/document/version relationships return 404 for authorized document readers; denied document roles receive 403. Existing load/settlement/truck scoping remains. The retained driver DELETE endpoint returns 409 for every authorized own-company driver, including unlinked drivers, and never deletes. No document/version/review deletion endpoints are added.
+
+The existing private filesystem abstraction stores random-key files in a separate `driver-documents` namespace under `PRIVATE_FILE_STORAGE_ROOT` (default `.data`, outside `public`). Storage keys are excluded from DTOs. New private directories use mode 0700 and files 0600. Public-directory storage and symlinked document namespaces are rejected. Upload streams are bounded even without Content-Length (10 MB per file plus bounded multipart metadata). Extension, MIME, signature, filename and dates are validated. Downloads verify size/SHA-256 and the full tenant/driver/document/version relationship, record access in the audit, and use private/no-store, nosniff and sandbox CSP headers. Only images may preview inline. This validation is not antivirus scanning or proof of document authenticity.
+
+## Verification results
+
+Reproduce with `bash scripts/verify-drivers-db.sh --phase2-regression`. Requires installed dependencies, Playwright Chromium and the existing local PostgreSQL/Node Docker images. Tests use disposable PostgreSQL 17.5, tmpfs, an internal Docker network, no published Docker ports and a dedicated loopback relay restricted to `fleetpilot_drivers_verify`. Synthetic signed sessions exercise normal authentication. No application auth bypass exists. Teardown removes the test app, relay, database, network and synthetic private storage.
+
+| Check | Result |
+| --- | --- |
+| Previous-47 to new-48 migration preservation | Passed |
+| Focused Drivers unit checks | 10 passed |
+| Existing authenticated persistence/isolation/DELETE/browser tests | 8 passed |
+| New Phase 2 real HTTP/database/browser tests | 6 passed |
+| Existing responsive/accessibility/UI regressions | 6 passed |
+| Full regression suite | 486 passed, 0 failed |
+| Prisma format / validate / generate | Passed |
+| TypeScript | `npx tsc --noEmit` passed; no `typecheck` npm script exists |
+| Changed-file lint | Passed, no warnings |
+| Full repository lint | Existing 97 errors / 108 warnings; unchanged baseline |
+| Production build | Passed |
+
+Phase 2 independently reads PostgreSQL after employment writes; checks legacy nulls, teams, stale edit/version conflicts, downloaded bytes, private/cross-company/profile-path permissions, dispatch versus safety access, replacement/date history, invalid/oversize uploads without partial writes, attributed reviews/audits and deletion protection. A real authenticated browser edits employment, uploads a medical certificate, opens history, records a review and renders desktop/mobile views.
+
+Initial failures are separated from final results: the broad suite inherited the browser-only AUTH_URL, breaking an unrelated Finance same-origin fixture; the runner now unsets that origin only for unit tests. A Drivers filename-normalization ReferenceError was corrected. Prisma ignored symlinked migration directories in an initial harness attempt; the harness now copies them. Existing repository lint findings remain separate. Prettier was not installed or cached and the registry refused its download; no dependency/lockfile change was made. Prisma formatting and whitespace checks passed.
+
+Fuel, QuickManage, Accounting, shared navigation, provider configuration and financial mutation source files are unchanged by Phase 2. Their existing local tests are included in the regression suite. No Samsara implementation is present in the baseline branch; no integration was added or remapped. No live provider or production verification is claimed. Existing unrelated schema drift (index names, Fuel composite FK and trigger-managed Truck normalization) remains untouched.
+
+## Current screenshots and design comparison
+
+These five images show the **working authenticated application backed by disposable PostgreSQL**, with synthetic `example.test` identities and synthetic private files. They contain no production data.
+
+- [Dashboard](screenshots/drivers-phase2-dashboard.png)
+- [Employment](screenshots/drivers-phase2-employment.png)
+- [Documents](screenshots/drivers-phase2-documents.png)
+- [Qualification review](screenshots/drivers-phase2-qualification.png)
+- [Mobile documents](screenshots/drivers-phase2-mobile.png)
+
+The approved sidebar, white workspace, blue actions, summary cards, searchable roster and right-side six-tab drawer are preserved. Fields live within existing forms/tabs, with compact tables/badges. FleetPilot's existing global header remains; initials replace unavailable photos. The drawer remains wider than the reference for actual records and becomes full-screen on mobile. Duty, maps and unverified safety metrics remain unavailable instead of adopting illustrative design values. Non-Phase-2 screenshots below remain historical mock-fixture captures.
+
+## Remaining limitations
+
+- Local filesystem storage requires a durable private volume, suitable host access, encryption/backups and retention operations before any future deployment. None were configured against production. No antivirus, OCR, e-signature or authenticity verification is added. An uncertain DB commit may leave a private orphan instead of risking deletion of a committed historical file; no history cleanup runs.
+- The seven required document types form a labeled internal checklist, not a configurable carrier/jurisdiction legal policy. No automatic compliance determination or background email/SMS reminders are added.
+- Legacy employment remains unknown until entered. Company transfers, assignment history, ELD duty/location, integration remapping and separate team administration are outside scope. Company-local team names can be created/reused in the employment form.
+- General-purpose notes/file libraries, new financial workflows and broader Fleet Safety remain outside scope. Qualification notes, private documents and audit history work here; orientation notes are preserved.
+
+---
+
+# Historical Phase 1 delivery (superseded above)
 
 Development continues on `feature/drivers-ui-redesign`, PR #99. The follow-up verifies actual PostgreSQL persistence and authorization, preserves the approved UI, and does not merge or deploy. All 47 repository migrations applied to a fresh disposable PostgreSQL 17.5 database. Eight authenticated database/browser tests and all 482 regression tests passed.
 

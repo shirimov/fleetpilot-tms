@@ -34,6 +34,8 @@ export default function DriversPage() {
   const [drivers, setDrivers] = useState<DriverRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [employmentFilter, setEmploymentFilter] = useState("all");
+  const [expirationWindow, setExpirationWindow] = useState<30 | 60 | 90>(30);
   const [query, setQuery] = useState("");
   const [assignment, setAssignment] = useState("all");
   const [payType, setPayType] = useState("all");
@@ -104,6 +106,10 @@ export default function DriversPage() {
             .toLowerCase();
           return (
             haystack.includes(query.trim().toLowerCase()) &&
+            (employmentFilter === "all" ||
+              (employmentFilter === "UNKNOWN"
+                ? !driver.employmentStatus
+                : driver.employmentStatus === employmentFilter)) &&
             (assignment === "all" ||
               (assignment === "assigned"
                 ? !!driver.truck || !!driver.assignmentRestricted
@@ -124,7 +130,7 @@ export default function DriversPage() {
                   `${b.lastName} ${b.firstName}`,
                 ),
         ),
-    [drivers, query, assignment, payType, sort],
+    [drivers, query, assignment, payType, sort, employmentFilter],
   );
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -137,6 +143,7 @@ export default function DriversPage() {
   ).length;
   function resetFilters() {
     setQuery("");
+    setEmploymentFilter("all");
     setAssignment("all");
     setPayType("all");
     setSort("name");
@@ -191,8 +198,15 @@ export default function DriversPage() {
           },
           {
             label: "Documents Expiring",
-            value: "—",
-            help: "Expiration tracking unavailable",
+            value: count(
+              drivers.reduce(
+                (sum, driver) =>
+                  sum +
+                  (driver.documentAlerts?.[`within${expirationWindow}`] || 0),
+                0,
+              ),
+            ),
+            help: `Within ${expirationWindow} days · ${drivers.reduce((sum, driver) => sum + (driver.documentAlerts?.expired || 0), 0)} expired`,
             icon: "document" as const,
             color: "red",
           },
@@ -268,6 +282,38 @@ export default function DriversPage() {
             />
           </label>
           <label>
+            Employment
+            <select
+              aria-label="Filter employment status"
+              value={employmentFilter}
+              onChange={(e) => {
+                setEmploymentFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">All employment</option>
+              <option value="ACTIVE">Active</option>
+              <option value="INACTIVE">Inactive</option>
+              <option value="TERMINATED">Terminated</option>
+              <option value="ON_LEAVE">On Leave</option>
+              <option value="UNKNOWN">Not recorded</option>
+            </select>
+          </label>
+          <label>
+            Expiration window
+            <select
+              aria-label="Expiration window"
+              value={expirationWindow}
+              onChange={(e) =>
+                setExpirationWindow(Number(e.target.value) as 30 | 60 | 90)
+              }
+            >
+              <option value="30">30 days</option>
+              <option value="60">60 days</option>
+              <option value="90">90 days</option>
+            </select>
+          </label>
+          <label>
             Pay agreement
             <select
               aria-label="Filter by pay type"
@@ -326,7 +372,7 @@ export default function DriversPage() {
               <thead>
                 <tr>
                   <th>Driver</th>
-                  <th>Assignment</th>
+                  <th>Employment / assignment</th>
                   <th>Truck</th>
                   <th>Contact</th>
                   <th>Pay agreement</th>
@@ -358,6 +404,13 @@ export default function DriversPage() {
                       </button>
                     </td>
                     <td>
+                      {driver.employmentStatus && (
+                        <div>
+                          <span className="driver-badge blue">
+                            {driver.employmentStatus.replaceAll("_", " ")}
+                          </span>
+                        </div>
+                      )}
                       <span
                         className={`driver-badge ${driver.truck ? "green" : ""}`}
                       >
@@ -454,13 +507,25 @@ export default function DriversPage() {
         </footer>
       </section>
       <p className="driver-data-note">
-        Assignment indicates a linked truck. Employment, duty and compliance
-        statuses are not available in the current driver records.
+        Assignment indicates a linked truck. Employment status is recorded
+        separately; duty data is not connected. Document alerts are an internal
+        tracking aid, not a legal compliance determination.
       </p>
       {selected && (
         <DriverProfileDrawer
           key={selected.id}
           driver={selected}
+          onDataChanged={() => {
+            void fetch("/api/drivers", { cache: "no-store" })
+              .then(async (response) => {
+                if (response.ok) setDrivers(await response.json());
+              })
+              .catch(() =>
+                setNotice(
+                  "Saved. Refresh the dashboard to update document counts.",
+                ),
+              );
+          }}
           onClose={() => setSelected(null)}
           onEdit={(driver) => {
             setSelected(null);

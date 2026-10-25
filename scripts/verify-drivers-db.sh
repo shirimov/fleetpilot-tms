@@ -36,6 +36,7 @@ cleanup() {
   if [[ "$created_relay" == true ]]; then docker rm -f "$relay" >/dev/null; fi
   if [[ "$created_postgres" == true ]]; then docker rm -f "$postgres" >/dev/null; fi
   if [[ "$created_network" == true ]]; then docker network rm "$network" >/dev/null; fi
+  rm -rf "$logs/private-storage"
   echo "Verification logs: $logs"
 }
 trap cleanup EXIT
@@ -66,13 +67,14 @@ export AUTH_URL=http://127.0.0.1:3124
 export AUTH_TRUST_HOST=true
 export EMAIL_AUTH_ENABLED=false
 export TELEGRAM_ENABLED=false
+export PRIVATE_FILE_STORAGE_ROOT="$logs/private-storage"
 for attempt in {1..30}; do
   if rg -q 'relay ready' "$logs/database-relay.log"; then break; fi
   kill -0 "$bridge_pid"
   sleep 1
 done
 rg -q 'relay ready' "$logs/database-relay.log"
-npx prisma migrate deploy > "$logs/migrations.log" 2>&1
+node scripts/verify-drivers-migration.mjs > "$logs/migrations.log" 2>&1
 node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3124 > "$logs/app.log" 2>&1 &
 app_pid=$!
 for attempt in {1..60}; do
@@ -82,6 +84,13 @@ for attempt in {1..60}; do
 done
 kill -0 "$app_pid"
 curl --fail --silent http://127.0.0.1:3124/api/health >/dev/null
-npx tsx --test src/lib/fleet/driver-profile.test.ts src/lib/fleet/driver-access.test.ts | tee "$logs/drivers-unit.log"
+npx tsx --test src/lib/fleet/driver-profile.test.ts src/lib/fleet/driver-access.test.ts src/lib/fleet/driver-phase2.test.ts | tee "$logs/drivers-unit.log"
 npx playwright test --config playwright.drivers-db.config.ts | tee "$logs/drivers-database.log"
-if [[ "${1:-}" == '--regression' ]]; then npm test | tee "$logs/regression.log"; fi
+if [[ "${1:-}" == '--phase2' ]]; then npx playwright test --config playwright.drivers-phase2.config.ts | tee "$logs/drivers-phase2.log"; fi
+if [[ "${1:-}" == '--phase2-ui' ]]; then npx playwright test --config playwright.drivers-phase2.config.ts --grep 'browser' | tee "$logs/drivers-phase2-ui.log"; fi
+if [[ "${1:-}" == '--phase2-regression' ]]; then
+  npx playwright test --config playwright.drivers-phase2.config.ts | tee "$logs/drivers-phase2.log"
+  npx playwright test --config playwright.drivers.config.ts | tee "$logs/drivers-ui.log"
+fi
+# Unit tests construct their own request origins; do not leak the browser server origin.
+if [[ "${1:-}" == '--regression' || "${1:-}" == '--phase2-regression' ]]; then env -u AUTH_URL npm test | tee "$logs/regression.log"; fi

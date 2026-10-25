@@ -1,8 +1,7 @@
+import { saveDriver } from "@/lib/drivers/driver-mutations";
+import { driverRouteError } from "@/lib/drivers/route-response";
+import { documentAlerts } from "@/lib/drivers/qualification";
 import { driverAuthorizationService } from "@/lib/drivers/driver-authorization";
-import {
-  DriverValidationError,
-  parseDriverInput,
-} from "@/lib/drivers/validation";
 import { PRIVATE_NO_STORE_HEADERS } from "@/lib/security/cache-headers";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
@@ -15,13 +14,37 @@ export async function GET() {
     const drivers = await prisma.driver.findMany({
       where: { companyId: context.companyId },
       include: {
+        team: { select: { id: true, name: true } },
+        documents: {
+          select: {
+            type: true,
+            versions: {
+              orderBy: { version: "desc" },
+              take: 1,
+              select: { expiresAt: true },
+            },
+          },
+        },
         truck: { select: { id: true, unitNumber: true, companyId: true } },
       },
       orderBy: { lastName: "asc" },
     });
     return NextResponse.json(
-      drivers.map((driver) => ({
+      drivers.map(({ documents, ...driver }) => ({
         ...driver,
+        documentAlerts: documentAlerts(documents),
+        canReadDocuments: context.access.canReadDocuments,
+        licenseNum: context.access.canReadDocuments ? driver.licenseNum : null,
+        emergencyContactName: context.access.canReadDocuments
+          ? driver.emergencyContactName
+          : null,
+        emergencyContactPhone: context.access.canReadDocuments
+          ? driver.emergencyContactPhone
+          : null,
+        emergencyContactRelation: context.access.canReadDocuments
+          ? driver.emergencyContactRelation
+          : null,
+
         canEdit: context.access.canEdit,
         canViewCompensation: context.access.canViewCompensation,
         payType: context.access.canViewCompensation ? driver.payType : null,
@@ -53,36 +76,10 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const context = await fleetAuthorizationService.requireCompany("ADMIN");
-    const body = parseDriverInput(await request.json());
-    if (body.truckId) {
-      const truck = await prisma.truck.findFirst({
-        where: { id: body.truckId, companyId: context.companyId },
-        select: { id: true },
-      });
-      if (!truck)
-        return NextResponse.json(
-          { error: "Truck is not available in the selected company." },
-          { status: 400 },
-        );
-    }
-    const driver = await prisma.driver.create({
-      data: {
-        companyId: context.companyId,
-        ...body,
-      },
+    return NextResponse.json(await saveDriver(context, await request.json()), {
+      headers: PRIVATE_NO_STORE_HEADERS,
     });
-    return NextResponse.json(driver, { headers: PRIVATE_NO_STORE_HEADERS });
   } catch (error) {
-    if (error instanceof DriverValidationError || error instanceof SyntaxError)
-      return NextResponse.json(
-        {
-          error:
-            error instanceof DriverValidationError
-              ? error.message
-              : "Invalid JSON.",
-        },
-        { status: 400 },
-      );
-    return fleetRouteErrorResponse(error, "Failed to create driver");
+    return driverRouteError(error);
   }
 }

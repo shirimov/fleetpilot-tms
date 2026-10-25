@@ -4,6 +4,25 @@ export function driverProfileQuery(id: string, companyId: string) {
   return {
     where: { id, companyId },
     select: {
+      employmentStatus: true,
+      driverType: true,
+      employmentStartDate: true,
+      terminationDate: true,
+      homeTerminal: true,
+      emergencyContactName: true,
+      emergencyContactPhone: true,
+      emergencyContactRelation: true,
+      team: { select: { id: true, name: true } },
+      documents: {
+        select: {
+          type: true,
+          versions: {
+            orderBy: { version: "desc" },
+            take: 1,
+            select: { expiresAt: true },
+          },
+        },
+      },
       id: true,
       firstName: true,
       lastName: true,

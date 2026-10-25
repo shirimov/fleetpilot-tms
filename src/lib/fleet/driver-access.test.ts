@@ -34,6 +34,7 @@ test("Drivers job-role access is scoped to verified active company and employmen
     canRead: true,
     canEdit: false,
     canViewCompensation: false,
+    canReadDocuments: false,
   });
   const where = (query as { where: Record<string, unknown> }).where;
   assert.equal(where.userId, "verified-user");
@@ -44,6 +45,7 @@ test("Drivers job-role access is scoped to verified active company and employmen
     canRead: true,
     canEdit: true,
     canViewCompensation: true,
+    canReadDocuments: true,
   });
 });
 test("unlinked employees fail closed and the exception cannot open unrelated paths", async () => {

@@ -10,6 +10,24 @@ export type DriverRecord = {
   truckId: string | null;
   createdAt: string;
   updatedAt: string;
+  employmentStatus?: "ACTIVE" | "INACTIVE" | "TERMINATED" | "ON_LEAVE" | null;
+  driverType?: "COMPANY" | "OWNER_OPERATOR" | "LEASE_OPERATOR" | null;
+  employmentStartDate?: string | null;
+  terminationDate?: string | null;
+  homeTerminal?: string | null;
+  emergencyContactName?: string | null;
+  emergencyContactPhone?: string | null;
+  emergencyContactRelation?: string | null;
+  team?: { id: string; name: string } | null;
+  canReadDocuments?: boolean;
+  documentAlerts?: {
+    expired: number;
+    within30: number;
+    within60: number;
+    within90: number;
+    unknownExpiry: number;
+    missingRequired: string[];
+  };
   assignmentRestricted?: boolean;
   canEdit?: boolean;
   canViewCompensation?: boolean;

@@ -81,6 +81,35 @@ async function setup(page: Page) {
       },
     }),
   );
+  await page.route("**/api/drivers/*/documents", (route) =>
+    route.fulfill({
+      json: {
+        documents: [],
+        alerts: {
+          expired: 0,
+          within30: 0,
+          within60: 0,
+          within90: 0,
+          unknownExpiry: 0,
+          missingRequired: [
+            "CDL_FRONT",
+            "CDL_BACK",
+            "MEDICAL_CERTIFICATE",
+            "MVR",
+            "APPLICATION",
+            "EMPLOYMENT_AGREEMENT",
+            "ROAD_TEST",
+          ],
+        },
+      },
+    }),
+  );
+  await page.route("**/api/drivers/*/qualification?**", (route) =>
+    route.fulfill({ json: { reviews: [], totalPages: 1, page: 1, total: 0 } }),
+  );
+  await page.route("**/api/drivers/*/activity?**", (route) =>
+    route.fulfill({ json: { events: [], totalPages: 1, page: 1, total: 0 } }),
+  );
   await page.route("**/api/trucks?**", (route) =>
     route.fulfill({
       json: {
@@ -133,7 +162,7 @@ test("dashboard search, filters, pagination and six profile sections", async ({
     ).toHaveAttribute("aria-selected", "true");
     if (label === "Documents")
       await expect(
-        page.getByText("Document tracking needs backend support"),
+        page.getByText("No documents on file", { exact: true }),
       ).toBeVisible();
     if (label === "Pay & Settlements") {
       await expect(page.getByText("$875.00")).toBeVisible();

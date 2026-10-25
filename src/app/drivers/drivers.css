@@ -755,3 +755,57 @@
     transition: none !important;
   }
 }
+
+/* Phase 2 keeps the approved shell, cards and drawer geometry. */
+.driver-document-form {
+  border: 1px solid var(--driver-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 18px 0;
+  background: #f8fbff;
+}
+.driver-document-form label {
+  display: block;
+  font-size: 11px;
+  color: #52627a;
+  margin-bottom: 14px;
+}
+.driver-document-form input,
+.driver-document-form select,
+.driver-document-form textarea {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px;
+  border: 1px solid var(--driver-border);
+  border-radius: 6px;
+  background: white;
+  color: #24354d;
+}
+.driver-document-form textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.driver-document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: #1760ed;
+  margin: 5px 0;
+}
+.driver-document-actions button {
+  cursor: pointer;
+}
+.driver-document-actions a:hover,
+.driver-document-actions button:hover {
+  text-decoration: underline;
+}
+.driver-history,
+.driver-alert-summary {
+  margin-top: 22px;
+}
+.driver-badge.red {
+  color: #b42335;
+  background: #fff0f2;
+}
