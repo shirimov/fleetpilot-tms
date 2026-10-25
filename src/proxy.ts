@@ -1,3 +1,5 @@
+import { DriverAuthorizationService, isDriverReadPath } from '@/lib/drivers/driver-authorization';
+import { AuthorizationService } from '@/lib/auth/authorization';
 import { NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { prisma } from '@/lib/prisma';
@@ -68,6 +70,16 @@ export default auth(async function proxy(request) {
     return NextResponse.redirect(new URL('/tasks', request.url));
   }
   if (requiredModule && !roleCanAccessModule(role, requiredModule)) {
+    if (request.method === 'GET' && isDriverReadPath(pathname)) {
+      try {
+        const authorization = new AuthorizationService(prisma, async () => request.auth);
+        await new DriverAuthorizationService(prisma, authorization).requireRead();
+        return NextResponse.next();
+      } catch {
+        // Keep the existing fail-closed response below for unauthorized staff.
+      }
+    }
+
     if (isApi) {
       return NextResponse.json(
         { error: 'You do not have access to this resource.' },

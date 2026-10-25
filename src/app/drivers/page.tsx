@@ -29,6 +29,8 @@ function Icon({ kind }: { kind: "people" | "truck" | "duty" | "document" }) {
   );
 }
 export default function DriversPage() {
+  const [canEdit, setCanEdit] = useState(false);
+  const [canViewCompensation, setCanViewCompensation] = useState(false);
   const [drivers, setDrivers] = useState<DriverRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -62,6 +64,10 @@ export default function DriversPage() {
               : "Drivers could not be loaded. Please try again.",
         );
       const records = await response.json();
+      setCanEdit(response.headers.get("X-Drivers-Can-Edit") !== "false");
+      setCanViewCompensation(
+        response.headers.get("X-Drivers-Can-View-Compensation") !== "false",
+      );
       if (!Array.isArray(records))
         throw new Error("The driver response was invalid.");
       if (!signal?.aborted) setDrivers(records);
@@ -147,7 +153,7 @@ export default function DriversPage() {
         </div>
         <button
           className="driver-button driver-primary"
-          disabled={loading || !!error}
+          disabled={!canEdit || loading || !!error}
           onClick={() => setForm({ driver: null })}
         >
           <span aria-hidden="true">＋</span> Add Driver
@@ -265,6 +271,7 @@ export default function DriversPage() {
             Pay agreement
             <select
               aria-label="Filter by pay type"
+              disabled={!canViewCompensation}
               value={payType}
               onChange={(event) => {
                 setPayType(event.target.value);

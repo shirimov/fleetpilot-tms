@@ -5,12 +5,14 @@ export type DriverRecord = {
   phone: string | null;
   email: string | null;
   licenseNum: string | null;
-  payType: "PERCENTAGE" | "PER_MILE" | "FLAT";
-  payRate: number;
+  payType: "PERCENTAGE" | "PER_MILE" | "FLAT" | null;
+  payRate: number | null;
   truckId: string | null;
   createdAt: string;
   updatedAt: string;
   assignmentRestricted?: boolean;
+  canEdit?: boolean;
+  canViewCompensation?: boolean;
   truck: { id: string; unitNumber: string; make?: string | null } | null;
 };
 export type DriverProfile = DriverRecord & {
@@ -44,6 +46,7 @@ export type DriverProfile = DriverRecord & {
   }[];
 };
 export function payLabel(driver: Pick<DriverRecord, "payType" | "payRate">) {
+  if (driver.payRate == null || driver.payType == null) return "Restricted";
   if (driver.payType === "PERCENTAGE") return `${driver.payRate}% of load`;
   return (
     new Intl.NumberFormat("en-US", {

@@ -1,3 +1,4 @@
+import { driverAuthorizationService } from '@/lib/drivers/driver-authorization';
 import { NextResponse } from 'next/server';
 import { authorizationService } from '@/lib/auth/authorization';
 import { authorizationErrorResponse } from '@/lib/auth/auth-route-response';
@@ -7,6 +8,7 @@ import { prisma } from '@/lib/prisma';
 export async function GET() {
   try {
     const context = await authorizationService.requireActiveCompany();
+    const driverAccess = await driverAuthorizationService.accessFor(context);
     const memberships = await prisma.companyMembership.findMany({
       where: { userId: context.user.id },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -23,6 +25,7 @@ export async function GET() {
           image: null,
         },
         activeCompanyId: context.companyId,
+        driverAccess,
         companies: memberships.map(({ company, role }) => ({
           ...company,
           role,

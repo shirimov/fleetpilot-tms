@@ -1,3 +1,4 @@
+import { driverAuthorizationService } from "@/lib/drivers/driver-authorization";
 import {
   DriverValidationError,
   parseDriverInput,
@@ -35,7 +36,7 @@ export async function PATCH(
         ...body,
       },
     });
-    return NextResponse.json(driver);
+    return NextResponse.json(driver, { headers: PRIVATE_NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof DriverValidationError || error instanceof SyntaxError)
       return NextResponse.json(
@@ -57,12 +58,16 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const context = await fleetAuthorizationService.requireDriver(id);
+    await fleetAuthorizationService.requireDriver(id);
     await fleetAuthorizationService.requireCompany("ADMIN");
-    await prisma.driver.delete({
-      where: { id, companyId: context.companyId },
-    });
-    return NextResponse.json({ ok: true });
+    // Preserve even unlinked records: optional FKs can otherwise silently detach history.
+    return NextResponse.json(
+      {
+        error:
+          "Driver deletion is disabled to preserve historical records. A reviewed archive workflow is required.",
+      },
+      { status: 409, headers: PRIVATE_NO_STORE_HEADERS },
+    );
   } catch (error) {
     return fleetRouteErrorResponse(error, "Failed to delete driver");
   }
@@ -74,7 +79,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const context = await fleetAuthorizationService.requireCompany("ADMIN");
+    const context = await driverAuthorizationService.requireRead();
     const driver = await prisma.driver.findFirst(
       driverProfileQuery(id, context.companyId),
     );
@@ -83,6 +88,13 @@ export async function GET(
     return NextResponse.json(
       {
         ...driver,
+        canEdit: context.access.canEdit,
+        canViewCompensation: context.access.canViewCompensation,
+        payType: context.access.canViewCompensation ? driver.payType : null,
+        payRate: context.access.canViewCompensation ? driver.payRate : null,
+        settlements: context.access.canViewCompensation
+          ? driver.settlements
+          : [],
         assignmentRestricted:
           !!driver.truckId && driver.truck?.companyId !== context.companyId,
         truckId:

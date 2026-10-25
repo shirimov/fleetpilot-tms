@@ -128,7 +128,7 @@ export default function DriverProfileDrawer({
             </div>
           </div>
           <button
-            disabled={driver.assignmentRestricted}
+            disabled={driver.assignmentRestricted || driver.canEdit === false}
             className="driver-button driver-edit"
             onClick={() => onEdit(driver)}
           >
@@ -227,7 +227,7 @@ export default function DriverProfileDrawer({
                   <h3>Pay agreement</h3>
                   <dl className="driver-field-grid">
                     <Field label="Pay type">
-                      {profile.payType.replaceAll("_", " ")}
+                      {profile.payType?.replaceAll("_", " ") || "Restricted"}
                     </Field>
                     <Field label="Agreed rate">{payLabel(profile)}</Field>
                   </dl>
@@ -356,83 +356,93 @@ export default function DriverProfileDrawer({
                       Linked dispatch loads will appear here when available.
                     </Missing>
                   )}
-                  <a className="driver-link" href="/dispatch">
-                    Open Dispatch →
-                  </a>
-                </>
-              )}
-              {tab === "Pay & Settlements" && (
-                <>
-                  <h3>Pay & settlements</h3>
-                  <dl className="driver-field-grid">
-                    <Field label="Pay agreement">{payLabel(profile)}</Field>
-                    <Field label="Payment source">
-                      Existing settlement records
-                    </Field>
-                  </dl>
-                  <p className="driver-muted">
-                    Latest 100 settlements · selected company only. Paid status
-                    reflects the recorded settlement flag.
-                  </p>
-                  {profile.settlements.length ? (
-                    <div className="driver-table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Week ending</th>
-                            <th>Driver pay</th>
-                            <th>Deductions</th>
-                            <th>Net pay</th>
-                            <th>Payment</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {profile.settlements.map((settlement) => (
-                            <tr key={settlement.id}>
-                              <td>{displayDate(settlement.weekEnding)}</td>
-                              <td>{currency(settlement.driverPay)}</td>
-                              <td>
-                                {currency(
-                                  settlement.fuelDeduction +
-                                    settlement.otherDeductions,
-                                )}
-                                <small>
-                                  Fuel {currency(settlement.fuelDeduction)}
-                                  <br />
-                                  Other {currency(settlement.otherDeductions)}
-                                </small>
-                              </td>
-                              <td>
-                                <strong>{currency(settlement.netPay)}</strong>
-                              </td>
-                              <td>
-                                <span
-                                  className={`driver-badge ${settlement.isPaid ? "green" : ""}`}
-                                >
-                                  {settlement.isPaid ? "Paid" : "Unpaid"}
-                                </span>
-                                <small>
-                                  {settlement.paidAt
-                                    ? displayDate(settlement.paidAt)
-                                    : "No payment date"}
-                                </small>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <Missing title="No linked settlements">
-                      There are no settlement records linked to this driver in
-                      the selected company.
-                    </Missing>
+                  {profile.canEdit !== false && (
+                    <a className="driver-link" href="/dispatch">
+                      Open Dispatch →
+                    </a>
                   )}
-                  <a className="driver-link" href="/settlements">
-                    Open Settlements →
-                  </a>
                 </>
               )}
+              {tab === "Pay & Settlements" &&
+                profile.canViewCompensation === false && (
+                  <Missing title="Compensation access restricted">
+                    Your Drivers access is read-only and does not include pay
+                    agreements or settlements.
+                  </Missing>
+                )}
+              {tab === "Pay & Settlements" &&
+                profile.canViewCompensation !== false && (
+                  <>
+                    <h3>Pay & settlements</h3>
+                    <dl className="driver-field-grid">
+                      <Field label="Pay agreement">{payLabel(profile)}</Field>
+                      <Field label="Payment source">
+                        Existing settlement records
+                      </Field>
+                    </dl>
+                    <p className="driver-muted">
+                      Latest 100 settlements · selected company only. Paid
+                      status reflects the recorded settlement flag.
+                    </p>
+                    {profile.settlements.length ? (
+                      <div className="driver-table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Week ending</th>
+                              <th>Driver pay</th>
+                              <th>Deductions</th>
+                              <th>Net pay</th>
+                              <th>Payment</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {profile.settlements.map((settlement) => (
+                              <tr key={settlement.id}>
+                                <td>{displayDate(settlement.weekEnding)}</td>
+                                <td>{currency(settlement.driverPay)}</td>
+                                <td>
+                                  {currency(
+                                    settlement.fuelDeduction +
+                                      settlement.otherDeductions,
+                                  )}
+                                  <small>
+                                    Fuel {currency(settlement.fuelDeduction)}
+                                    <br />
+                                    Other {currency(settlement.otherDeductions)}
+                                  </small>
+                                </td>
+                                <td>
+                                  <strong>{currency(settlement.netPay)}</strong>
+                                </td>
+                                <td>
+                                  <span
+                                    className={`driver-badge ${settlement.isPaid ? "green" : ""}`}
+                                  >
+                                    {settlement.isPaid ? "Paid" : "Unpaid"}
+                                  </span>
+                                  <small>
+                                    {settlement.paidAt
+                                      ? displayDate(settlement.paidAt)
+                                      : "No payment date"}
+                                  </small>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <Missing title="No linked settlements">
+                        There are no settlement records linked to this driver in
+                        the selected company.
+                      </Missing>
+                    )}
+                    <a className="driver-link" href="/settlements">
+                      Open Settlements →
+                    </a>
+                  </>
+                )}
               {tab === "Safety" && (
                 <>
                   <h3>Safety & qualification</h3>

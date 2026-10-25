@@ -1,6 +1,6 @@
 # Drivers redesign delivery
 
-Work is based on the existing `feature/drivers-ui-redesign` branch and its approved implementation brief. The original local checkout was on a Fuel branch; the implementation commit was replayed onto the remote Drivers branch so the PR excludes unrelated Fuel changes.
+Development continues on `feature/drivers-ui-redesign`, PR #99. The follow-up verifies actual PostgreSQL persistence and authorization, preserves the approved UI, and does not merge or deploy. All 47 repository migrations applied to a fresh disposable PostgreSQL 17.5 database. Eight authenticated database/browser tests and all 482 regression tests passed.
 
 ## Implemented
 
@@ -26,7 +26,7 @@ Work is based on the existing `feature/drivers-ui-redesign` branch and its appro
 
 No standalone full-profile route is added; all six sections remain in the dashboard drawer. Load and settlement lists are explicitly bounded to their latest 100 records, and orientation lists to 25. They do not claim all-time totals.
 
-The redesigned UI does not expose destructive deletion. The existing protected DELETE endpoint is retained for compatibility; no endpoint was invoked against real data. Future archival/deletion UI should be a separate reviewed change with relation checks and audit support.
+The redesigned UI does not expose destructive deletion. The retained DELETE endpoint now returns 409 for an authorized request against any existing same-company driver, including an unlinked driver. It never performs a delete. Foreign/nonexistent records remain 404; unauthorized staff writes remain 403. Future archival must be a separate reviewed, audited workflow.
 
 ## Comparison with approved images
 
@@ -54,26 +54,75 @@ All screenshots show **synthetic Playwright fixtures**, served only through brow
 - [Safety](screenshots/drivers-safety.png)
 - [Notes and files](screenshots/drivers-notes-files.png)
 
-## Validation
+## Verified PostgreSQL follow-up
 
-- Prisma format, validate and generate: passed; no schema or migration changes.
-- TypeScript: no `typecheck` npm script exists; `npx tsc --noEmit` passed.
-- Drivers source/test lint: passed. Full repository lint: 97 errors and 108 warnings in existing files outside this change.
-- Isolated Drivers validation/projection tests: 3 passed, no database required.
-- Browser suite: 6 passed. Covers search, assignment filtering, pagination, all six sections, settlement presentation, desktop/tablet/mobile rendering, viewport overflow, tab keyboard navigation, focus restoration, successful create/edit request contracts, failed save preservation, roster/profile retry, empty states and actual anonymous API rejection.
-- Full `npm test` on the final branch with a deliberately unreachable local test database: 481 tests, 135 passed, 346 failed. Failures are database connection/setup failures, including health returning 503 when its database is unavailable. This is not a successful full integration run.
-- Production build: passed.
-- Prettier formatting and `git diff --check`: passed.
+### Isolation and migrations
 
-The local preview uses an unused loopback database port. Browser CRUD tests intercept requests and do not persist records. No staging/production database, migration, seed, integration sync, deployment or merge was performed. Live company-isolation, persistence and QuickManage/Samsara mapping verification still require an authorized isolated database/provider environment.
+- Fresh `postgres:17.5-alpine`, database `fleetpilot_drivers_verify`, ephemeral tmpfs storage, dedicated Docker network marked internal, and no published Docker ports. A persistent relay exposes only `127.0.0.1:15439` to the local tests; it connects exclusively to this disposable database.
+- All **47 repository migrations** applied through `prisma migrate deploy`. No production/staging backup, source data, seed or credentials were imported. No migration or Prisma schema source was changed.
+- Fixtures use `example.test` identities and two synthetic companies. Authentication uses externally generated signed test sessions and the ordinary application auth/proxy/route handlers; no application authentication bypass was introduced.
+- The new runner refuses existing named containers/networks and occupied app/database ports, overwrites its own process connection URL with the guarded test URL, and tears down its containers, network, app and relay on exit. Fresh-run verification and teardown passed.
+- A schema diff reports existing differences outside Drivers: index names, an additional composite Fuel policy FK, and the trigger-backed non-null Truck normalization column. These migrated protections were retained; no `db push`, reset or unrelated schema repair was used.
 
-## Reproduce UI checks
+### Real persistence and isolation
 
-Start a local server on `127.0.0.1:3124` with test-only auth values, integrations disabled and `DATABASE_URL` pointing to an unused local port. Run:
+Eight tests in `tests/integration/drivers-database.spec.ts` use actual authenticated HTTP requests and independent Prisma/PostgreSQL assertions:
+
+1. Create, edit, retrieve, unassign and reassign a driver; verify values directly in PostgreSQL, including numeric pay values and company ownership. A submitted foreign company ID cannot override the active company.
+2. Restrict roster/profile access to the selected company; include only its loads and settlements; exclude settlements with a foreign truck or foreign load; withhold foreign truck associations and orientation signatures without changing stored mappings.
+3. Reject foreign-driver writes, foreign-truck assignment and invalid pay values without altering the existing record. The acting administrator belongs to both companies, proving active-company scoping rather than merely membership in either company.
+4. Grant verified dispatch staff operational reads, with null pay fields, no settlement payload, explicit read-only capabilities, and denied create/update/delete requests. Unrelated truck and settlement APIs stay denied.
+5. Deny unlinked employees, inactive employees and employee links belonging to another company.
+6. Reject deletion for both OWNER and ADMIN and confirm the driver, truck link, three linked loads, three settlements and orientation remain unchanged. Preserve an unlinked driver too.
+7. Verify each allowed operational job role, immediate access revocation after termination, inactive-user denial, and rejection of an unrecognized custom role label.
+8. Exercise a genuinely authenticated staff browser: Drivers navigation appears, unrelated Accounting navigation remains hidden, Add/Edit/pay filters are disabled, the approved drawer opens and the compensation tab explains its restriction.
+
+### Read and write permissions
+
+| Verified identity                                                                                                               | Driver reads            | Driver create/edit | Compensation/settlements | DELETE                   |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------------------ | ------------------------ | ------------------------ |
+| Active selected-company OWNER / ADMIN                                                                                           | Yes                     | Yes                | Yes, company scoped      | 409, record preserved    |
+| Active MEMBER with linked same-company active Employee in DISPATCHER, LEAD_DISPATCH, UPDATER, MANAGER, SAFETY or ADMIN job role | Operational fields only | No                 | No                       | 403                      |
+| Ordinary MEMBER, unlinked/inactive/terminated/foreign-company employee, OTHER/custom job label                                  | No                      | No                 | No                       | Denied                   |
+| Anonymous or foreign-company record                                                                                             | No                      | No                 | No                       | 401 or 404 as applicable |
+
+There is no dedicated FLEET membership role in the current schema. Existing manager/safety job roles cover fleet readers; a custom role/department string does not grant access. Employee job roles do not grant company ADMIN privileges. The proxy exception permits only Drivers GET routes, and the server rechecks the user, company membership and employment on every request. General MEMBER module restrictions remain unchanged. Capability fields/headers are server-derived presentation hints, never authorization inputs.
+
+### Existing modules
+
+The diff from the initial PR commit `8ec1e68` contains **no changes** to Fuel/finance business logic, Accounting/settlement logic, QuickManage/provider code, Trucks/Loads business logic, Prisma schema or migrations. Shared changes are limited to the Drivers GET authorization exception, a Drivers-only navigation capability and additive company-context metadata. Generic module restrictions and unrelated API responses remain covered by the passing tests.
+
+No Samsara implementation exists in this branch; separate Samsara development was not edited or exercised. No live QuickManage/Samsara provider mapping or sync is claimed. Existing financial/provider regression tests, including the 9,127-capture synthetic QuickManage archive scale test, passed against the isolated database.
+
+## Validation results
+
+| Check                                              | Result                                                                                           |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Repository migration deployment                    | 47/47 passed on fresh PostgreSQL 17.5                                                            |
+| Focused authenticated database/browser suite       | 8/8 passed; repeated from a second fresh database using the committed runner                     |
+| Drivers validation/access/projection tests         | 6/6 passed                                                                                       |
+| Approved Drivers UI regression suite               | 6/6 passed; existing design screenshots retained                                                 |
+| Full `npm test`                                    | **482 passed, 0 failed**, approximately 275 seconds                                              |
+| Prisma format / validate / generate                | Passed; no schema changes                                                                        |
+| TypeScript                                         | `npx tsc --noEmit` passed; no `typecheck` npm script exists                                      |
+| Lint for changed source and tests                  | Passed                                                                                           |
+| Full repository lint                               | Existing **97 errors / 108 warnings** outside these changes remain; not a clean full-lint result |
+| Production build                                   | Passed                                                                                           |
+| Formatting / shell syntax / diff whitespace        | Passed                                                                                           |
+| Reproducible isolated runner and automatic cleanup | Passed                                                                                           |
+
+**Environment failures versus code failures:** initial attempts using an unavailable database or a new Docker exec for every TCP connection produced connection/transaction startup errors. Replacing that transport with one persistent local relay removed the timing artifact without relaxing application transaction timeouts or weakening Docker isolation. The completed full regression run has zero failures. An expanded test initially expected 401 for an inactive signed-in account; it was corrected to assert the existing proxy's 403 denial contract. Existing repository-wide lint failures and the schema diff described above are separate pre-existing findings, not reported as passing.
+
+No staging/production data was accessed or modified. Test fixture cleanup used only IDs created by each test run; the disposable database was then destroyed. No deployment, merge, live integration sync or financial posting was performed. Document storage, qualification metrics and a standalone full-profile page remain the previously documented product/backend gaps.
+
+## Reproduce database verification
+
+Requirements: Docker running; locally available `postgres:17.5-alpine` and `node:20-bookworm-slim` images; installed repository dependencies and Playwright Chromium; unused loopback ports 15439 and 3124. The runner does not pull images or use an existing database.
 
 ```sh
-npx playwright test --config playwright.drivers.config.ts
-npx tsx --test src/lib/fleet/driver-profile.test.ts
+bash scripts/verify-drivers-db.sh
+# Optional: also run the full regression suite before automatic teardown.
+bash scripts/verify-drivers-db.sh --regression
 ```
 
-The browser suite installs synthetic fixtures itself. The anonymous-access test uses the actual protected endpoints without fixtures.
+The runner logs migrations, app startup, relay startup and test results to its printed temporary directory. Its database suite refuses a URL other than the dedicated disposable database and requires the dedicated test-only auth secret.

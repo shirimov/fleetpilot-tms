@@ -1,3 +1,4 @@
+import { driverAuthorizationService } from "@/lib/drivers/driver-authorization";
 import {
   DriverValidationError,
   parseDriverInput,
@@ -10,7 +11,7 @@ import { fleetRouteErrorResponse } from "@/lib/fleet/fleet-route-response";
 
 export async function GET() {
   try {
-    const context = await fleetAuthorizationService.requireCompany("ADMIN");
+    const context = await driverAuthorizationService.requireRead();
     const drivers = await prisma.driver.findMany({
       where: { companyId: context.companyId },
       include: {
@@ -21,6 +22,10 @@ export async function GET() {
     return NextResponse.json(
       drivers.map((driver) => ({
         ...driver,
+        canEdit: context.access.canEdit,
+        canViewCompensation: context.access.canViewCompensation,
+        payType: context.access.canViewCompensation ? driver.payType : null,
+        payRate: context.access.canViewCompensation ? driver.payRate : null,
         assignmentRestricted:
           !!driver.truckId && driver.truck?.companyId !== context.companyId,
         truckId:
@@ -30,7 +35,15 @@ export async function GET() {
             ? { id: driver.truck.id, unitNumber: driver.truck.unitNumber }
             : null,
       })),
-      { headers: PRIVATE_NO_STORE_HEADERS },
+      {
+        headers: {
+          ...PRIVATE_NO_STORE_HEADERS,
+          "X-Drivers-Can-Edit": String(context.access.canEdit),
+          "X-Drivers-Can-View-Compensation": String(
+            context.access.canViewCompensation,
+          ),
+        },
+      },
     );
   } catch (error) {
     return fleetRouteErrorResponse(error, "Failed to fetch drivers");
@@ -58,7 +71,7 @@ export async function POST(request: Request) {
         ...body,
       },
     });
-    return NextResponse.json(driver);
+    return NextResponse.json(driver, { headers: PRIVATE_NO_STORE_HEADERS });
   } catch (error) {
     if (error instanceof DriverValidationError || error instanceof SyntaxError)
       return NextResponse.json(

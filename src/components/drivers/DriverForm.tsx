@@ -29,7 +29,7 @@ export default function DriverForm({
           phone: driver.phone || "",
           email: driver.email || "",
           licenseNum: driver.licenseNum || "",
-          payType: driver.payType,
+          payType: driver.payType || "PERCENTAGE",
           payRate: String(driver.payRate),
           truckId: driver.truckId || "",
         }
