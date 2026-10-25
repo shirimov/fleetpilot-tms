@@ -12,6 +12,7 @@ type CompanyContext = {
     image: string | null;
   };
   activeCompanyId: string;
+  driverAccess?: { canRead: boolean };
   companies: Array<{
     id: string;
     name: string;
@@ -143,6 +144,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         onCollapse={toggleCollapsed}
         onMobileClose={() => setMobileOpen(false)}
         role={activeCompany?.role}
+        canReadDrivers={companyContext?.driverAccess?.canRead}
       />
 
       <div

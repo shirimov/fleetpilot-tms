@@ -19,6 +19,7 @@ type SidebarProps = {
   onCollapse?: () => void;
   onMobileClose?: () => void;
   role?: CompanyMembershipRole;
+  canReadDrivers?: boolean;
 };
 
 const iconPaths: Record<NavigationIconName, string> = {
@@ -69,7 +70,7 @@ export default function Sidebar(props: SidebarProps = {}) {
     onMobileClose,
     role,
   } = props;
-  const navigation = navigationForRole(role);
+  const navigation = navigationForRole(role, props.canReadDrivers);
   const isMember = role === 'MEMBER';
 
   const content = (

@@ -121,6 +121,13 @@ model Company {
   taskProjects               TaskProject[]
   memberships                CompanyMembership[]
   activeUsers                User[]                      @relation("ActiveCompany")
+  driverScanRecords          DriverDocumentScan[]
+  driverReminders            DriverReminder[]
+  driverReminderPolicy       DriverReminderPolicy?
+  driverTeams                DriverTeam[]
+  driverDocuments            DriverDocument[]
+  driverAudits               DriverAudit[]
+  driverQualificationReviews DriverQualificationReview[]
   companyDrivers             Driver[]                    @relation("DriverCompany")
   employees                  Employee[]
   employeeSkills             EmployeeSkillDefinition[]
@@ -173,6 +180,9 @@ model User {
   createdAt                          DateTime                        @default(now())
   updatedAt                          DateTime                        @updatedAt
 
+  driverDocumentVersions        DriverDocumentVersion[]
+  driverAudits                  DriverAudit[]
+  driverQualificationReviews    DriverQualificationReview[]
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
   memberships                   CompanyMembership[]
@@ -612,6 +622,19 @@ model Driver {
   payRate                    Float
   truckId                    String?
   truck                      Truck?                      @relation(fields: [truckId], references: [id])
+  employmentStatus           DriverEmploymentStatus?
+  driverType                 DriverEmploymentType?
+  employmentStartDate        DateTime?                   @db.Date
+  terminationDate            DateTime?                   @db.Date
+  homeTerminal               String?
+  emergencyContactName       String?
+  emergencyContactPhone      String?
+  emergencyContactRelation   String?
+  teamId                     String?
+  team                       DriverTeam?                 @relation(fields: [teamId, companyId], references: [id, companyId], onDelete: Restrict)
+  documents                  DriverDocument[]
+  auditHistory               DriverAudit[]
+  qualificationReviews       DriverQualificationReview[]
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
   loads                      Load[]
@@ -619,7 +642,12 @@ model Driver {
   driverOrientations         DriverOrientation[]
   financialAllocations       FinancialAllocation[]
   bankTransactionAllocations BankTransactionAllocation[]
+  documentScans              DriverDocumentScan[]
+  reminders                  DriverReminder[]
 
+  @@unique([id, companyId])
+  @@index([companyId, employmentStatus])
+  @@index([teamId, companyId])
   @@index([companyId])
 }
 
@@ -2815,4 +2843,169 @@ model TruckCompanyHistoryRevision {
   affiliations       TruckCompanyAffiliation[]
 
   @@index([truckId, createdAt])
+}
+
+// Drivers Phase 2: additive, company-scoped records; existing statuses remain unknown.
+enum DriverEmploymentStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+  ON_LEAVE
+}
+
+enum DriverEmploymentType {
+  COMPANY
+  OWNER_OPERATOR
+  LEASE_OPERATOR
+}
+
+enum DriverDocumentType {
+  CDL_FRONT
+  CDL_BACK
+  MEDICAL_CERTIFICATE
+  MVR
+  APPLICATION
+  EMPLOYMENT_AGREEMENT
+  ROAD_TEST
+  OTHER
+}
+
+enum DriverQualificationOutcome {
+  PENDING
+  REVIEWED
+  NEEDS_FOLLOW_UP
+}
+
+model DriverTeam {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  createdAt DateTime @default(now())
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  drivers   Driver[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, name])
+}
+
+model DriverDocument {
+  id        String                  @id @default(cuid())
+  companyId String
+  driverId  String
+  type      DriverDocumentType
+  slot      String
+  title     String
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+  company   Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver    Driver                  @relation(fields: [driverId, companyId], references: [id, companyId], onDelete: Restrict)
+  versions  DriverDocumentVersion[]
+
+  @@unique([driverId, slot])
+  @@index([companyId, driverId])
+}
+
+model DriverDocumentVersion {
+  reminders    DriverReminder[]
+  scanStatus   String           @default("UNSCANNED")
+  scannedAt    DateTime?
+  scanEngine   String?
+  id           String           @id @default(cuid())
+  documentId   String
+  version      Int
+  filename     String
+  mimeType     String
+  byteSize     Int
+  storageKey   String
+  sha256       String
+  issuedAt     DateTime?        @db.Date
+  expiresAt    DateTime?        @db.Date
+  uploadedById String?
+  uploadedBy   User?            @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime         @default(now())
+  document     DriverDocument   @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([documentId, version])
+  @@index([documentId, createdAt])
+  @@index([expiresAt])
+}
+
+model DriverQualificationReview {
+  id           String                     @id @default(cuid())
+  companyId    String
+  driverId     String
+  outcome      DriverQualificationOutcome
+  notes        String
+  reviewerId   String?
+  reviewerName String
+  createdAt    DateTime                   @default(now())
+  company      Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver       Driver                     @relation(fields: [driverId, companyId], references: [id, companyId], onDelete: Restrict)
+  reviewer     User?                      @relation(fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, driverId, createdAt])
+}
+
+model DriverAudit {
+  id        String   @id @default(cuid())
+  companyId String
+  driverId  String
+  actorId   String?
+  actorName String
+  action    String
+  metadata  Json
+  createdAt DateTime @default(now())
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver    Driver   @relation(fields: [driverId, companyId], references: [id, companyId], onDelete: Restrict)
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, driverId, createdAt])
+}
+
+model DriverDocumentScan {
+  id            String    @id @default(cuid())
+  companyId     String
+  driverId      String
+  quarantineKey String    @unique
+  sha256        String
+  byteSize      Int
+  status        String
+  engine        String
+  scannedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver        Driver    @relation(fields: [driverId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@index([companyId, driverId, createdAt])
+}
+
+model DriverReminderPolicy {
+  companyId     String               @id
+  enabled       Boolean              @default(false)
+  revision      Int                  @default(1)
+  requiredTypes DriverDocumentType[]
+  trackedTypes  DriverDocumentType[]
+  mvrReviewDays Int?
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  updatedAt     DateTime             @updatedAt
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Restrict)
+}
+
+model DriverReminder {
+  id           String                 @id @default(cuid())
+  companyId    String
+  driverId     String
+  dedupeKey    String                 @unique
+  kind         String
+  documentType DriverDocumentType
+  versionId    String?
+  dueAt        DateTime?              @db.Date
+  createdAt    DateTime               @default(now())
+  company      Company                @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  driver       Driver                 @relation(fields: [driverId, companyId], references: [id, companyId], onDelete: Restrict)
+  version      DriverDocumentVersion? @relation(fields: [versionId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, createdAt, id])
+  @@index([driverId])
 }

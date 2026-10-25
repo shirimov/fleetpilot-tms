@@ -1,44 +1,85 @@
-import { prisma } from '@/lib/prisma';
-import { NextResponse } from 'next/server';
-import { fleetAuthorizationService } from '@/lib/fleet/fleet-authorization';
-import { fleetRouteErrorResponse } from '@/lib/fleet/fleet-route-response';
+import { saveDriver } from "@/lib/drivers/driver-mutations";
+import { driverRouteError } from "@/lib/drivers/route-response";
+import { documentAlerts } from "@/lib/drivers/qualification";
+import { driverAuthorizationService } from "@/lib/drivers/driver-authorization";
+import { PRIVATE_NO_STORE_HEADERS } from "@/lib/security/cache-headers";
+import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
+import { fleetAuthorizationService } from "@/lib/fleet/fleet-authorization";
+import { fleetRouteErrorResponse } from "@/lib/fleet/fleet-route-response";
 
 export async function GET() {
   try {
-    const context = await fleetAuthorizationService.requireCompany();
+    const context = await driverAuthorizationService.requireRead();
     const drivers = await prisma.driver.findMany({
       where: { companyId: context.companyId },
-      include: { truck: true },
-      orderBy: { lastName: 'asc' },
+      include: {
+        team: { select: { id: true, name: true } },
+        documents: {
+          select: {
+            type: true,
+            versions: {
+              orderBy: { version: "desc" },
+              take: 1,
+              select: { expiresAt: true },
+            },
+          },
+        },
+        truck: { select: { id: true, unitNumber: true, companyId: true } },
+      },
+      orderBy: { lastName: "asc" },
     });
-    return NextResponse.json(drivers);
+    return NextResponse.json(
+      drivers.map(({ documents, ...driver }) => ({
+        ...driver,
+        documentAlerts: documentAlerts(documents),
+        canReadDocuments: context.access.canReadDocuments,
+        licenseNum: context.access.canReadDocuments ? driver.licenseNum : null,
+        emergencyContactName: context.access.canReadDocuments
+          ? driver.emergencyContactName
+          : null,
+        emergencyContactPhone: context.access.canReadDocuments
+          ? driver.emergencyContactPhone
+          : null,
+        emergencyContactRelation: context.access.canReadDocuments
+          ? driver.emergencyContactRelation
+          : null,
+
+        canEdit: context.access.canEdit,
+        canViewCompensation: context.access.canViewCompensation,
+        payType: context.access.canViewCompensation ? driver.payType : null,
+        payRate: context.access.canViewCompensation ? driver.payRate : null,
+        assignmentRestricted:
+          !!driver.truckId && driver.truck?.companyId !== context.companyId,
+        truckId:
+          driver.truck?.companyId === context.companyId ? driver.truckId : null,
+        truck:
+          driver.truck?.companyId === context.companyId
+            ? { id: driver.truck.id, unitNumber: driver.truck.unitNumber }
+            : null,
+      })),
+      {
+        headers: {
+          ...PRIVATE_NO_STORE_HEADERS,
+          "X-Drivers-Can-Edit": String(context.access.canEdit),
+          "X-Drivers-Can-View-Compensation": String(
+            context.access.canViewCompensation,
+          ),
+        },
+      },
+    );
   } catch (error) {
-    return fleetRouteErrorResponse(error, 'Failed to fetch drivers');
+    return fleetRouteErrorResponse(error, "Failed to fetch drivers");
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const context = await fleetAuthorizationService.requireCompany('ADMIN');
-    const body = await request.json();
-    if (body.truckId) {
-      await fleetAuthorizationService.requireTruck(body.truckId, 'ADMIN');
-    }
-    const driver = await prisma.driver.create({
-      data: {
-        companyId: context.companyId,
-        firstName: body.firstName,
-        lastName: body.lastName,
-        phone: body.phone || null,
-        email: body.email || null,
-        licenseNum: body.licenseNum || null,
-        payType: body.payType,
-        payRate: parseFloat(body.payRate),
-        truckId: body.truckId || null,
-      },
+    const context = await fleetAuthorizationService.requireCompany("ADMIN");
+    return NextResponse.json(await saveDriver(context, await request.json()), {
+      headers: PRIVATE_NO_STORE_HEADERS,
     });
-    return NextResponse.json(driver);
   } catch (error) {
-    return fleetRouteErrorResponse(error, 'Failed to create driver');
+    return driverRouteError(error);
   }
 }

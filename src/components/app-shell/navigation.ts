@@ -83,12 +83,12 @@ export const alphaNavigation: NavigationSection[] = [
   },
 ];
 
-export function navigationForRole(role: CompanyMembershipRole | undefined) {
+export function navigationForRole(role: CompanyMembershipRole | undefined, canReadDrivers = false) {
   if (!role) return [];
   return alphaNavigation
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) => roleCanAccessModule(role, item.module)),
+      items: section.items.filter((item) => roleCanAccessModule(role, item.module) || (canReadDrivers && item.href === '/drivers')),
     }))
     .filter((section) => section.items.length > 0);
 }
