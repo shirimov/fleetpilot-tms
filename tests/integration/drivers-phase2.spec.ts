@@ -527,10 +527,12 @@ test("browser employment, document upload/history and qualification records pres
     .getByRole("button", { name: "Record qualification review" })
     .click();
   await expect(
-    page.locator("article").getByText(
-      "Synthetic human review recorded; no legal compliance assertion.",
-      { exact: true },
-    ),
+    page
+      .locator("article")
+      .getByText(
+        "Synthetic human review recorded; no legal compliance assertion.",
+        { exact: true },
+      ),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Record qualification review" }),
@@ -573,6 +575,9 @@ test.afterAll(async () => {
       select: { id: true },
     })
   ).map((document) => document.id);
+  await prisma.driverDocumentScan.deleteMany({
+    where: { driverId: { in: driverIds } },
+  });
   await prisma.driverDocumentVersion.deleteMany({
     where: { documentId: { in: documentIds } },
   });

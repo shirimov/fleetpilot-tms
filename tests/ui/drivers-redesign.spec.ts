@@ -110,6 +110,11 @@ async function setup(page: Page) {
   await page.route("**/api/drivers/*/activity?**", (route) =>
     route.fulfill({ json: { events: [], totalPages: 1, page: 1, total: 0 } }),
   );
+  await page.route("**/api/drivers/reminders?**", (route) =>
+    route.fulfill({
+      json: { notifications: [], total: 0, page: 1, totalPages: 1 },
+    }),
+  );
   await page.route("**/api/trucks?**", (route) =>
     route.fulfill({
       json: {

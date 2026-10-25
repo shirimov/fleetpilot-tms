@@ -1,11 +1,4 @@
-import {
-  mkdtemp,
-  readdir,
-  mkdir,
-  cp,
-  writeFile,
-  rm,
-} from "node:fs/promises";
+import { mkdtemp, readdir, mkdir, cp, writeFile, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
@@ -20,7 +13,7 @@ if (
     "Migration verification requires the dedicated disposable database.",
   );
 const root = process.cwd(),
-  target = "20261025070000_drivers_employment_documents";
+  target = "20261025080000_drivers_production_readiness";
 const temporary = await mkdtemp(path.join(os.tmpdir(), "drivers-migration-"));
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 try {
@@ -140,7 +133,9 @@ try {
     ["Load", "load", load],
   ]) {
     const persisted = (
-      await client.query(`SELECT * FROM "${table}" WHERE id=$1`, [prefix + suffix])
+      await client.query(`SELECT * FROM "${table}" WHERE id=$1`, [
+        prefix + suffix,
+      ])
     ).rows[0];
     if (JSON.stringify(persisted) !== JSON.stringify(original))
       throw new Error("Migration changed historical " + table);

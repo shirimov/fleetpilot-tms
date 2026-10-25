@@ -1,3 +1,4 @@
+import { requireCleanDownload } from "@/lib/drivers/document-scanner";
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
@@ -23,6 +24,7 @@ export async function GET(
       },
     });
     if (!version) throw new FleetResourceNotFoundError();
+    requireCleanDownload(version);
     const bytes = await (await driverStorage()).get(version.storageKey);
     if (
       bytes.length !== version.byteSize ||

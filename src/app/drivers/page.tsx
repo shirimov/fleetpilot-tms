@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import DriverReminderInbox from "@/components/drivers/DriverReminderInbox";
 import DriverForm from "@/components/drivers/DriverForm";
 import DriverProfileDrawer from "@/components/drivers/DriverProfileDrawer";
 import { payLabel, type DriverRecord } from "@/lib/drivers/types";
@@ -506,6 +507,14 @@ export default function DriversPage() {
           </label>
         </footer>
       </section>
+      {!loading && !error && (
+        <DriverReminderInbox
+          openDriver={(id) => {
+            const driver = drivers.find((driver) => driver.id === id);
+            if (driver) setSelected(driver);
+          }}
+        />
+      )}
       <p className="driver-data-note">
         Assignment indicates a linked truck. Employment status is recorded
         separately; duty data is not connected. Document alerts are an internal

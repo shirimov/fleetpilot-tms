@@ -11,7 +11,15 @@ import {
   parseDateOnly,
   type DocumentKind,
 } from "./qualification";
-import { driverStorage, validateDriverFile } from "./document-storage";
+import {
+  scanDocument,
+  DriverStorageUnavailableError,
+} from "./document-scanner";
+import {
+  driverStorage,
+  quarantineStorage,
+  validateDriverFile,
+} from "./document-storage";
 export const versionSelect = {
   id: true,
   version: true,
@@ -75,75 +83,101 @@ export async function addDocument(
   const expectedVersionId = String(form.get("expectedVersionId") || "");
   const slot =
     type === "OTHER" ? "OTHER:" + title.normalize("NFKC").toLowerCase() : type;
+  const quarantineKey = await (await quarantineStorage()).put(bytes);
+  const scan = await scanDocument(bytes);
+  await prisma.$transaction(async (tx) => {
+    await tx.driverDocumentScan.create({
+      data: {
+        companyId: context.companyId,
+        driverId,
+        quarantineKey,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        byteSize: bytes.length,
+        status: scan.status,
+        engine: scan.engine,
+        scannedAt: scan.scannedAt,
+      },
+    });
+    await tx.driverAudit.create({
+      data: {
+        companyId: context.companyId,
+        driverId,
+        actorId: context.user.id,
+        actorName: context.user.displayName,
+        action: "DOCUMENT_SCAN_" + scan.status,
+        metadata: { status: scan.status, engine: scan.engine },
+      },
+    });
+  });
+  if (scan.status === "INFECTED")
+    throw new DriverValidationError(
+      "Document rejected and quarantined by malware scanner.",
+    );
+  if (
+    scan.status === "ERROR" ||
+    (process.env.DRIVERS_REQUIRE_CLEAN_SCAN === "true" &&
+      scan.status !== "CLEAN")
+  )
+    throw new DriverStorageUnavailableError(
+      "Document scanning is unavailable. Upload retained in private quarantine.",
+    );
   const storage = await driverStorage();
   const storageKey = await storage.put(bytes);
-  try {
-    return await prisma.$transaction(
-      async (tx) => {
-        const locked = await tx.$queryRaw<
-          { id: string }[]
-        >`SELECT id FROM "Driver" WHERE id=${driverId} AND "companyId"=${context.companyId} FOR UPDATE`;
-        if (!locked.length) throw new FleetResourceNotFoundError();
-        const existing = await tx.driverDocument.findUnique({
-          where: { driverId_slot: { driverId, slot } },
-          include: { versions: { orderBy: { version: "desc" }, take: 1 } },
-        });
-        if (
-          existing &&
-          (!documentId ||
-            existing.id !== documentId ||
-            existing.versions[0]?.id !== expectedVersionId)
-        )
-          throw new DriverConflictError(
-            "Document already exists or was updated. Refresh and use Replace.",
-          );
-        if (documentId && !existing) throw new FleetResourceNotFoundError();
-        const document =
-          existing ||
-          (await tx.driverDocument.create({
-            data: { companyId: context.companyId, driverId, type, title, slot },
-          }));
-        const version = await tx.driverDocumentVersion.create({
-          data: {
-            documentId: document.id,
-            version: (existing?.versions[0]?.version || 0) + 1,
-            ...metadata,
-            ...dateFields,
-            storageKey,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-            uploadedById: context.user.id,
-          },
-          select: versionSelect,
-        });
-        await tx.driverAudit.create({
-          data: {
-            companyId: context.companyId,
-            driverId,
-            actorId: context.user.id,
-            actorName: context.user.displayName,
-            action: existing ? "DOCUMENT_REPLACED" : "DOCUMENT_UPLOADED",
-            metadata: { documentId: document.id, versionId: version.id, type },
-          },
-        });
-        return { ...document, currentVersion: version };
-      },
-      { maxWait: 5000, timeout: 10000 },
-    );
-  } catch (error) {
-    // Keep a blob on uncertain commit; only remove a proven unreferenced new upload.
-    try {
+  // A failed commit may leave a private orphan; consistency tooling reports it without deletion.
+  return await prisma.$transaction(
+    async (tx) => {
+      const locked = await tx.$queryRaw<
+        { id: string }[]
+      >`SELECT id FROM "Driver" WHERE id=${driverId} AND "companyId"=${context.companyId} FOR UPDATE`;
+      if (!locked.length) throw new FleetResourceNotFoundError();
+      const existing = await tx.driverDocument.findUnique({
+        where: { driverId_slot: { driverId, slot } },
+        include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+      });
       if (
-        !(await prisma.driverDocumentVersion.findFirst({
-          where: { storageKey },
-          select: { id: true },
-        }))
+        existing &&
+        (!documentId ||
+          existing.id !== documentId ||
+          existing.versions[0]?.id !== expectedVersionId)
       )
-        await storage.delete(storageKey);
-    } catch {
-      /* Safe private orphan; never risk deleting a committed version. */
-    }
-    throw error;
-  }
+        throw new DriverConflictError(
+          "Document already exists or was updated. Refresh and use Replace.",
+        );
+      if (documentId && !existing) throw new FleetResourceNotFoundError();
+      const document =
+        existing ||
+        (await tx.driverDocument.create({
+          data: { companyId: context.companyId, driverId, type, title, slot },
+        }));
+      const version = await tx.driverDocumentVersion.create({
+        data: {
+          documentId: document.id,
+          version: (existing?.versions[0]?.version || 0) + 1,
+          ...metadata,
+          ...dateFields,
+          storageKey,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          uploadedById: context.user.id,
+          scanStatus: scan.status,
+          scannedAt: scan.scannedAt,
+          scanEngine: scan.engine,
+        },
+        select: versionSelect,
+      });
+      await tx.driverAudit.create({
+        data: {
+          companyId: context.companyId,
+          driverId,
+          actorId: context.user.id,
+          actorName: context.user.displayName,
+          action: existing ? "DOCUMENT_REPLACED" : "DOCUMENT_UPLOADED",
+          metadata: { documentId: document.id, versionId: version.id, type },
+        },
+      });
+      return { ...document, currentVersion: version };
+    },
+    { maxWait: 5000, timeout: 10000 },
+  );
 }
 export async function updateDocumentDates(
   context: CompanyAuthorization,
@@ -175,6 +209,9 @@ export async function updateDocumentDates(
       byteSize: previous.byteSize,
       storageKey: previous.storageKey,
       sha256: previous.sha256,
+      scanStatus: previous.scanStatus,
+      scannedAt: previous.scannedAt,
+      scanEngine: previous.scanEngine,
     };
     const version = await tx.driverDocumentVersion.create({
       data: {

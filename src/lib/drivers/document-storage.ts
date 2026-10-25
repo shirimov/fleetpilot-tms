@@ -1,22 +1,18 @@
+import { DriverSecureStorage, privateNamespace } from "./secure-storage";
 import path from "node:path";
-import { mkdir, realpath } from "node:fs/promises";
-import { FilesystemPrivateFileStorage } from "@/lib/storage/private-file-storage";
 import { DriverValidationError } from "./validation";
 export const MAX_DRIVER_FILE = 10 * 1024 * 1024;
 export async function driverStorage() {
-  const root = path.resolve(
-    process.env.PRIVATE_FILE_STORAGE_ROOT || path.join(process.cwd(), ".data"),
+  return new DriverSecureStorage(
+    await privateNamespace("driver-documents"),
+    "driver-documents",
   );
-  const publicRoot = await realpath(path.join(process.cwd(), "public"));
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const resolved = await realpath(root);
-  if (resolved === publicRoot || resolved.startsWith(publicRoot + path.sep))
-    throw new Error("Driver storage must be private.");
-  const namespace = path.join(resolved, "driver-documents");
-  await mkdir(namespace, { recursive: true, mode: 0o700 });
-  if ((await realpath(namespace)) !== namespace)
-    throw new Error("Driver storage cannot use a symbolic link.");
-  return new FilesystemPrivateFileStorage("driver-documents", resolved);
+}
+export async function quarantineStorage() {
+  return new DriverSecureStorage(
+    await privateNamespace("driver-quarantine"),
+    "driver-quarantine",
+  );
 }
 export async function boundedDocumentForm(request: Request) {
   const limit = MAX_DRIVER_FILE + 65536;

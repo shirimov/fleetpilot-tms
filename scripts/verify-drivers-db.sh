@@ -27,16 +27,18 @@ JS
 logs=$(mktemp -d "${TMPDIR:-/tmp}/drivers-pr99-verify.XXXXXX")
 bridge_pid=''
 app_pid=''
+scanner_pid=''
 created_network=false
 created_postgres=false
 created_relay=false
 cleanup() {
+  if [[ -n "$scanner_pid" ]]; then kill -TERM "$scanner_pid" 2>/dev/null || true; wait "$scanner_pid" 2>/dev/null || true; fi
   if [[ -n "$app_pid" ]]; then kill -TERM "$app_pid" 2>/dev/null || true; wait "$app_pid" 2>/dev/null || true; fi
   if [[ -n "$bridge_pid" ]]; then kill -INT "$bridge_pid" 2>/dev/null || true; wait "$bridge_pid" 2>/dev/null || true; fi
   if [[ "$created_relay" == true ]]; then docker rm -f "$relay" >/dev/null; fi
   if [[ "$created_postgres" == true ]]; then docker rm -f "$postgres" >/dev/null; fi
   if [[ "$created_network" == true ]]; then docker network rm "$network" >/dev/null; fi
-  rm -rf "$logs/private-storage"
+  rm -rf "$logs/private-storage" "$logs/document-backup" "$logs/document-restore" "$logs/corrupt-source-backup" "$logs/wrong-restore" "$logs/tampered-recovery"
   echo "Verification logs: $logs"
 }
 trap cleanup EXIT
@@ -74,6 +76,21 @@ for attempt in {1..30}; do
   sleep 1
 done
 rg -q 'relay ready' "$logs/database-relay.log"
+if [[ "${1:-}" == '--phase3' || "${1:-}" == '--phase3-regression' ]]; then
+  export DRIVERS_CLAMD_SOCKET="$logs/clamd.sock"
+  export DRIVERS_REQUIRE_CLEAN_SCAN=true
+  export DRIVERS_STORAGE_KEYS="$(node -e 'console.log(JSON.stringify({test:require("node:crypto").randomBytes(32).toString("hex")}))')"
+  export DRIVERS_STORAGE_ACTIVE_KEY=test
+  export DRIVERS_BACKUP_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+  export DRIVERS_REMINDERS_ENABLED=true
+  node tests/helpers/drivers-clamd-simulator.mjs "$DRIVERS_CLAMD_SOCKET" > "$logs/scanner.log" 2>&1 &
+  scanner_pid=$!
+  for attempt in {1..30}; do
+    if rg -q 'simulator ready' "$logs/scanner.log"; then break; fi
+    sleep 1
+  done
+  rg -q 'simulator ready' "$logs/scanner.log"
+fi
 node scripts/verify-drivers-migration.mjs > "$logs/migrations.log" 2>&1
 node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3124 > "$logs/app.log" 2>&1 &
 app_pid=$!
@@ -88,9 +105,10 @@ npx tsx --test src/lib/fleet/driver-profile.test.ts src/lib/fleet/driver-access.
 npx playwright test --config playwright.drivers-db.config.ts | tee "$logs/drivers-database.log"
 if [[ "${1:-}" == '--phase2' ]]; then npx playwright test --config playwright.drivers-phase2.config.ts | tee "$logs/drivers-phase2.log"; fi
 if [[ "${1:-}" == '--phase2-ui' ]]; then npx playwright test --config playwright.drivers-phase2.config.ts --grep 'browser' | tee "$logs/drivers-phase2-ui.log"; fi
-if [[ "${1:-}" == '--phase2-regression' ]]; then
+if [[ "${1:-}" == '--phase2-regression' || "${1:-}" == '--phase3-regression' ]]; then
   npx playwright test --config playwright.drivers-phase2.config.ts | tee "$logs/drivers-phase2.log"
   npx playwright test --config playwright.drivers.config.ts | tee "$logs/drivers-ui.log"
 fi
+if [[ "${1:-}" == '--phase3' || "${1:-}" == '--phase3-regression' ]]; then npx playwright test --config playwright.drivers-phase3.config.ts | tee "$logs/drivers-phase3.log"; fi
 # Unit tests construct their own request origins; do not leak the browser server origin.
-if [[ "${1:-}" == '--regression' || "${1:-}" == '--phase2-regression' ]]; then env -u AUTH_URL npm test | tee "$logs/regression.log"; fi
+if [[ "${1:-}" == '--regression' || "${1:-}" == '--phase2-regression' || "${1:-}" == '--phase3-regression' ]]; then env -u AUTH_URL npm test | tee "$logs/regression.log"; fi

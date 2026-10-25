@@ -1,4 +1,58 @@
-# Drivers Phase 2 delivery
+# Drivers Phase 3 — controlled deployment readiness
+
+Branch `feature/drivers-ui-redesign`, Draft [PR #99](https://github.com/shirimov/fleetpilot-tms/pull/99). This section supersedes the historical Phase 2/1 reports below. No deployment, merge, production data access, real file migration or external messaging occurred.
+
+## Implemented
+
+- Drivers-specific durable filesystem adapter compatible with the existing private volume: explicit production root/durability gate, private directory/file permissions, no-follow reads, safe UUID names, fsynced writes and AES-256-GCM envelopes. Configurable active key plus retained decryption keyring supports rotation without rewriting history. No shared Fuel/Accounting/Tasks storage implementation changed.
+- ClamAV Unix-socket INSTREAM adapter with bounded responses and a 15-second deadline. Validated uploads first enter private quarantine with scoped scan/audit records. Only clean results release production versions. Infected/error outcomes preserve quarantined evidence and leave existing versions untouched. Production downloads require a clean timestamped receipt and encrypted storage; legacy versions default UNSCANNED and remain preserved. Development without a scanner records UNSCANNED, never CLEAN.
+- Per-company configurable reminder policies and scheduled-worker command for 90/60/30-day, expired and required-missing alerts. Optional MVR issue-date review interval, UTC calculations, current-version selection, threshold catch-up, transactional unique deduplication, idempotent unchanged policy configuration and audited history. Worker gates default off. No email/SMS/Telegram delivery code or external calls are present.
+- Expandable reminder history below the existing Drivers roster, with scoped profile links and pagination; approved cards, navigation, six-tab drawer and document UI remain. Existing driver audit history records generated reminders. No general TaskNotification service exists in this branch; unrelated Task Activity Engine code remains untouched.
+- Encrypted per-company document backups with a repeatable-read metadata snapshot, all referenced historical/active/quarantine blobs, separate backup key, authenticated manifest, completion markers and integrity validation. Restore reconstructs files into a new private directory and preserves metadata for comparison; it never overwrites active files or changes the database. Consistency/health operations detect missing/corrupt files and global namespace orphans without deletion. Interrupted/uncertain writes remain private evidence for review.
+- Operator CLI and [production runbook](Drivers-Production-Readiness.md) covering configuration, scanner/signature requirements, scheduling examples, monitoring, coordinated DB/file/key backups, restore, retention and safe rollback. No worker/timer or infrastructure was installed.
+
+## Additive database changes
+
+Migration `20261025080000_drivers_production_readiness` (49 repository migrations total) adds version scan status/engine/timestamp, DriverDocumentScan, DriverReminderPolicy and DriverReminder. Explicit company/driver relations, restrictive historical references, unique deduplication keys, indexes and metadata checks protect new records. Existing scan metadata defaults to UNSCANNED; no file or legacy record is fabricated as clean. The upgrade verifier applies the previous 48 migrations, inserts synthetic historical fixtures, then applies 49 and verifies driver/truck/load/settlement values remain unchanged.
+
+## Verification
+
+All database/file work uses disposable PostgreSQL 17.5, the existing isolated internal-network runner, ephemeral private storage and synthetic identities/files. Scanner tests use a local protocol simulator; they verify clean/infected/error handling, not malware-detection effectiveness. A real ClamAV installation/signatures and production storage were not available or contacted.
+
+| Check                                                       | Result                                                                |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| Isolated 48→49 migration preservation                       | Passed                                                                |
+| Existing authenticated Drivers persistence/permission suite | 8 passed                                                              |
+| Phase 2 real document/employment/browser regressions        | 6 passed                                                              |
+| Existing responsive/UI suite                                | 6 passed                                                              |
+| New Phase 3 actual API/database/browser/recovery suite      | 6 passed again after final recovery hardening                         |
+| Full regression suite                                       | 490 passed, 0 failed                                                  |
+| Prisma format / validate / generate, TypeScript             | Passed (`npx tsc --noEmit`; no typecheck npm script)                  |
+| Changed-file lint / formatting                              | Passed; cached Prettier, shell/JS syntax and whitespace checks passed |
+| Repository-wide lint                                        | Existing 97 errors / 108 warnings; unchanged baseline                 |
+| Production build                                            | Passed                                                                |
+
+New checks cover encrypted bytes and authorized download equality; cross-company/direct URL denial; quarantined infected/error responses; revoked permissions and unscanned download denial; 90/60/30/expired/missing/MVR reminders under concurrent workers and unchanged policy reconfiguration; audit counts; encrypted file/metadata backup restoration; missing/corrupt/orphan detection; and dashboard history/profile links. AES authentication tests reject wrong key/purpose/tampering, and production configuration tests fail closed without encryption/scanning.
+
+Reproduce with `bash scripts/verify-drivers-db.sh --phase3-regression`. The scanner simulator is guarded to the disposable runner directory; it is not production infrastructure. An initial standalone `tsx` test invocation lacked sandbox IPC socket permission; the full isolated runner uses the authorized test execution context. A final historical-version recovery check exposed double-counting when two date revisions share one physical blob; consistency counters now deduplicate physical files while retaining separate version/scan counts, and the focused database suite passed again. Recovery also rejects tampered backups and corrupt source blobs, tests disabled policies, and restores both current/historical metadata. Environment/setup failures and corrected code failures are not counted as successful runs. Existing unrelated schema drift and repository lint findings are retained separately.
+
+## Screenshot
+
+[Dashboard notification history](screenshots/drivers-phase3-notifications.png) shows the authenticated application backed by disposable PostgreSQL. All identities/files are synthetic. Reminder dates intentionally advance through future thresholds in the test; this is not live operational history. The small expandable history section is the only UI addition; the approved layout and drawer are preserved.
+
+## Deployment blockers — approval required before real-system work
+
+1. Provision and independently verify durable private storage, production keys/escrow, host encryption, permissions, capacity monitoring and off-host backups.
+2. Install/update a real ClamAV daemon/signatures; validate clean, EICAR, encrypted/unsupported content and scanner-limit behavior in approved staging. Local protocol tests do not establish antivirus efficacy.
+3. Approve an inventory and historical scanning/encryption migration for legacy documents. Originals are retained; production access intentionally fails closed until they are reviewed. No automatic legacy migration or quarantine release was added.
+4. Approve per-company reminder policy and install the background schedule/monitoring. External delivery remains disabled and would require separate implementation/approval.
+5. Complete an approved coordinated full PostgreSQL + document + key restore/failover drill at expected production scale. Local file/metadata recovery is verified; the supplemental document backup does not replace a full database backup or a separate volume snapshot for unreferenced orphan evidence.
+
+The implementation is prepared for controlled review; it is **not cleared for production deployment** until these gates are satisfied. Historical retention has no invented duration or automatic cleanup. OCR, authenticity verification, external reminder delivery and broader Fleet Safety remain outside scope. Fuel, Accounting, QuickManage, provider mappings and shared Task/notification business code are unchanged.
+
+---
+
+# Historical Phase 2 delivery
 
 Branch `feature/drivers-ui-redesign`, Draft [PR #99](https://github.com/shirimov/fleetpilot-tms/pull/99). No merge, deployment, production connection or production migration was performed. The Phase 2 report below supersedes the historical Phase 1 report retained at the end.
 
@@ -21,12 +75,12 @@ The verifier first applies the previous 47 migrations, inserts synthetic legacy 
 
 ## Access and private storage
 
-| Selected-company identity | Operational reads | CDL/emergency contacts/documents/reviews/activity | Write | Compensation |
-| --- | --- | --- | --- | --- |
-| Active OWNER / ADMIN membership | Yes | Yes | Yes | Scoped |
-| MEMBER with linked active Employee role MANAGER / SAFETY / ADMIN | Yes | Read only | No | No |
-| MEMBER with linked active Employee role DISPATCHER / LEAD_DISPATCH / UPDATER | Yes, including aggregate alerts | No | No | No |
-| Unlinked/inactive/terminated/foreign employee or unsupported role | No | No | No | No |
+| Selected-company identity                                                    | Operational reads               | CDL/emergency contacts/documents/reviews/activity | Write | Compensation |
+| ---------------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------- | ----- | ------------ |
+| Active OWNER / ADMIN membership                                              | Yes                             | Yes                                               | Yes   | Scoped       |
+| MEMBER with linked active Employee role MANAGER / SAFETY / ADMIN             | Yes                             | Read only                                         | No    | No           |
+| MEMBER with linked active Employee role DISPATCHER / LEAD_DISPATCH / UPDATER | Yes, including aggregate alerts | No                                                | No    | No           |
+| Unlinked/inactive/terminated/foreign employee or unsupported role            | No                              | No                                                | No    | No           |
 
 Employee roles do not grant company administration. Active membership, employee linkage and selected company are checked on every request. Foreign driver/document/version relationships return 404 for authorized document readers; denied document roles receive 403. Existing load/settlement/truck scoping remains. The retained driver DELETE endpoint returns 409 for every authorized own-company driver, including unlinked drivers, and never deletes. No document/version/review deletion endpoints are added.
 
@@ -36,19 +90,19 @@ The existing private filesystem abstraction stores random-key files in a separat
 
 Reproduce with `bash scripts/verify-drivers-db.sh --phase2-regression`. Requires installed dependencies, Playwright Chromium and the existing local PostgreSQL/Node Docker images. Tests use disposable PostgreSQL 17.5, tmpfs, an internal Docker network, no published Docker ports and a dedicated loopback relay restricted to `fleetpilot_drivers_verify`. Synthetic signed sessions exercise normal authentication. No application auth bypass exists. Teardown removes the test app, relay, database, network and synthetic private storage.
 
-| Check | Result |
-| --- | --- |
-| Previous-47 to new-48 migration preservation | Passed |
-| Focused Drivers unit checks | 10 passed |
-| Existing authenticated persistence/isolation/DELETE/browser tests | 8 passed |
-| New Phase 2 real HTTP/database/browser tests | 6 passed |
-| Existing responsive/accessibility/UI regressions | 6 passed |
-| Full regression suite | 486 passed, 0 failed |
-| Prisma format / validate / generate | Passed |
-| TypeScript | `npx tsc --noEmit` passed; no `typecheck` npm script exists |
-| Changed-file lint | Passed, no warnings |
-| Full repository lint | Existing 97 errors / 108 warnings; unchanged baseline |
-| Production build | Passed |
+| Check                                                             | Result                                                      |
+| ----------------------------------------------------------------- | ----------------------------------------------------------- |
+| Previous-47 to new-48 migration preservation                      | Passed                                                      |
+| Focused Drivers unit checks                                       | 10 passed                                                   |
+| Existing authenticated persistence/isolation/DELETE/browser tests | 8 passed                                                    |
+| New Phase 2 real HTTP/database/browser tests                      | 6 passed                                                    |
+| Existing responsive/accessibility/UI regressions                  | 6 passed                                                    |
+| Full regression suite                                             | 486 passed, 0 failed                                        |
+| Prisma format / validate / generate                               | Passed                                                      |
+| TypeScript                                                        | `npx tsc --noEmit` passed; no `typecheck` npm script exists |
+| Changed-file lint                                                 | Passed, no warnings                                         |
+| Full repository lint                                              | Existing 97 errors / 108 warnings; unchanged baseline       |
+| Production build                                                  | Passed                                                      |
 
 Phase 2 independently reads PostgreSQL after employment writes; checks legacy nulls, teams, stale edit/version conflicts, downloaded bytes, private/cross-company/profile-path permissions, dispatch versus safety access, replacement/date history, invalid/oversize uploads without partial writes, attributed reviews/audits and deletion protection. A real authenticated browser edits employment, uploads a medical certificate, opens history, records a review and renders desktop/mobile views.
 
