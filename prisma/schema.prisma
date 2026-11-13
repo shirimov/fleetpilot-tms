@@ -103,45 +103,48 @@ enum LoadActivityAction {
 }
 
 model Company {
-  fuelDeductionPolicies      FuelDeductionPolicy[]
-  truckOperatingAffiliations TruckCompanyAffiliation[]
-  archiveGrants              ArchiveScopeGrant[]
-  archiveCompanies           ArchiveCompany[]
-  id                         String                      @id @default(cuid())
-  name                       String
-  dotNumber                  String?
-  mcNumber                   String?
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
-  trucks                     Truck[]
-  loads                      Load[]
-  bankAccounts               BankAccount[]
-  bankTransactions           BankTransaction[]
-  bankTransactionAllocations BankTransactionAllocation[]
-  taskProjects               TaskProject[]
-  memberships                CompanyMembership[]
-  activeUsers                User[]                      @relation("ActiveCompany")
-  companyDrivers             Driver[]                    @relation("DriverCompany")
-  employees                  Employee[]
-  employeeSkills             EmployeeSkillDefinition[]
-  customers                  Customer[]
-  trailers                   Trailer[]
-  loadActivities             LoadActivity[]
-  telegramUserLinks          TelegramUserLink[]
-  telegramLinkTokens         TelegramLinkToken[]
-  telegramInboundUpdates     TelegramInboundUpdate[]
-  telegramDeliveries         TelegramDelivery[]
-  telegramPendingActions     TelegramPendingAction[]
-  telegramUpdateRequests     TelegramUpdateRequest[]
-  operatingGroupLink         OperatingGroupCompany?
-  financialSources           FinancialSource[]
-  financialTransactions      FinancialTransaction[]
-  financialAllocations       FinancialAllocation[]
-  financialExpectations      FinancialExpectation[]
-  financialParties           FinancialParty[]
-  financialAuditEvents       FinancialAuditEvent[]
-  truckImportBatches         TruckImportBatch[]
-  truckLifecycleEvents       TruckLifecycleEvent[]
+  truckOwnerPeriods           TruckOwnerPeriod[]
+  driverSourceCompanyBindings DriverSourceCompanyBinding[]
+  driverSourceProfiles        DriverSourceProfile[]
+  fuelDeductionPolicies       FuelDeductionPolicy[]
+  truckOperatingAffiliations  TruckCompanyAffiliation[]
+  archiveGrants               ArchiveScopeGrant[]
+  archiveCompanies            ArchiveCompany[]
+  id                          String                       @id @default(cuid())
+  name                        String
+  dotNumber                   String?
+  mcNumber                    String?
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+  trucks                      Truck[]
+  loads                       Load[]
+  bankAccounts                BankAccount[]
+  bankTransactions            BankTransaction[]
+  bankTransactionAllocations  BankTransactionAllocation[]
+  taskProjects                TaskProject[]
+  memberships                 CompanyMembership[]
+  activeUsers                 User[]                       @relation("ActiveCompany")
+  companyDrivers              Driver[]                     @relation("DriverCompany")
+  employees                   Employee[]
+  employeeSkills              EmployeeSkillDefinition[]
+  customers                   Customer[]
+  trailers                    Trailer[]
+  loadActivities              LoadActivity[]
+  telegramUserLinks           TelegramUserLink[]
+  telegramLinkTokens          TelegramLinkToken[]
+  telegramInboundUpdates      TelegramInboundUpdate[]
+  telegramDeliveries          TelegramDelivery[]
+  telegramPendingActions      TelegramPendingAction[]
+  telegramUpdateRequests      TelegramUpdateRequest[]
+  operatingGroupLink          OperatingGroupCompany?
+  financialSources            FinancialSource[]
+  financialTransactions       FinancialTransaction[]
+  financialAllocations        FinancialAllocation[]
+  financialExpectations       FinancialExpectation[]
+  financialParties            FinancialParty[]
+  financialAuditEvents        FinancialAuditEvent[]
+  truckImportBatches          TruckImportBatch[]
+  truckLifecycleEvents        TruckLifecycleEvent[]
 }
 
 enum CompanyMembershipRole {
@@ -151,27 +154,32 @@ enum CompanyMembershipRole {
 }
 
 model User {
-  createdFuelReconciliationMatches   FuelReconciliationManualMatch[] @relation("FuelReconciliationMatchActor")
-  unmatchedFuelReconciliationMatches FuelReconciliationManualMatch[] @relation("FuelReconciliationUnmatchActor")
-  historicalTruckMappings            HistoricalTruckMapping[]        @relation("HistoricalTruckMappingActor")
-  approvedFuelDeductionPolicies      FuelDeductionPolicy[]           @relation("FuelDeductionPolicyApprover")
-  fuelDeductionPolicyRevisions       FuelDeductionPolicyRevision[]   @relation("FuelDeductionPolicyRevisionActor")
+  truckOwnerHistoryRevisions         TruckOwnerHistoryRevision[]
+  driverSourceCompanyBindings        DriverSourceCompanyBinding[]
+  driverSourceCompanyBindingEvents   DriverSourceCompanyBindingEvent[]
+  driverSourceProfiles               DriverSourceProfile[]
+  driverSourceImportEvents           DriverSourceImportEvent[]
+  createdFuelReconciliationMatches   FuelReconciliationManualMatch[]   @relation("FuelReconciliationMatchActor")
+  unmatchedFuelReconciliationMatches FuelReconciliationManualMatch[]   @relation("FuelReconciliationUnmatchActor")
+  historicalTruckMappings            HistoricalTruckMapping[]          @relation("HistoricalTruckMappingActor")
+  approvedFuelDeductionPolicies      FuelDeductionPolicy[]             @relation("FuelDeductionPolicyApprover")
+  fuelDeductionPolicyRevisions       FuelDeductionPolicyRevision[]     @relation("FuelDeductionPolicyRevisionActor")
   truckHistoryRevisions              TruckCompanyHistoryRevision[]
   archiveCaptureRuns                 ArchiveCaptureRun[]
   archiveGrants                      ArchiveScopeGrant[]
   archiveCatalogs                    ArchiveBrowserCatalog[]
-  archiveVersions                    ArchiveVersion[]                @relation("ArchiveVersionActor")
-  archiveConflicts                   ArchiveConflict[]               @relation("ArchiveConflictActor")
-  archiveInventories                 ArchiveInventory[]              @relation("ArchiveInventoryActor")
-  id                                 String                          @id @default(cuid())
-  email                              String                          @unique
+  archiveVersions                    ArchiveVersion[]                  @relation("ArchiveVersionActor")
+  archiveConflicts                   ArchiveConflict[]                 @relation("ArchiveConflictActor")
+  archiveInventories                 ArchiveInventory[]                @relation("ArchiveInventoryActor")
+  id                                 String                            @id @default(cuid())
+  email                              String                            @unique
   displayName                        String
   image                              String?
-  isActive                           Boolean                         @default(true)
+  isActive                           Boolean                           @default(true)
   activeCompanyId                    String?
-  activeCompany                      Company?                        @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
-  createdAt                          DateTime                        @default(now())
-  updatedAt                          DateTime                        @updatedAt
+  activeCompany                      Company?                          @relation("ActiveCompany", fields: [activeCompanyId], references: [id], onDelete: SetNull)
+  createdAt                          DateTime                          @default(now())
+  updatedAt                          DateTime                          @updatedAt
 
   authAccounts                  AuthAccount[]
   emailSignInTokens             EmailSignInToken[]
@@ -436,6 +444,8 @@ model TelegramPendingAction {
 }
 
 model Truck {
+  ownerPeriods               TruckOwnerPeriod[]
+  ownerHistoryRevisions      TruckOwnerHistoryRevision[]
   historicalArchiveMappings  HistoricalTruckMapping[]
   fuelDeductionPolicies      FuelDeductionPolicy[]
   operatingAffiliations      TruckCompanyAffiliation[]
@@ -599,7 +609,100 @@ model Trailer {
   @@index([companyId, status, equipmentType])
 }
 
+/// Canonical source-backed safety roster; not settlement pay configuration.
+/// source is private approved evidence and MUST NOT be serialized in public DTOs.
+model DriverSourceProfile {
+  id                 String                     @id
+  provider           String
+  accountKey         String
+  operatingGroupId   String
+  providerCompanyId  String
+  providerDriverId   String
+  companyId          String
+  driverId           String?                    @unique
+  firstName          String?
+  middleName         String?
+  lastName           String?
+  fullName           String?
+  lifecycleStatus    String?
+  hireDateRaw        String?
+  terminationDateRaw String?
+  rehireDateRaw      String?
+  compensationType   String
+  compensationAmount String?
+  source             Json
+  sourceHash         String
+  evidenceSha256     String
+  mappingEvidence    String
+  actorUserId        String
+  createdAt          DateTime                   @default(now())
+  company            Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operatingGroup     OperatingGroup             @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  driver             Driver?                    @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  mapping            DriverSourceCompanyBinding @relation(fields: [mappingEvidence], references: [id], onDelete: Restrict)
+  actor              User                       @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  importEvents       DriverSourceImportEvent[]
+
+  @@unique([provider, accountKey, providerCompanyId, providerDriverId], map: "driver_source_identity_key")
+  @@index([companyId, lifecycleStatus, id])
+}
+
+/// Immutable source identity independent of FinancialSource/ArchiveCompany creation.
+model DriverSourceCompanyBinding {
+  id                String                            @id
+  provider          String
+  accountKey        String
+  operatingGroupId  String
+  providerCompanyId String
+  companyId         String
+  sourceCompanyName String?
+  origin            String
+  archiveCompanyId  String?
+  evidenceSha256    String
+  planSha256        String?
+  actorUserId       String
+  provenance        Json
+  createdAt         DateTime                          @default(now())
+  company           Company                           @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  operatingGroup    OperatingGroup                    @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  archiveCompany    ArchiveCompany?                   @relation(fields: [archiveCompanyId], references: [id], onDelete: Restrict)
+  actor             User                              @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  profiles          DriverSourceProfile[]
+  events            DriverSourceCompanyBindingEvent[]
+
+  @@unique([provider, accountKey, providerCompanyId], map: "driver_source_company_identity_key")
+  @@index([companyId])
+  @@index([operatingGroupId])
+}
+
+model DriverSourceCompanyBindingEvent {
+  id             String                     @id
+  bindingId      String
+  actorUserId    String
+  evidenceSha256 String
+  planSha256     String?
+  createdAt      DateTime                   @default(now())
+  binding        DriverSourceCompanyBinding @relation(fields: [bindingId], references: [id], onDelete: Restrict)
+  actor          User                       @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([bindingId])
+}
+
+model DriverSourceImportEvent {
+  id             String              @id
+  profileId      String
+  actorUserId    String
+  evidenceSha256 String
+  sourceHash     String
+  createdAt      DateTime            @default(now())
+  profile        DriverSourceProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  actor          User                @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([profileId])
+}
+
 model Driver {
+  sourceProfile              DriverSourceProfile?
   id                         String                      @id @default(cuid())
   companyId                  String?
   company                    Company?                    @relation("DriverCompany", fields: [companyId], references: [id])
@@ -1333,6 +1436,7 @@ enum PilotInvoiceStatus {
   NEEDS_REVIEW
   READY_TO_POST
   POSTED
+  SOURCE_ACCEPTED
   FAILED
 }
 
@@ -1483,32 +1587,35 @@ enum FuelDiscountTreatment {
 }
 
 model OperatingGroup {
-  fuelReconciliationMatches FuelReconciliationManualMatch[]
-  historicalTruckMappings   HistoricalTruckMapping[]
-  fuelDeductionPolicies     FuelDeductionPolicy[]
-  archiveCaptureRuns        ArchiveCaptureRun[]
-  archiveGrants             ArchiveScopeGrant[]
-  archiveCatalogs           ArchiveBrowserCatalog[]
-  archiveCompanies          ArchiveCompany[]
-  id                        String                          @id @default(cuid())
-  name                      String
-  currency                  String                          @default("USD")
-  createdAt                 DateTime                        @default(now())
-  updatedAt                 DateTime                        @updatedAt
-  companies                 OperatingGroupCompany[]
-  memberships               OperatingGroupMembership[]
-  sources                   FinancialSource[]
-  statements                FinancialStatement[]
-  categories                FinancialCategory[]
-  programs                  FinancialProgram[]
-  adminFeeAgreements        AdminFeeAgreement[]
-  parties                   FinancialParty[]
-  transactions              FinancialTransaction[]
-  expectations              FinancialExpectation[]
-  bankExpectationMatches    FinancialExpectationBankMatch[]
-  auditEvents               FinancialAuditEvent[]
-  pilotInvoices             PilotProviderInvoice[]
-  pilotProductMappings      PilotProductMapping[]
+  truckOwnerHistoryRevisions  TruckOwnerHistoryRevision[]
+  driverSourceCompanyBindings DriverSourceCompanyBinding[]
+  driverSourceProfiles        DriverSourceProfile[]
+  fuelReconciliationMatches   FuelReconciliationManualMatch[]
+  historicalTruckMappings     HistoricalTruckMapping[]
+  fuelDeductionPolicies       FuelDeductionPolicy[]
+  archiveCaptureRuns          ArchiveCaptureRun[]
+  archiveGrants               ArchiveScopeGrant[]
+  archiveCatalogs             ArchiveBrowserCatalog[]
+  archiveCompanies            ArchiveCompany[]
+  id                          String                          @id @default(cuid())
+  name                        String
+  currency                    String                          @default("USD")
+  createdAt                   DateTime                        @default(now())
+  updatedAt                   DateTime                        @updatedAt
+  companies                   OperatingGroupCompany[]
+  memberships                 OperatingGroupMembership[]
+  sources                     FinancialSource[]
+  statements                  FinancialStatement[]
+  categories                  FinancialCategory[]
+  programs                    FinancialProgram[]
+  adminFeeAgreements          AdminFeeAgreement[]
+  parties                     FinancialParty[]
+  transactions                FinancialTransaction[]
+  expectations                FinancialExpectation[]
+  bankExpectationMatches      FinancialExpectationBankMatch[]
+  auditEvents                 FinancialAuditEvent[]
+  pilotInvoices               PilotProviderInvoice[]
+  pilotProductMappings        PilotProductMapping[]
 }
 
 /// Effective-dated control policy. It determines expected recovery only and never posts economics.
@@ -1719,6 +1826,7 @@ model FinancialProgram {
 }
 
 model FinancialParty {
+  truckOwnerPeriods          TruckOwnerPeriod[]
   id                         String                      @id @default(cuid())
   operatingGroupId           String
   companyId                  String?
@@ -1994,39 +2102,44 @@ model FinancialAuditEvent {
 }
 
 model PilotProviderInvoice {
-  id                  String                   @id @default(cuid())
-  operatingGroupId    String
-  sourceId            String
-  provider            String                   @default("PILOT")
-  providerAccountHash String
-  invoiceNumber       String
-  billingDate         DateTime                 @db.Date
-  dueDate             DateTime?                @db.Date
-  periodStart         DateTime                 @db.Date
-  periodEnd           DateTime                 @db.Date
-  currency            String                   @default("USD")
-  invoiceTotalMinor   BigInt
-  parsedTotalMinor    BigInt
-  differenceMinor     BigInt
-  status              PilotInvoiceStatus       @default(UPLOADED)
-  parseVersion        String
-  expectationId       String?                  @unique
-  uploadedByUserId    String
-  postedByUserId      String?
-  postedAt            DateTime?
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  operatingGroup      OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  source              FinancialSource          @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  expectation         FinancialExpectation?    @relation(fields: [expectationId], references: [id], onDelete: Restrict)
-  uploadedBy          User                     @relation("PilotInvoiceUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
-  postedBy            User?                    @relation("PilotInvoicePoster", fields: [postedByUserId], references: [id], onDelete: Restrict)
-  documents           PilotInvoiceDocument[]
-  events              PilotFuelingEvent[]
-  productLines        PilotFuelProductLine[]
-  adjustments         PilotInvoiceAdjustment[]
-  issues              PilotImportIssue[]
-  auditEvents         FinancialAuditEvent[]
+  id                       String                   @id @default(cuid())
+  operatingGroupId         String
+  sourceId                 String
+  provider                 String                   @default("PILOT")
+  providerAccountHash      String
+  providerAccountReference String?
+  invoiceNumber            String
+  billingDate              DateTime                 @db.Date
+  dueDate                  DateTime?                @db.Date
+  periodStart              DateTime                 @db.Date
+  periodEnd                DateTime                 @db.Date
+  currency                 String                   @default("USD")
+  invoiceTotalMinor        BigInt
+  parsedTotalMinor         BigInt
+  differenceMinor          BigInt
+  status                   PilotInvoiceStatus       @default(UPLOADED)
+  parseVersion             String
+  sourceFormat             String                   @default("LEGACY_XLS")
+  billingPeriodExplicit    Boolean                  @default(true)
+  observedStart            DateTime?                @db.Date
+  observedEnd              DateTime?                @db.Date
+  expectationId            String?                  @unique
+  uploadedByUserId         String
+  postedByUserId           String?
+  postedAt                 DateTime?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  operatingGroup           OperatingGroup           @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  source                   FinancialSource          @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  expectation              FinancialExpectation?    @relation(fields: [expectationId], references: [id], onDelete: Restrict)
+  uploadedBy               User                     @relation("PilotInvoiceUploader", fields: [uploadedByUserId], references: [id], onDelete: Restrict)
+  postedBy                 User?                    @relation("PilotInvoicePoster", fields: [postedByUserId], references: [id], onDelete: Restrict)
+  documents                PilotInvoiceDocument[]
+  events                   PilotFuelingEvent[]
+  productLines             PilotFuelProductLine[]
+  adjustments              PilotInvoiceAdjustment[]
+  issues                   PilotImportIssue[]
+  auditEvents              FinancialAuditEvent[]
 
   @@unique([operatingGroupId, provider, providerAccountHash, invoiceNumber])
   @@index([operatingGroupId, status, billingDate])
@@ -2129,6 +2242,7 @@ model PilotInvoiceAdjustment {
   description        String
   transactionDate    DateTime?             @db.Date
   signedAmountMinor  BigInt
+  appliedToEvent     Boolean               @default(false)
   categoryId         String?
   transactionId      String?               @unique
   createdAt          DateTime              @default(now())
@@ -2478,21 +2592,22 @@ model TaskMention {
 
 // QuickManage evidence archive. No relationship to economic posting tables.
 model ArchiveCompany {
-  archiveGrant        ArchiveScopeGrant  @relation(fields: [operatingGroupId, companyId], references: [operatingGroupId, companyId], onDelete: Restrict, map: "archive_company_grant_fk")
-  id                  String             @id @default(cuid())
-  operatingGroupId    String
-  companyId           String
-  sourceId            String             @unique
-  provider            String             @default("QUICKMANAGE")
-  accountKey          String
-  providerCompanyId   String
-  providerCompanyName String
-  createdAt           DateTime           @default(now())
-  operatingGroup      OperatingGroup     @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
-  company             Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  source              FinancialSource    @relation(fields: [sourceId], references: [id], onDelete: Restrict)
-  statements          ArchiveStatement[]
-  inventories         ArchiveInventory[]
+  driverSourceCompanyBindings DriverSourceCompanyBinding[]
+  archiveGrant                ArchiveScopeGrant            @relation(fields: [operatingGroupId, companyId], references: [operatingGroupId, companyId], onDelete: Restrict, map: "archive_company_grant_fk")
+  id                          String                       @id @default(cuid())
+  operatingGroupId            String
+  companyId                   String
+  sourceId                    String                       @unique
+  provider                    String                       @default("QUICKMANAGE")
+  accountKey                  String
+  providerCompanyId           String
+  providerCompanyName         String
+  createdAt                   DateTime                     @default(now())
+  operatingGroup              OperatingGroup               @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  company                     Company                      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  source                      FinancialSource              @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  statements                  ArchiveStatement[]
+  inventories                 ArchiveInventory[]
 
   @@unique([operatingGroupId, accountKey, providerCompanyId])
   @@unique([accountKey, providerCompanyId])
@@ -2815,4 +2930,47 @@ model TruckCompanyHistoryRevision {
   affiliations       TruckCompanyAffiliation[]
 
   @@index([truckId, createdAt])
+}
+
+// Beneficial owner history; independent of TruckCompanyAffiliation.
+// Provider recipient IDs are explicit, audited QM bindings in Company scope.
+model TruckOwnerPeriod {
+  id                  String                    @id @default(cuid())
+  truckId             String
+  ownerPartyId        String
+  companyId           String
+  providerRecipientId String
+  effectiveFrom       DateTime                  @db.Date
+  effectiveTo         DateTime?                 @db.Date
+  revisionId          String
+  supersededAt        DateTime?
+  truck               Truck                     @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  ownerParty          FinancialParty            @relation(fields: [ownerPartyId], references: [id], onDelete: Restrict)
+  company             Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  revision            TruckOwnerHistoryRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@index([truckId, supersededAt, effectiveFrom])
+  @@index([ownerPartyId, effectiveFrom])
+  @@index([companyId, providerRecipientId])
+}
+
+model TruckOwnerHistoryRevision {
+  id                    String                     @id @default(cuid())
+  creationTransactionId BigInt                     @default(dbgenerated("txid_current()"))
+  truckId               String
+  operatingGroupId      String
+  actorUserId           String
+  previousRevisionId    String?                    @unique
+  sourceReference       String
+  reason                String
+  createdAt             DateTime                   @default(now())
+  truck                 Truck                      @relation(fields: [truckId], references: [id], onDelete: Restrict)
+  operatingGroup        OperatingGroup             @relation(fields: [operatingGroupId], references: [id], onDelete: Restrict)
+  actor                 User                       @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  previousRevision      TruckOwnerHistoryRevision? @relation("OwnerHistoryChain", fields: [previousRevisionId], references: [id], onDelete: Restrict)
+  nextRevision          TruckOwnerHistoryRevision? @relation("OwnerHistoryChain")
+  periods               TruckOwnerPeriod[]
+
+  @@index([truckId, createdAt])
+  @@index([operatingGroupId])
 }

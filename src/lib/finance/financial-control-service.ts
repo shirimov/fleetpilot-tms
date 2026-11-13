@@ -1,3 +1,4 @@
+import { hasPilotInvoiceAccess } from './pilot-invoice-authorization';
 import { archiveDocumentScope } from './archive-service';
 import { categoryAttribution, entryQueues, isReviewQueue, pageNumber, summarizeAccounting, reviewQueues } from './accounting-read-model';
 import { createHash } from 'node:crypto';
@@ -395,8 +396,9 @@ export class FinancialControlService {
   }
 
   async listStatements(context: FinancialAuthorization) {
+    const fullPilotAccess = await hasPilotInvoiceAccess(context, this.database);
     const statements = await this.database.financialStatement.findMany({
-      where: { ...archiveDocumentScope(context), archiveVersions: { none: {} }, archiveConflicts: { none: {} } }, orderBy: { createdAt: 'desc' },
+      where: { ...archiveDocumentScope(context), archiveVersions: { none: {} }, archiveConflicts: { none: {} }, ...(!fullPilotAccess ? { pilotDocuments: { none: {} } } : {}) }, orderBy: { createdAt: 'desc' },
       select: { id: true, type: true, periodStart: true, periodEnd: true, originalFilename: true, mimeType: true, byteSize: true, checksumSha256: true, importStatus: true, currency: true, sourceTotalMinor: true, importedRowCount: true, matchedRowCount: true, unresolvedRowCount: true, createdAt: true, source: { select: { id: true, name: true } } },
     });
     return statements.map((statement) => ({ ...statement, sourceTotalMinor: bigintJson(statement.sourceTotalMinor) }));
@@ -492,8 +494,9 @@ export class FinancialControlService {
   }
 
   async listTransactions(context: FinancialAuthorization, ids?: string[]) {
+    const fullPilotAccess = await hasPilotInvoiceAccess(context, this.database);
     const [transactions, categories] = await Promise.all([this.database.financialTransaction.findMany({
-      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, ...(ids ? { id: { in: ids } } : {}) }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+      where: { operatingGroupId: context.operatingGroupId, status: { not: 'VOIDED' }, ...(!fullPilotAccess ? { pilotFuelingEvent: { is: null }, pilotInvoiceAdjustment: { is: null } } : {}), ...(ids ? { id: { in: ids } } : {}) }, orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
       include: { category: { select: { id: true, name: true } }, source: { select: { id: true, name: true } }, destinationSource: { select: { id: true, name: true } }, company: { select: { name: true } }, pilotFuelingEvent: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, pilotInvoiceAdjustment: { select: { invoiceId: true, invoice: { select: { invoiceNumber: true } } } }, allocations: { include: { category: true, truck: { select: { unitNumber: true } }, company: { select: { name: true } } } }, evidence: { include: { importRecord: { select: { sourceRowIndex: true, statement: { select: { id: true, originalFilename: true } } } } } } },
     }), this.listCategories(context)]);
     const categoryPaths = new Map(categories.map((category) => [category.id, category.path]));
@@ -554,8 +557,9 @@ export class FinancialControlService {
   }
 
   async listImportRecords(context: FinancialAuthorization) {
+    const fullPilotAccess = await hasPilotInvoiceAccess(context, this.database);
     const records = await this.database.financialImportRecord.findMany({
-      where: { statement: { operatingGroupId: context.operatingGroupId } },
+      where: { statement: { operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotDocuments: { none: {} } } : {}) } },
       orderBy: [{ createdAt: 'desc' }, { sourceRowIndex: 'asc' }],
       select: { id: true, sourceRowIndex: true, rawDescription: true, rawDate: true, rawAmount: true, rawReference: true, candidateDate: true, candidateAmountMinor: true, candidateDirection: true, status: true, statement: { select: { id: true, originalFilename: true, source: { select: { name: true } } } } },
     });
@@ -563,8 +567,9 @@ export class FinancialControlService {
   }
 
   async listExpectations(context: FinancialAuthorization) {
+    const fullPilotAccess = await hasPilotInvoiceAccess(context, this.database);
     const expectations = await this.database.financialExpectation.findMany({
-      where: { operatingGroupId: context.operatingGroupId },
+      where: { operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotProviderInvoice: { is: null } } : {}) },
       orderBy: { expectedDateStart: 'desc' },
       include: { bankMatches: { select: { id: true, bankTransactionId: true, matchedAmountMinor: true, matchedAt: true, bankTransaction: { select: { name: true, merchantName: true, date: true } } } } },
     });
@@ -572,7 +577,8 @@ export class FinancialControlService {
   }
 
   async listBankMatchCandidates(expectationId: string, context: FinancialAuthorization) {
-    const expectation = await this.database.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId } });
+    const fullPilotAccess = await hasPilotInvoiceAccess(context, this.database);
+    const expectation = await this.database.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotProviderInvoice: { is: null } } : {}) } });
     if (!expectation) throw new FinancialNotFoundError();
     const start = new Date(expectation.expectedDateStart); start.setUTCDate(start.getUTCDate() - 30);
     const end = new Date(expectation.expectedDateEnd); end.setUTCDate(end.getUTCDate() + 30);
@@ -612,8 +618,9 @@ export class FinancialControlService {
       try {
         return await this.database.$transaction(async (tx) => {
       await this.lockFinancialRows(tx, [`expectation:${expectationId}`, `bank-transaction:${bankTransactionId}`]);
+      const fullPilotAccess = await hasPilotInvoiceAccess(context, tx);
       const [expectation, bankTransaction] = await Promise.all([
-        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId } }),
+        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotProviderInvoice: { is: null } } : {}) } }),
         tx.bankTransaction.findFirst({
           where: { id: bankTransactionId, companyId: { in: context.companyIds }, company: { operatingGroupLink: { operatingGroupId: context.operatingGroupId } } },
           include: { classification: true, allocations: { select: { id: true } } },
@@ -688,8 +695,9 @@ export class FinancialControlService {
     const matchedAmountMinor = parsePositiveMinorUnits(input.amount);
     return this.database.$transaction(async (tx) => {
       await this.lockFinancialRows(tx, [`expectation:${expectationId}`, `transaction:${transactionId}`]);
+      const fullPilotAccess = await hasPilotInvoiceAccess(context, tx);
       const [expectation, transaction] = await Promise.all([
-        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId }, select: { expectedAmountMinor: true, matchedAmountMinor: true, direction: true, currency: true } }),
+        tx.financialExpectation.findFirst({ where: { id: expectationId, operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotProviderInvoice: { is: null } } : {}) }, select: { expectedAmountMinor: true, matchedAmountMinor: true, direction: true, currency: true } }),
         tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { amountMinor: true, direction: true, currency: true } }),
       ]);
       if (!expectation || !transaction) throw new FinancialNotFoundError();
@@ -714,8 +722,9 @@ export class FinancialControlService {
     const role = enumValue(input.role ?? 'PRIMARY', ['PRIMARY', 'CORROBORATING'] as const, 'Evidence role');
     return this.database.$transaction(async (tx) => {
       await this.lockFinancialRows(tx, [`import-record:${importRecordId}`, `transaction:${transactionId}`]);
+      const fullPilotAccess = await hasPilotInvoiceAccess(context, tx);
       const transaction = await tx.financialTransaction.findFirst({ where: { id: transactionId, operatingGroupId: context.operatingGroupId }, select: { id: true, amountMinor: true, currency: true, reconciliationStatus: true } });
-      const record = await tx.financialImportRecord.findFirst({ where: { id: importRecordId, statement: { operatingGroupId: context.operatingGroupId } }, select: { id: true, candidateAmountMinor: true, statement: { select: { currency: true } } } });
+      const record = await tx.financialImportRecord.findFirst({ where: { id: importRecordId, statement: { operatingGroupId: context.operatingGroupId, ...(!fullPilotAccess ? { pilotDocuments: { none: {} } } : {}) } }, select: { id: true, candidateAmountMinor: true, statement: { select: { currency: true } } } });
       if (!transaction || !record) throw new FinancialNotFoundError();
       await this.rejectProviderOwnedTransaction(tx, transactionId);
       if (transaction.currency !== record.statement.currency) throw new FinancialValidationError('Evidence and transaction currencies must match.');

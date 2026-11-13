@@ -1,4 +1,4 @@
-import { expect, test } from 'playwright/test';
+import { expect, test, type Route } from 'playwright/test';
 import { createHash, randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/prisma';
 import { postedAccountingFixture } from '../fixtures/accounting-posted';
@@ -72,6 +72,7 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
       {...reconciliation.rows[0],key:'statement:unmatched',status:'QM_UNMATCHED',pilotEventId:null,pilotInvoiceId:null,pilotEvidence:null,pilotActualMinor:'0',pilotRetailMinor:null,pilotSavingsMinor:null,products:[],gallons:'0.00',pid:'2026-30',statementMinor:'41402',differenceMinor:null,historyDiffersFromPosted:false,statementEvidence:{groupLineId:'line-qm-unmatched',lineIds:['line-qm-unmatched'],versionId:'version-qm',pid:'2026-30',statementNumber:'13',description:'Fuel deduction',reference:'QM-042'},statementTruckUnit:'042',statementRecipientName:'042 Babamurat Kurbanov',statementDate:'2026-07-25T16:34:00Z',statementGallons:'80.17',statementRetailMinor:'50500',matchMethod:null},
       {...reconciliation.rows[0],key:'pilot:manual',status:'MATCHED',pilotEventId:'pilot-manual',truckUnit:'900',purchaseDate:'2026-07-20',differenceMinor:'0',historyDiffersFromPosted:false,matchMethod:'MANUAL_OWNER_MATCH',manualMatch:{id:'manual-match-1',reason:'OWNER confirmed the immutable source identity.',actor:fixture.owner.displayName,createdAt:'2026-09-24T12:30:00.000Z'}},
     );
+    reconciliation.rows[0].ownerAttribution = { ownerPartyId: 'synthetic-owner-party', periodId: 'synthetic-owner-period', revisionId: 'synthetic-owner-revision', businessDate: '2026-04-22' };
     reconciliation.total = reconciliation.rows.length;
     const controlLabels:Record<string,string>={MATCHED:'Matched',UNDER_DEDUCTED:'Under-deduction',OVER_DEDUCTED:'Over-deduction',MISSING_DEDUCTION:'Missing deduction',STATEMENT_ONLY:'Statement-only within Pilot coverage',PILOT_UNMATCHED:'Pilot unmatched',QM_UNMATCHED:'QM unmatched',SOURCE_COVERAGE_GAP:'Source coverage gap',TIMING_DIFFERENCE:'Timing difference',NO_PILOT_DATA_IMPORTED:'No Pilot data imported',NEEDS_COMPANY_HISTORY:'Needs Company history',NEEDS_TRUCK_MAPPING:'Needs Truck mapping',NEEDS_RECIPIENT_MAPPING:'Needs recipient mapping',NEEDS_RECIPIENT_REVIEW:'Needs recipient routing review',PRODUCT_CLASSIFICATION_REVIEW:'Needs fuel product review',NEEDS_POLICY:'Needs policy',NEEDS_REVIEW:'Needs review'};
     const controlStatuses=Object.keys(controlLabels);
@@ -158,6 +159,98 @@ test('Accounting URL navigation, protected Fuel, review queues and responsive la
     await page.goto('/accounting?view=statements&archive=reconciliation');
     const timingRow = page.getByRole('row').filter({hasText:'TIMING DIFFERENCE'}).last();
     await timingRow.getByText('Evidence and calculation').click();
+    const ownerAttribution = timingRow.getByRole('region', { name: 'Owner attribution' });
+    await expect(ownerAttribution).toContainText('synthetic-owner-party');
+    await expect(ownerAttribution).toContainText('synthetic-owner-period');
+    await expect(ownerAttribution).toContainText('synthetic-owner-revision');
+    await expect(ownerAttribution).toContainText('Calendar date label: 2026-04-22');
+    await page.route('**/api/trucks/truck/owner-history', route => route.fulfill({ json: { truckId: 'truck', unitNumber: '024', revisionId: null, periods: [] } }));
+    await page.route('**/api/trucks/truck/owner-history/options', route => route.fulfill({ json: { canManage: false, companies: [], owners: [], recipients: [] } }));
+    await ownerAttribution.getByRole('button', { name: 'Owner history', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Beneficial owner history' })).toBeVisible();
+    await expect(page.getByText(/Read-only: OWNER authority/)).toBeVisible();
+    await page.getByRole('button', { name: 'Close owner history' }).click();
+    for (const failRefresh of [false, true]) {
+      await test.step(`fuel-entry owner save preserves confirmation through ${failRefresh ? 'failed refresh and retry' : 'successful refresh'}`, async () => {
+        const savedRevision = failRefresh ? 'fuel-owner-recovered' : 'fuel-owner-refreshed';
+        const posts: Record<string, unknown>[] = [];
+        let historyReads = 0, previewReads = 0;
+        const period = { id: 'fuel-owner-period', ownerPartyId: 'synthetic-owner-party', ownerName: 'Synthetic owner', companyId: fixture.company.id, providerRecipientId: 'contractor', effectiveFrom: '2026-04-01', effectiveTo: null, revisionId: 'synthetic-owner-revision', sourceReference: 'Initial synthetic evidence', reason: 'Initial synthetic confirmation', actorUserId: fixture.owner.id, createdAt: '2026-04-01T12:00:00Z' };
+        let history = { truckId: 'truck', unitNumber: '024', revisionId: period.revisionId, periods: [period] };
+        await page.route('**/api/trucks/truck/owner-history/options', route => route.fulfill({ json: { canManage: true, companies: [{ id: fixture.company.id, name: fixture.company.name }], owners: [{ id: period.ownerPartyId, name: period.ownerName, companyId: fixture.company.id }], recipients: [{ id: period.providerRecipientId, name: 'Synthetic Contractor', companyId: fixture.company.id }] } }));
+        await page.route('**/api/trucks/truck/owner-history', async route => {
+          if (route.request().method() === 'POST') {
+            const body = route.request().postDataJSON(); posts.push(body);
+            history = { ...history, revisionId: savedRevision, periods: body.periods.map((value: object) => ({ ...period, ...value, revisionId: savedRevision, sourceReference: body.sourceReference, reason: body.reason })) };
+            return route.fulfill({ json: { truckId: 'truck', revisionId: savedRevision } });
+          }
+          historyReads++;
+          return route.fulfill({ json: history });
+        });
+        let releaseRefresh!: () => void;
+        const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+        const interceptRefresh = async (route: Route) => {
+          if (route.request().method() !== 'GET' || new URL(route.request().url()).searchParams.get('view') === 'policies' || !posts.length) return route.fallback();
+          previewReads++;
+          if (previewReads === 1) {
+            await refreshGate;
+            if (failRefresh) return route.fulfill({ status: 503, json: { error: 'Synthetic preview refresh unavailable' } });
+          }
+          return route.fulfill({ json: { ...reconciliation, rows: reconciliation.rows.map((row: { key: string }) => row.key === 'pilot:timing' ? { ...row, ownerAttribution: { ...reconciliation.rows[0].ownerAttribution, revisionId: savedRevision } } : row) } });
+        };
+        await page.route('**/api/finance/fuel-reconciliation**', interceptRefresh);
+        try {
+          await page.getByRole('button', { name: 'Select Pilot', exact: true }).click();
+          await page.getByRole('button', { name: 'Select QM', exact: true }).click();
+          await ownerAttribution.getByRole('button', { name: 'Owner history', exact: true }).click();
+          const dialog = page.getByRole('dialog', { name: 'Beneficial owner history' });
+          await expect(dialog.getByText('Initial synthetic evidence', { exact: true })).toBeVisible();
+          await dialog.evaluate(element => element.setAttribute('data-refresh-continuity', 'retained'));
+          await dialog.getByLabel('Evidence reference', { exact: true }).fill('Synthetic fuel-entry correction');
+          await dialog.getByLabel('Reason', { exact: true }).fill('Verified synthetic owner evidence');
+          await dialog.getByRole('button', { name: 'Review full timeline' }).click();
+          await dialog.getByLabel('I reviewed every period and its owner / Company / Contractor binding.').check();
+          await dialog.getByRole('button', { name: 'Save audited owner history' }).click();
+          await expect.poll(() => previewReads).toBe(1);
+          await expect(dialog.getByText(`Saved and read back revision ${savedRevision}.`, { exact: false })).toBeVisible();
+          await expect(dialog.getByText('Loading fuel deduction reconciliation…', { exact: true })).toBeVisible();
+          await expect(dialog).toHaveAttribute('data-refresh-continuity', 'retained');
+          await expect(page.locator('#fuel-reconciliation-table')).toHaveCount(0);
+          await expect(page.getByRole('heading', { name: 'MANUAL MATCH', exact: true })).toHaveCount(0);
+          expect(posts).toHaveLength(1);
+          expect(posts[0]).toMatchObject({ expectedRevisionId: 'synthetic-owner-revision', sourceReference: 'Synthetic fuel-entry correction', reason: 'Verified synthetic owner evidence' });
+          releaseRefresh();
+          if (failRefresh) {
+            await expect(dialog.getByRole('alert')).toContainText('Synthetic preview refresh unavailable');
+            await expect(dialog.getByText('Loading fuel deduction reconciliation…', { exact: true })).toHaveCount(0);
+            await expect(dialog.getByText(`Saved and read back revision ${savedRevision}.`, { exact: false })).toBeVisible();
+            await expect(page.locator('#fuel-reconciliation-table')).toHaveCount(0);
+            await dialog.getByRole('button', { name: 'Retry fuel preview', exact: true }).click();
+          }
+          await expect(dialog.getByText('Fuel preview refreshed.', { exact: true })).toBeVisible();
+          await expect(dialog).toHaveAttribute('data-refresh-continuity', 'retained');
+          await expect(dialog.getByText(`Saved and read back revision ${savedRevision}.`, { exact: false })).toBeVisible();
+          await expect(dialog.getByText(`Actor: ${fixture.owner.id}`, { exact: true })).toBeVisible();
+          await expect(dialog.getByText('Synthetic fuel-entry correction', { exact: true })).toBeVisible();
+          await expect(dialog.getByText('Verified synthetic owner evidence', { exact: true })).toBeVisible();
+          await expect(dialog.getByLabel('From (inclusive) 1')).toHaveValue('2026-04-01');
+          await expect(dialog.getByRole('alert')).toHaveCount(0);
+          expect(historyReads).toBe(2); // Initial history + verified readback; no remount/reload.
+          expect(previewReads).toBe(failRefresh ? 2 : 1);
+          expect(posts).toHaveLength(1); // Preview retry must never repeat ownership POST.
+          await dialog.getByRole('button', { name: 'Close owner history' }).click();
+          await timingRow.getByText('Evidence and calculation').click();
+          await expect(ownerAttribution).toContainText(savedRevision);
+          await expect(page.getByRole('heading', { name: 'MANUAL MATCH', exact: true })).toHaveCount(0);
+          expect(posts).toHaveLength(1);
+        } finally {
+          releaseRefresh();
+          await page.unroute('**/api/finance/fuel-reconciliation**', interceptRefresh);
+        }
+        await page.goto('/accounting?view=statements&archive=reconciliation');
+        await timingRow.getByText('Evidence and calculation').click();
+      });
+    }
     await expect(timingRow.getByText(/invoice PILOT-1/)).toBeVisible();
     await expect(timingRow.getByText(/PID 30/)).toBeVisible();
     await expect(timingRow.getByText(/Current Company Current Company/)).toBeVisible();

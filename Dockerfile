@@ -15,7 +15,8 @@ ARG APP_COMMIT_SHA=unknown
 ENV APP_COMMIT_SHA=${APP_COMMIT_SHA}
 ENV DATABASE_URL=postgresql://fleetpilot:build-only@localhost:5432/fleetpilot?schema=public
 ENV AUTH_SECRET=fleetpilot-build-only-secret-not-for-runtime
-COPY . .
+# Preserve private checkout modes while allowing the non-root migrator to read source.
+COPY --chown=node:node . .
 RUN npx prisma generate
 RUN npm run build
 

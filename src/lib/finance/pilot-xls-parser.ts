@@ -53,6 +53,8 @@ export type PilotParsedAdjustment = {
   signedAmountMinor: bigint | null;
   fingerprint: string;
   sourceLineIdentity: string;
+  eventKeyHash?: string | null;
+  appliedToEvent?: boolean;
 };
 
 export type PilotParsedNonEconomicRow = {
@@ -70,6 +72,11 @@ export type PilotParsedRow = PilotParsedProductLine | PilotParsedAdjustment | Pi
 
 export type PilotParsedInvoice = {
   provider: 'PILOT';
+  sourceFormat: 'LEGACY_XLS' | 'PORTAL_XLSX' | 'PIPE_INVOICE';
+  billingPeriodExplicit: boolean;
+  observedStart: Date;
+  observedEnd: Date;
+  providerAccountReference: string;
   providerAccountHash: string;
   invoiceNumber: string;
   billingDate: Date;
@@ -372,7 +379,10 @@ export class PilotXlsParser {
         sourceLineIdentity: hash([invoiceMatch[1], eventKeyHash, productCode, quantity?.toString(), unitPrice?.toString(), signedAmountMinor?.toString(), row.toString()]),
       });
     }
-    return { provider: 'PILOT', providerAccountHash: hash([account.trim().toUpperCase()]), invoiceNumber: invoiceMatch[1], billingDate, dueDate, periodStart, periodEnd, invoiceTotalMinor, parsedTotalMinor, differenceMinor: parsedTotalMinor - invoiceTotalMinor, rows };
+    const datedRows = rows.flatMap((row) => row.transactionDate ? [row.transactionDate] : []);
+    return { provider: 'PILOT', sourceFormat: 'LEGACY_XLS', billingPeriodExplicit: true,
+      observedStart: new Date(Math.min(...datedRows.map((date) => date.getTime()))), observedEnd: new Date(Math.max(...datedRows.map((date) => date.getTime()))),
+      providerAccountReference: account.trim().replace(/^0+(?=\d)/, ''), providerAccountHash: hash([account.trim().toUpperCase()]), invoiceNumber: invoiceMatch[1], billingDate, dueDate, periodStart, periodEnd, invoiceTotalMinor, parsedTotalMinor, differenceMinor: parsedTotalMinor - invoiceTotalMinor, rows };
   }
 }
 

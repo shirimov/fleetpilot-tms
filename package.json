@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "AUTH_SECRET=fleetpilot-test-only-not-production tsx --test --test-concurrency=1 src/lib/auth/*.test.ts src/lib/dashboard/*.test.ts src/lib/dispatch/*.test.ts src/lib/finance/*.test.ts src/lib/fleet/*.test.ts src/lib/integrations/*.test.ts src/lib/security/*.test.ts src/lib/tasks/*.test.ts src/lib/workforce/*.test.ts",
+    "test:driver-import": "node --test scripts/qm-driver-*.test.mjs && node --import tsx --test src/lib/fleet/driver-pool*.test.ts src/lib/fleet/driver-pool-ui.test.tsx src/lib/fleet/driver-safety*.test.ts",
     "test:ui": "playwright test"
   },
   "dependencies": {

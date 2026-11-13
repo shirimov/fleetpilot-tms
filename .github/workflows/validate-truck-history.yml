@@ -17,7 +17,7 @@ permissions:
 jobs:
   history:
     name: History unit, integration and browser regressions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
       postgres:
@@ -48,7 +48,38 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma validate && npx prisma generate && npx prisma migrate deploy
+      - name: Verify trusted test temporary ancestry
+        run: |
+          node <<'NODE'
+          const { lstatSync } = require('node:fs');
+          const { tmpdir } = require('node:os');
+          const path = require('node:path');
+          const selected = process.env.RUNNER_TEMP;
+          if (!selected || !path.isAbsolute(selected)) throw new Error('RUNNER_TEMP must be an existing absolute directory.');
+          function inspect(label, directory, enforce) {
+            const ancestry = [];
+            for (let current = path.resolve(directory);; current = path.dirname(current)) {
+              ancestry.push(current);
+              if (current === path.dirname(current)) break;
+            }
+            for (const directory of ancestry.reverse()) {
+              let stat;
+              try { stat = lstatSync(directory); }
+              catch (error) {
+                console.log(JSON.stringify({ label, directory, error: error.code }));
+                if (enforce) throw error;
+                continue;
+              }
+              console.log(JSON.stringify({ label, directory, uid: stat.uid, mode: (stat.mode & 0o7777).toString(8), type: stat.isDirectory() ? 'directory' : 'other', symlink: stat.isSymbolicLink() }));
+              if (enforce && (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o022) !== 0 || (stat.uid !== 0 && stat.uid !== process.getuid?.()))) throw new Error('RUNNER_TEMP ancestry is not trusted.');
+            }
+          }
+          inspect('default os.tmpdir()', tmpdir(), false);
+          inspect('selected RUNNER_TEMP', selected, true);
+          NODE
       - run: npm test
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: npx tsc --noEmit
       - name: Lint changed foundation
         run: >-

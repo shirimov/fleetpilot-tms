@@ -159,9 +159,22 @@ export default function TaskWorkspace() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const boardScope = useMemo(
+    () => ({ selectedProjectId, lifecycleView, completionPeriod }),
+    [completionPeriod, lifecycleView, selectedProjectId],
+  );
+  const activeBoardScopeRef = useRef<typeof boardScope | null>(null);
+  const boardRequestRef = useRef(0);
+
   const loadBoard = useCallback(async () => {
+    // A completed mutation may still hold a loader from an earlier selection.
+    if (activeBoardScopeRef.current !== boardScope) return;
+    const requestId = ++boardRequestRef.current;
+    const isCurrent = () =>
+      activeBoardScopeRef.current === boardScope && boardRequestRef.current === requestId;
     if (!selectedProjectId) {
       setProject(null);
+      setLoadingBoard(false);
       return;
     }
     setLoadingBoard(true);
@@ -178,8 +191,9 @@ export default function TaskWorkspace() {
             : 'The project workspace could not be loaded.',
         );
       }
-      setProject(body as KanbanProject);
+      if (isCurrent()) setProject(body as KanbanProject);
     } catch (loadError) {
+      if (!isCurrent()) return;
       setProject(null);
       setError(
         loadError instanceof Error
@@ -187,16 +201,24 @@ export default function TaskWorkspace() {
           : 'The project workspace could not be loaded.',
       );
     } finally {
-      setLoadingBoard(false);
+      if (isCurrent()) setLoadingBoard(false);
     }
-  }, [completionPeriod, lifecycleView, selectedProjectId]);
+  }, [boardScope, completionPeriod, lifecycleView, selectedProjectId]);
 
   useEffect(() => {
+    activeBoardScopeRef.current = boardScope;
+    // Drop obsolete UI pending state; this does not cancel or retry server writes.
+    setMoving(false);
+    setUpdatingCardIds(new Set());
     setSelectedCardId(null);
     setFilters(EMPTY_TASK_FILTERS);
     setSort('board');
     void loadBoard();
-  }, [loadBoard]);
+    return () => {
+      activeBoardScopeRef.current = null;
+      ++boardRequestRef.current;
+    };
+  }, [boardScope, loadBoard]);
 
   const visibleProject = useMemo(
     () => (project ? deriveVisibleProject(project, filters, sort) : null),
@@ -228,7 +250,8 @@ export default function TaskWorkspace() {
   }
 
   async function moveTask(move: TaskBoardMove) {
-    if (!project || moving) return;
+    if (!project || moving || activeBoardScopeRef.current !== boardScope) return;
+    const isCurrent = () => activeBoardScopeRef.current === boardScope;
     const sourceCard = findTaskCard(project.boards, move.cardId)?.card;
     if (!sourceCard) return;
 
@@ -256,8 +279,9 @@ export default function TaskWorkspace() {
             : 'The task move could not be saved.',
         );
       }
-      setProject(body as KanbanProject);
+      if (isCurrent()) setProject(body as KanbanProject);
     } catch (moveError) {
+      if (!isCurrent()) return;
       setProject(snapshot);
       setError(
         `${
@@ -267,7 +291,7 @@ export default function TaskWorkspace() {
         } The previous board state was restored.`,
       );
     } finally {
-      setMoving(false);
+      if (isCurrent()) setMoving(false);
     }
   }
 
@@ -275,7 +299,8 @@ export default function TaskWorkspace() {
     cardId: string,
     changes: KanbanCardFieldUpdate,
   ) {
-    if (!project || updatingCardIds.has(cardId)) return;
+    if (!project || updatingCardIds.has(cardId) || activeBoardScopeRef.current !== boardScope) return;
+    const isCurrent = () => activeBoardScopeRef.current === boardScope;
     const current = findTaskCard(project.boards, cardId)?.card;
     if (!current) return;
     const snapshot = project;
@@ -303,15 +328,17 @@ export default function TaskWorkspace() {
       });
       const body = (await response.json()) as KanbanProject['boards'][number]['cards'][number] | RequestError;
       if (!response.ok || !('id' in body)) throw new Error('error' in body ? body.error : 'Task update failed.');
+      if (!isCurrent()) return;
       setProject((latest) => latest ? {
         ...latest,
         boards: updateCardInBoardState(latest.boards, cardId, body),
       } : latest);
     } catch (updateError) {
+      if (!isCurrent()) return;
       setProject(snapshot);
       setError(`${updateError instanceof Error ? updateError.message : 'Task update failed.'} The previous value was restored.`);
     } finally {
-      setUpdatingCardIds((ids) => {
+      if (isCurrent()) setUpdatingCardIds((ids: Set<string>) => {
         const next = new Set(ids);
         next.delete(cardId);
         return next;

@@ -35,6 +35,38 @@ test('OWNER matches and reviews Pilot trucks across authorized companies without
   try {
     await page.goto(`/login/email/verify#token=${await issueToken(owner.id, owner.email)}`);
     await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+
+    // Whole-invoice authority must cover every linked Company, even for this group's OWNER.
+    const importWriteCounts = () => prisma.$transaction([
+      prisma.pilotProviderInvoice.count({ where: { operatingGroupId: group.id } }),
+      prisma.financialStatement.count({ where: { operatingGroupId: group.id } }),
+      prisma.pilotInvoiceDocument.count({ where: { invoice: { operatingGroupId: group.id } } }),
+      prisma.financialImportRecord.count({ where: { statement: { operatingGroupId: group.id } } }),
+      prisma.financialAuditEvent.count({ where: { operatingGroupId: group.id } }),
+      prisma.financialTransaction.count({ where: { operatingGroupId: group.id } }),
+      prisma.financialExpectation.count({ where: { operatingGroupId: group.id } }),
+      prisma.pilotFuelingEvent.count({ where: { invoice: { operatingGroupId: group.id } } }),
+      prisma.pilotFuelProductLine.count({ where: { invoice: { operatingGroupId: group.id } } }),
+      prisma.pilotInvoiceAdjustment.count({ where: { invoice: { operatingGroupId: group.id } } }),
+      prisma.pilotImportIssue.count({ where: { invoice: { operatingGroupId: group.id } } }),
+      prisma.financialAllocation.count({ where: { transaction: { operatingGroupId: group.id } } }),
+      prisma.financialTransactionEvidence.count({ where: { transaction: { operatingGroupId: group.id } } }),
+    ]);
+    const beforeDeniedImport = await importWriteCounts();
+    const deniedImport = await page.request.post('/api/finance/imports/pilot', {
+      multipart: {
+        sourceId: source.id,
+        file: { name: 'pilot-920000.xls', mimeType: 'application/vnd.ms-excel', buffer: Buffer.from(pilotXlsFixture({ invoiceNumber: '920000' })) },
+      },
+    });
+    expect(deniedImport.status()).toBe(403);
+    expect(await deniedImport.json()).toEqual({ error: 'Access denied' });
+    expect(deniedImport.headers()['cache-control']).toBe('private, no-store');
+    expect(await importWriteCounts()).toEqual(beforeDeniedImport);
+
+    // Only unlink the unauthorized synthetic Company; keep it and its Truck outside the positive fixture.
+    await prisma.operatingGroupCompany.delete({ where: { operatingGroupId_companyId: { operatingGroupId: group.id, companyId: unauthorizedCompany.id } } });
+
     await page.goto('/accounting');
     await page.goto('/accounting?view=settings&section=fuel-rules');
     await expect(page.getByRole('heading', { name: 'Pilot Product Mappings' })).toBeVisible();
