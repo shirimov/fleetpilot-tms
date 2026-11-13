@@ -3,13 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { DriverSafetyCatalog } from './driver-safety-catalog';
 import { DriverSafetyService } from './driver-safety-service';
 import { photoCommitMatches } from './driver-safety-photo-commit';
 import { FilesystemPrivateFileStorage } from '../storage/private-file-storage';
 
 test('persisted evidence stays separate, policy is opt-in, duplicate reports never inflate ratings',async()=>{
- const root=await mkdtemp(join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-driver-service-'));
+ const root=await mkdtemp(join(tmpdir(),'synthetic-driver-service-'));
  let allowed=true;
  const authorize=async()=>{if(!allowed)throw new Error('denied');return {companyId:'synthetic-company',actorId:'synthetic-owner',canConfigurePolicy:true};};
  try {
@@ -54,7 +55,7 @@ test('persisted evidence stays separate, policy is opt-in, duplicate reports nev
 });
 
 test('metadata correction adds zero files at cap; uploads and revision overflow remain refused',async()=>{
- const root=await mkdtemp(join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-driver-quota-'));
+ const root=await mkdtemp(join(tmpdir(),'synthetic-driver-quota-'));
  try {
   const catalog=new DriverSafetyCatalog(root);
   const service=new DriverSafetyService(catalog,new FilesystemPrivateFileStorage('driver-safety-files',root),async()=>({companyId:'synthetic-cap',actorId:'synthetic-owner',canConfigurePolicy:true}));

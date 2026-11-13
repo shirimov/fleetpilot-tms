@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { mkdtemp, rm, mkdir, open, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { DriverSafetyService } from './driver-safety-service';
 import { DriverSafetyFiles } from './driver-safety-files';
@@ -12,7 +13,7 @@ import { DriverSafetyCatalog } from './driver-safety-catalog';
 for (const existingRoot of [false,true]) {
  for (const failure of [null,'catalog-sync','root-sync','ancestor-sync','root-open'] as const) {
   test(`policy-first publication (${existingRoot ? 'existing' : 'new nested'} root): ${failure ?? 'ordered durable ancestry'}`,async t=>{
-   const parent=await mkdtemp(join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-policy-first-'));
+   const parent=await mkdtemp(join(tmpdir(),'synthetic-policy-first-'));
    const root=existingRoot ? parent : join(parent,'new-parent','new-storage');
    const namespace=join(root,'driver-safety-catalog');
    const directories:string[]=[];
@@ -67,11 +68,11 @@ for (const existingRoot of [false,true]) {
 }
 
 test('private adjunct rejects a preexisting nonprivate attachment namespace',async()=>{
- const root=await mkdtemp(join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-driver-catalog-'));
+ const root=await mkdtemp(join(tmpdir(),'synthetic-driver-catalog-'));
  try {await mkdir(join(root,'driver-safety-files'),{mode:0o755});await assert.rejects(new DriverSafetyCatalog(root).read('synthetic'),/owner-only/);}finally{await rm(root,{recursive:true,force:true});}
 });
 test('private adjunct catalog persists scoped records and authorizes inside write lock',async()=>{
- const root=await mkdtemp(join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-driver-catalog-'));
+ const root=await mkdtemp(join(tmpdir(),'synthetic-driver-catalog-'));
  try {
   const catalog=new DriverSafetyCatalog(root);
   let checks=0;

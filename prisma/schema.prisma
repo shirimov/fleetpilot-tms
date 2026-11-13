@@ -103,7 +103,7 @@ enum LoadActivityAction {
 }
 
 model Company {
-  truckOwnerPeriods          TruckOwnerPeriod[]
+  truckOwnerPeriods           TruckOwnerPeriod[]
   driverSourceCompanyBindings DriverSourceCompanyBinding[]
   driverSourceProfiles        DriverSourceProfile[]
   fuelDeductionPolicies       FuelDeductionPolicy[]
@@ -1587,7 +1587,7 @@ enum FuelDiscountTreatment {
 }
 
 model OperatingGroup {
-  truckOwnerHistoryRevisions TruckOwnerHistoryRevision[]
+  truckOwnerHistoryRevisions  TruckOwnerHistoryRevision[]
   driverSourceCompanyBindings DriverSourceCompanyBinding[]
   driverSourceProfiles        DriverSourceProfile[]
   fuelReconciliationMatches   FuelReconciliationManualMatch[]

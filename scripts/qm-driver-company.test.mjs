@@ -149,4 +149,3 @@ test('receipt must match exact plan, actor, company IDs and reviewed receipt has
  const store=memoryStore();await assert.rejects(service.provisionSourceCompanies(store,{...input,mode:'BIND_PROVISIONED',receipt,reviewedReceiptSha256:fingerprint(receipt)}),/PROVISIONED_COMPANY_MISMATCH/);
  assert.equal(store.state.companies.length,0);assert.equal(store.state.bindings.length,0);
 });
-

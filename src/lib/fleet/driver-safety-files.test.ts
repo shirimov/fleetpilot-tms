@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { DriverSafetyFiles } from './driver-safety-files';
 import { DriverSafetyCatalog } from './driver-safety-catalog';
 import { DriverSafetyService } from './driver-safety-service';
 
 for (const failure of [null,'file-write','file-sync','file-close','directory-open','directory-sync','directory-close'] as const) {
  test(`safety durable adapter ${failure ?? 'flushes before catalog publication'}`,async t=>{
-  const root=await mkdtemp(path.join(process.env.TMPDIR || '/home/hermes/.hermes/cache/scratch','synthetic-safety-durable-'));
+  const root=await mkdtemp(path.join(tmpdir(),'synthetic-safety-durable-'));
   const events:string[]=[],live=new Set<number>();
   try {
    const instrumentedOpen:typeof open=async(filename,flags,mode)=>{

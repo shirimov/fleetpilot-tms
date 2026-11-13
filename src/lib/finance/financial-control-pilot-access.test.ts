@@ -349,4 +349,3 @@ for (const operation of genericMatching) {
     });
   }
 }
-
