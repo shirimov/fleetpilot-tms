@@ -51,6 +51,7 @@ export const alphaNavigation: NavigationSection[] = [
       { href: '/trucks', label: 'Trucks', icon: 'trucks', module: 'fleet' },
       { href: '/loads?view=trailers', label: 'Trailers', icon: 'trailers', module: 'fleet' },
       { href: '/drivers', label: 'Drivers', icon: 'drivers', module: 'fleet' },
+      { href: '/drivers/pool', label: 'Safety Driver Pool', icon: 'drivers', module: 'fleet' },
       { href: '/inspections', label: 'Inspections', icon: 'inspections', module: 'fleet' },
     ],
   },

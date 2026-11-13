@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { TruckCompanyHistory } from '@/components/fleet/TruckCompanyHistory'
+import { TruckOwnerHistory } from '@/components/fleet/TruckOwnerHistory'
 import Sidebar from '@/components/Sidebar'
 import { TruckImportPanel } from '@/components/fleet/TruckImportPanel'
 
@@ -39,6 +40,7 @@ const statusColor: Record<string, string> = {
 
 export default function TrucksPage() {
   const [historyTruck, setHistoryTruck] = useState<TruckItem | null>(null)
+  const [ownerHistoryTruck, setOwnerHistoryTruck] = useState<TruckItem | null>(null)
   const [trucks, setTrucks] = useState<TruckItem[]>([])
   const [companies, setCompanies] = useState<CompanyOption[]>([])
   const [fleetCompanies, setFleetCompanies] = useState<FleetCompanyOption[]>([])
@@ -185,6 +187,7 @@ export default function TrucksPage() {
           </button>
         </div>
 
+        {ownerHistoryTruck && <TruckOwnerHistory key={ownerHistoryTruck.id} truck={ownerHistoryTruck} onClose={() => setOwnerHistoryTruck(null)} />}
         {historyTruck && <TruckCompanyHistory truck={historyTruck} companies={fleetCompanies} onClose={() => setHistoryTruck(null)} onChanged={() => { loadData().catch(e => setPageError(e.message)) }} />}
         {showForm && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={e => { if (e.target === e.currentTarget) setShowForm(false) }}>
@@ -326,7 +329,7 @@ export default function TrucksPage() {
               <tbody>
                 {trucks.map((t, i) => (
                   <tr key={t.id} className={`border-b border-gray-800/50 hover:bg-gray-800/30 ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}>
-                    <td aria-label={t.unitNumber} className="px-6 py-4 font-bold"><button className="text-blue-300 hover:underline" onClick={() => setHistoryTruck(t)} aria-label={`Truck ${t.unitNumber} history`}>{t.unitNumber}</button></td>
+                    <td aria-label={t.unitNumber} className="px-6 py-4 font-bold"><button className="text-blue-300 hover:underline" onClick={() => setHistoryTruck(t)} aria-label={`Truck ${t.unitNumber} history`}>{t.unitNumber}</button><button className="mt-2 block text-xs font-normal text-blue-300 hover:underline" onClick={() => setOwnerHistoryTruck(t)} aria-label={`Truck ${t.unitNumber} owner history`}>Owner history</button></td>
                     <td className="px-6 py-4 text-gray-300">{[t.year, t.make, t.model].filter(Boolean).join(' ') || '—'}</td>
                     <td className="px-6 py-4 text-gray-400">{t.company?.name || '—'}</td>
                     <td className="px-6 py-4">

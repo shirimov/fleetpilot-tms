@@ -40,6 +40,20 @@ test('control aggregation assigns each queue its audited money basis and positiv
   assert.deepEqual(byKey.HISTORICAL_POSTED_MISMATCH.amounts, [{ amountMinor: BigInt(40_000), amountBasis: 'PILOT', amountLabel: 'Pilot affected' }]);
 });
 
+test('Truck mapping controls include unresolved Pilot amounts without combining source money bases', () => {
+  const pilot = row('NEEDS_TRUCK_MAPPING', { pilotActualMinor: BigInt(12_345) });
+  const statement = row('NEEDS_TRUCK_MAPPING', { statementMinor: BigInt(6_789) });
+  for (const rows of [[pilot], [pilot, statement]]) {
+    const control = buildFuelReconciliationControls(rows).find(item => item.key === 'NEEDS_TRUCK_MAPPING')!;
+    assert.equal(control.count, rows.length);
+    assert.equal(rows.filter(item => fuelReconciliationRowMatches(item, control.filter)).length, control.count);
+    assert.deepEqual(control.amounts, [
+      { amountMinor: BigInt(12_345), amountBasis: 'PILOT', amountLabel: 'Pilot affected' },
+      ...(rows.length === 2 ? [{ amountMinor: BigInt(6_789), amountBasis: 'STATEMENT', amountLabel: 'statement affected' }] : []),
+    ]);
+  }
+});
+
 test('control aggregation preserves canonical row counts and reports mixed bases separately', () => {
   const rows = [
     row('NEEDS_RECIPIENT_MAPPING', { pilotActualMinor: BigInt(10_000) }),

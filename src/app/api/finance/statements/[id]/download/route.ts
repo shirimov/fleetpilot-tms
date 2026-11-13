@@ -1,3 +1,4 @@
+import { requirePilotInvoiceAccess } from '@/lib/finance/pilot-invoice-authorization';
 import { archiveDocumentScope } from '@/lib/finance/archive-service';
 import { hash } from '@/lib/finance/archive-normalize';
 import { NextResponse } from 'next/server';
@@ -11,8 +12,9 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(_request: Request, { params }: Context) {
   try {
     const context = await financialControlAuthorization.requireContext();
-    const statement = await prisma.financialStatement.findFirst({ where: { id: (await params).id, ...archiveDocumentScope(context) }, select: { storageKey: true, originalFilename: true, mimeType: true, checksumSha256: true, archiveVersions: { select: { id: true }, take: 1 }, archiveConflicts: { select: { id: true }, take: 1 } } });
+    const statement = await prisma.financialStatement.findFirst({ where: { id: (await params).id, ...archiveDocumentScope(context) }, select: { storageKey: true, originalFilename: true, mimeType: true, checksumSha256: true, pilotDocuments: { select: { id: true }, take: 1 }, archiveVersions: { select: { id: true }, take: 1 }, archiveConflicts: { select: { id: true }, take: 1 } } });
     if (!statement) throw new FinancialNotFoundError();
+    if (statement.pilotDocuments.length) await requirePilotInvoiceAccess(context, prisma);
     const bytes = await financialStatementStorage.get(statement.storageKey);
     if ((statement.archiveVersions.length || statement.archiveConflicts.length) && hash(bytes) !== statement.checksumSha256) throw new Error('Archive integrity check failed');
     return new NextResponse(bytes as BodyInit, { headers: { ...privateDownloadHeaders(statement.originalFilename, statement.mimeType), 'Content-Length': String(bytes.byteLength) } });

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FuelDeductionPolicy, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { historyDate, TruckCompanyHistoryService } from '@/lib/fleet/truck-company-history';
+import { resolvePilotTruckOwnerAt, type OwnerPeriod } from '@/lib/fleet/truck-owner-resolution';
 import { normalizeVin } from '@/lib/fleet/truck-import-service';
 import { normalizeTruckUnitNumber } from '@/lib/fleet/truck-normalization';
 import type { FinancialAuthorization } from './financial-control-authorization';
@@ -231,6 +232,7 @@ export function corroboratesFuelIdentityWithUnavailableStatementCard(pilot: Fuel
 }
 
 export type FuelReconciliationRow = {
+  ownerAttribution?: { ownerPartyId: string; periodId: string; revisionId: string; businessDate: string } | null;
   key: string; status: FuelReconciliationStatus; companyId: string | null; companyName: string | null;
   pid: string | null; purchaseDate: string | null; statementPeriod: string | null; truckId: string | null;
   truckUnit: string | null; recipientId: string | null; recipientName: string | null; responsibility: string | null;
@@ -305,7 +307,6 @@ export function buildFuelReconciliationControls(rows: FuelReconciliationRow[]): 
     else if (status === 'TIMING_DIFFERENCE') amounts = [controlAmount(sumRows(matches, row => row.expectedMinor ?? BigInt(0)), 'EXPECTED', 'timing amount')];
     else if (status === 'STATEMENT_ONLY') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'statement amount')];
     else if (status === 'NO_PILOT_DATA_IMPORTED') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'outside Pilot coverage')];
-    else if (status === 'NEEDS_TRUCK_MAPPING') amounts = [controlAmount(sumRows(matches, row => row.statementMinor), 'STATEMENT', 'statement affected')];
     else if (['NEEDS_POLICY', 'NEEDS_COMPANY_HISTORY'].includes(status)) amounts = [controlAmount(sumRows(matches, row => row.pilotActualMinor), 'PILOT', 'Pilot affected')];
     else amounts = affectedAmounts(matches, status === 'NEEDS_REVIEW' ? 'under review' : 'affected');
     return { key: status, label: controlLabels[status], count: matches.length, filter: { status }, amounts };
@@ -423,7 +424,7 @@ export class FuelDeductionReconciliationService {
     const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
     if (!pilotEventId || !archiveLineId || reason.length < 10 || reason.length > 2000) throw new FinancialValidationError('Pilot transaction, QM fuel line, and a meaningful reason are required.');
     await this.requireOwner(context);
-    const preview = await this.preview(context, { pageSize: 10000 });
+    const preview = await this.evaluate(context);
     const pilotRow = preview.rows.find(row => row.pilotEventId === pilotEventId && !row.statementEvidence);
     const quickManageRow = preview.rows.find(row => !row.pilotEventId && row.statementEvidence?.groupLineId === archiveLineId);
     if (!pilotRow || !quickManageRow) throw new FinancialConflictError('Both records must still be visible in the unmatched or review queues. Refresh and try again.');
@@ -585,6 +586,13 @@ export class FuelDeductionReconciliationService {
     if (!Number.isSafeInteger(page) || page < 1 || page > 100000) throw new FinancialValidationError('Invalid page.');
     const pageSize = Number(filters.pageSize ?? 50);
     if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 10000) throw new FinancialValidationError('Invalid page size.');
+    const result = await this.evaluate(context, filters);
+    const start = (page - 1) * pageSize;
+    return { ...result, rows: result.rows.slice(start, start + pageSize), page, pageSize };
+  }
+
+  // Manual eligibility must use every disposition; pagination is a public view concern.
+  private async evaluate(context: FinancialAuthorization, filters: FuelReconciliationFilters = {}) {
     if (filters.status && !reconciliationStatuses.includes(filters.status as FuelReconciliationStatus)) throw new FinancialValidationError('Invalid reconciliation status.');
     if (filters.policy && !['known', 'missing'].includes(filters.policy)) throw new FinancialValidationError('Invalid policy filter.');
     if (filters.responsibility && !['COMPANY', 'RECIPIENT', 'DRIVER', 'CONTRACTOR'].includes(filters.responsibility)) throw new FinancialValidationError('Invalid responsibility filter.');
@@ -594,11 +602,11 @@ export class FuelDeductionReconciliationService {
     if (filters.scope && !['comparable', 'outside'].includes(filters.scope)) throw new FinancialValidationError('Invalid coverage scope filter.');
     if (filters.date) historyDate(filters.date);
     for (const value of [filters.companyId, filters.pid, filters.truck, filters.recipient]) if (value && value.length > 200) throw new FinancialValidationError('Filter too long.');
-    const [events, versions, policies, companies, historicalMappings, pilotInvoices, manualMatches] = await Promise.all([
+    const [events, versions, policies, companies, historicalMappings, pilotInvoices, manualMatches, ownerPeriods] = await Promise.all([
       this.database.pilotFuelingEvent.findMany({
-        where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } },
+        where: { invoice: { operatingGroupId: context.operatingGroupId, status: { in: ['POSTED','SOURCE_ACCEPTED'] } } },
         include: {
-          invoice: { select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true } },
+          invoice: { select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true, sourceFormat: true } },
           truck: { select: { id: true, unitNumber: true, companyId: true, company: { select: { name: true } } } },
           transaction: { select: { id: true, companyId: true, company: { select: { name: true } } } },
           productLines: { select: { productType: true, quantity: true, amountMinor: true, retailAmountMinor: true, savingsMinor: true, discountMinor: true } },
@@ -624,8 +632,8 @@ export class FuelDeductionReconciliationService {
         },
       }),
       this.database.pilotProviderInvoice.findMany({
-        where: { operatingGroupId: context.operatingGroupId, status: 'POSTED' },
-        select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true },
+        where: { operatingGroupId: context.operatingGroupId, status: { in: ['POSTED','SOURCE_ACCEPTED'] } },
+        select: { id: true, invoiceNumber: true, periodStart: true, periodEnd: true, billingPeriodExplicit: true },
         orderBy: [{ periodStart: 'asc' }, { id: 'asc' }],
       }),
       this.database.fuelReconciliationManualMatch.findMany({
@@ -633,13 +641,28 @@ export class FuelDeductionReconciliationService {
         include: { createdBy: { select: { displayName: true } } },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
+      this.database.truckOwnerPeriod.findMany({
+        where: { supersededAt: null, revision: { operatingGroupId: context.operatingGroupId } },
+        include: { ownerParty: { select: { name: true, companyId: true, operatingGroupId: true } } },
+      }),
     ]);
+    // Load the complete timeline once, not one query per fuel event. Do not
+    // prefilter hidden periods: that would turn overlaps into false exact matches.
+    const ownersByTruck = new Map<string, Array<OwnerPeriod & { id: string; revisionId: string; ownerParty: { name: string; companyId: string | null; operatingGroupId: string } }>>();
+    for (const period of ownerPeriods) {
+      const normalized = { ...period, effectiveFrom: day(period.effectiveFrom), effectiveTo: period.effectiveTo ? day(period.effectiveTo) : null };
+      const existing = ownersByTruck.get(period.truckId) ?? [];
+      existing.push(normalized);
+      ownersByTruck.set(period.truckId, existing);
+    }
     const companyNames = new Map(companies.map(company => [company.id, company.name]));
     const comparableEvents = events.map(event => ({ event, lines: event.productLines.filter(line => line.productType === 'TRUCK_DIESEL' || line.productType === 'REEFER_FUEL' || line.productType === 'DEF') }));
     const dated = comparableEvents.filter(item => item.lines.length);
     const coverageStart = dated.length ? day(dated[0].event.transactionDate) : null;
     const coverageEnd = dated.length ? day(dated.at(-1)!.event.transactionDate) : null;
-    const pilotCoverageRanges = mergeCoverageRanges(pilotInvoices.map(invoice => ({ start: day(invoice.periodStart), end: day(invoice.periodEnd) })));
+    const pilotCoverageRanges = mergeCoverageRanges(pilotInvoices.flatMap(invoice => invoice.billingPeriodExplicit
+      ? [{ start: day(invoice.periodStart), end: day(invoice.periodEnd) }]
+      : events.filter(event => event.invoiceId === invoice.id).map(event => ({ start: day(event.transactionDate), end: day(event.transactionDate) }))));
     // Resolve every posted event so the historical-vs-posted control remains complete even
     // when an event contains only an excluded product such as reefer fuel.
     const historyRequests = events.filter(event => event.truckId).flatMap(event => {
@@ -736,18 +759,26 @@ export class FuelDeductionReconciliationService {
         });
       }
     }
-    // Paired Driver/Contractor evidence for the same recovery remains one economic deduction with both line IDs retained.
-    const deduplicated = new Map<string, EvidenceLine>();
+    // Only a unique Driver/Contractor pair can represent one recovery. Build the
+    // whole candidate group first: a third line must not disappear into a pair.
+    const recoveryGroups = new Map<string, EvidenceLine[]>();
     for (const line of evidence) {
-      const identity = [line.companyId, line.truckId ?? line.truckUnit ?? '', line.reference ?? line.providerLineId ?? '', line.sourceDate ?? '', line.amountMinor.toString()].join('|');
-      const prior = deduplicated.get(identity);
-      if (!prior) deduplicated.set(identity, line);
-      else {
-        prior.evidenceIds.push(line.id);
-        if (prior.recipientType !== 'CONTRACTOR' && line.recipientType === 'CONTRACTOR') deduplicated.set(identity, { ...line, evidenceIds: prior.evidenceIds });
-      }
+      const identity = JSON.stringify([line.companyId, line.truckId ?? line.truckUnit, line.reference || line.providerLineId, line.sourceDate, line.amountMinor.toString()]);
+      recoveryGroups.set(identity, [...(recoveryGroups.get(identity) ?? []), line]);
     }
-    const statementLines = [...deduplicated.values()];
+    const statementLines = [...recoveryGroups.values()].flatMap(group => {
+      const driver = group.find(line => line.recipientType === 'DRIVER');
+      const contractor = group.find(line => line.recipientType === 'CONTRACTOR');
+      if (group.length !== 2 || !driver || !contractor || driver.recipientId === contractor.recipientId
+        || !(driver.reference || driver.providerLineId) || !driver.sourceDate || !(driver.truckId || driver.truckUnit)
+        || driver.sourceTimestamp !== contractor.sourceTimestamp
+        || driver.providerLineId && contractor.providerLineId && driver.providerLineId !== contractor.providerLineId
+        || driver.cardLastFour !== contractor.cardLastFour || driver.locationNumber !== contractor.locationNumber
+        || driver.city !== contractor.city || driver.state !== contractor.state
+        || driver.retailMinor !== contractor.retailMinor || !corroboratesFuelProducts(driver.products, contractor.products)
+        || driver.productClassifications.join('|') !== contractor.productClassifications.join('|')) return group;
+      return [{ ...contractor, evidenceIds: group.flatMap(line => line.evidenceIds) }];
+    });
     const statementLineByEvidenceId = new Map(statementLines.flatMap(line => line.evidenceIds.map(id => [id, line] as const)));
     const manualMatchByPilotEvent = new Map(manualMatches.map(match => [match.pilotEventId, match]));
     const manuallyReservedStatementIds = new Set(manualMatches.map(match => statementLineByEvidenceId.get(match.archiveLineId)?.id).filter((id): id is string => !!id));
@@ -814,10 +845,17 @@ export class FuelDeductionReconciliationService {
       const pilotProductClassifications = [...new Set(lines.map(line => line.productType))];
       const pilotIdentity = { cardLastFour: event.cardLastFour, locationNumber: event.locationNumber, city: event.city, state: event.state };
       const activeManualMatch = manualMatchByPilotEvent.get(event.id) ?? null;
+      const truckOwners = ownersByTruck.get(event.truckId ?? '') ?? [];
+      const owner = resolvePilotTruckOwnerAt(truckOwners, purchaseDate, event.invoice.sourceFormat, history?.status === 'EXACT' ? history.companyId : '');
+      const confirmedOwner = owner.status === 'EXACT' && context.companyIds.includes(owner.period.companyId)
+        && owner.period.ownerParty.operatingGroupId === context.operatingGroupId
+        && (!owner.period.ownerParty.companyId || owner.period.ownerParty.companyId === owner.period.companyId) ? owner.period : null;
+      const uncertainOwnerDate = owner.status === 'NEEDS_BUSINESS_DATE';
       const manualStatementLine = activeManualMatch ? statementLineByEvidenceId.get(activeManualMatch.archiveLineId) ?? null : null;
       const available = (line: EvidenceLine) => !consumed.has(line.id) && (!manuallyReservedStatementIds.has(line.id) || line.id === manualStatementLine?.id);
       const manualMatchAudit = activeManualMatch && manualStatementLine ? { id: activeManualMatch.id, reason: activeManualMatch.reason, actor: activeManualMatch.createdBy.displayName, createdAt: activeManualMatch.createdAt } : null;
       const base = {
+        ownerAttribution: confirmedOwner && !uncertainOwnerDate ? { ownerPartyId: confirmedOwner.ownerPartyId, periodId: confirmedOwner.id, revisionId: confirmedOwner.revisionId, businessDate: purchaseDate } : null,
         key: `pilot:${event.id}`, companyId: history?.status === 'EXACT' ? history.companyId : null,
         companyName: history?.status === 'EXACT' ? companyNames.get(history.companyId) ?? null : null,
         pid: null, purchaseDate, statementPeriod: null, truckId: event.truckId, truckUnit: event.truck?.unitNumber ?? event.sourceUnitNumber,
@@ -837,8 +875,18 @@ export class FuelDeductionReconciliationService {
       };
       if (!event.truckId && !manualStatementLine) { rows.push({ ...base, status: 'NEEDS_TRUCK_MAPPING', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: null, matchMethod: null, statementEvidence: null }); continue; }
       const assignments = (versionsByTruck.get(event.truckId!) ?? []).filter(version => day(version.workStart) <= purchaseDate && day(version.workEnd) >= purchaseDate);
+      // A statement week can legitimately span an owner transition. It is not
+      // an effective ownership boundary, so distinct Contractors cannot be
+      // resolved by PID/order or by whichever policy happens to be first.
+      const contractorAssignments = assignments.filter(item => item.recipientType === 'CONTRACTOR');
+      const contractorIdentities = new Set(contractorAssignments.map(item => JSON.stringify([item.statement.company.companyId, item.recipientId])));
+      const ambiguousContractors = contractorIdentities.size > 1;
       const periodAssignment = (() => {
-        const version = assignments.find(item => item.recipientType === 'CONTRACTOR') ?? (assignments.length === 1 ? assignments[0] : null);
+        if (confirmedOwner && !uncertainOwnerDate) {
+          const named = assignments.find(version => version.recipientType === 'CONTRACTOR' && version.recipientId === confirmedOwner.providerRecipientId && version.statement.company.companyId === confirmedOwner.companyId);
+          return { recipientId: confirmedOwner.providerRecipientId, recipientName: named?.recipientName ?? confirmedOwner.ownerParty.name, recipientType: 'CONTRACTOR', role: null };
+        }
+        const version = contractorIdentities.size === 1 ? contractorAssignments[0] : assignments.length === 1 ? assignments[0] : null;
         return version ? { recipientId: version.recipientId, recipientName: version.recipientName, recipientType: version.recipientType, role: version.role } : null;
       })();
       const referenceMatch = [...new Map([event.ticketHash, event.authorizationHash].filter(Boolean).flatMap(reference => (byTruckReference.get(`${event.truckId}|${reference}`) ?? []).map(line => [line.id, line] as const))).values()].filter(available);
@@ -862,6 +910,23 @@ export class FuelDeductionReconciliationService {
       if (!history || history.status !== 'EXACT') {
         rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_COMPANY_HISTORY', recipientId: matched?.recipientId ?? null, recipientName: matched?.recipientName ?? null, responsibility: null, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: null, pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence });
         if (matched) consume([matched]);
+        continue;
+      }
+      const candidateAssignment = periodAssignment ?? matched;
+      const explicitlyCompanyDriver = candidateAssignment?.recipientType === 'DRIVER' && /company\s*driver/i.test(candidateAssignment.role ?? '');
+      // The current week's Company Driver cannot mask a late-posted Contractor.
+      // Inspect matched evidence independently before applying zero recovery.
+      const requiresOwner = truckOwners.length > 0 || contractorAssignments.length > 0 || matched?.recipientType === 'CONTRACTOR' || (!!candidateAssignment && !explicitlyCompanyDriver);
+      if (requiresOwner && (!confirmedOwner || uncertainOwnerDate)) {
+        // Preserve an explicit OWNER pairing, but do not infer ownership or a
+        // recovery policy from that pairing or from overlapping statement weeks.
+        const manual = matched && matched.id === manualStatementLine?.id ? matched : null;
+        rows.push({ ...base, ...statementAudit(manual ? [manual] : []), status: 'NEEDS_REVIEW', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: manual?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: manual ? manual.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Confirmed beneficial owner history and an explicit business date are required', pid: manual?.pid ?? null, statementPeriod: manual ? `${manual.workStart}–${manual.workEnd}` : null, matchMethod: manual ? 'MANUAL_OWNER_MATCH' : uncertainOwnerDate ? 'NEEDS_BUSINESS_DATE' : owner.status === 'EXACT' ? 'OWNER_RECIPIENT_SCOPE_MISMATCH' : ambiguousContractors && owner.status === 'NO_CONFIRMED_OWNER' ? 'AMBIGUOUS_CONTRACTOR_ASSIGNMENT' : owner.status, statementEvidence: statementEvidence(manual ? [manual] : []) });
+        if (manual) consume([manual]);
+        continue;
+      }
+      if (!matched && referenceMatch.length > 1) {
+        rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: null, recipientName: null, responsibility: null, expectedMinor: null, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: null, policyId: null, policyLabel: 'Multiple fuel deductions share the Pilot reference', matchMethod: 'AMBIGUOUS_REFERENCE', statementEvidence: null });
         continue;
       }
       const purchaseDay = historyDate(purchaseDate);
@@ -899,6 +964,14 @@ export class FuelDeductionReconciliationService {
       if (!calculation) { rows.push({ ...base, ...statementAudit(matched ? [matched] : []), status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: null, statementMinor: matched?.amountMinor ?? BigInt(0), differenceMinor: null, observedAmountDeltaMinor: matched ? matched.amountMinor - pilotActualMinor : null, retainedDiscountMinor: null, policyId: policy?.id ?? null, policyLabel: 'Discount evidence unavailable', pid: matched?.pid ?? null, statementPeriod: matched ? `${matched.workStart}–${matched.workEnd}` : null, matchMethod, statementEvidence: matchedEvidence }); if (matched) consume([matched]); continue; }
       const policyLabel = companyDriver ? 'Company-driver fuel; no recipient recovery' : `${policy!.discountTreatment} · ${policy!.companyRetentionBasisPoints / 100}% retained`;
       const matchedProductDifference = !!matched && isDieselReeferClassificationDifference(pilotProductClassifications, matched.productClassifications);
+      // Owner bindings are scoped CONTRACTOR identities. A standalone DRIVER
+      // with the same ID text is not that binding; valid pairs are already
+      // represented by their Contractor above, retaining both evidence IDs.
+      if (confirmedOwner && matched && (matched.companyId !== confirmedOwner.companyId || matched.recipientType !== 'CONTRACTOR' || matched.recipientId !== confirmedOwner.providerRecipientId)) {
+        consume([matched]);
+        rows.push({ ...base, ...statementAudit([matched]), status: 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: matched.amountMinor, differenceMinor: null, observedAmountDeltaMinor: matched.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · posted recipient differs from confirmed beneficial owner`, pid: matched.pid, statementPeriod: `${matched.workStart}–${matched.workEnd}`, matchMethod, statementEvidence: matchedEvidence });
+        continue;
+      }
       const matchedProductIdentityIsStrong = !!matched && (matchMethod === 'REFERENCE' || corroboratesFuelIdentityStrict(
         pilotIdentity,
         { cardLastFour: matched.cardLastFour, locationNumber: matched.locationNumber, city: matched.city, state: matched.state },
@@ -918,11 +991,20 @@ export class FuelDeductionReconciliationService {
           && quickManageDateRelation(purchaseDate, line.sourceTimestamp)
           && corroboratesFuelIdentityStrict(pilotIdentity, { cardLastFour: line.cardLastFour, locationNumber: line.locationNumber, city: line.city, state: line.state }));
         const crossRecipientIdentity = exceptionCandidates.filter(line => corroboratesFuelProducts(pilotProducts, line.products)
-          && (line.truckId !== event.truckId || line.recipientId !== assignment.recipientId));
+          && (line.truckId !== event.truckId || line.recipientType !== assignment.recipientType || line.recipientId !== assignment.recipientId));
+        // Check the full identity population before narrowing it to a unique,
+        // amount-compatible recovery or trying another exception path.
+        if (crossRecipientIdentity.length > 1) {
+          rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple cross-recipient recoveries share the structured fuel identity', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
+          continue;
+        }
         const crossRecipient = crossRecipientIdentity.length === 1 && fuelAmountsWithinOwnerTolerance(calculation.expectedMinor, crossRecipientIdentity[0].amountMinor) ? crossRecipientIdentity : [];
         if (crossRecipient.length === 1) {
           const review = crossRecipient[0]; consume([review]);
-          const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate);
+          // Historical Truck routing is not permission to charge another owner.
+          // Apply the same scoped, typed recipient guard as direct matches.
+          const historical = acceptsHistoricalCrossRecipientRouting(purchaseDate)
+            && (!confirmedOwner || (review.companyId === confirmedOwner.companyId && review.recipientType === 'CONTRACTOR' && review.recipientId === confirmedOwner.providerRecipientId));
           const crossProductDifference = isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications);
           rows.push({ ...base, ...statementAudit([review]), productClassification: crossProductDifference ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: historical ? 'MATCHED' : 'NEEDS_RECIPIENT_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: historical ? review.amountMinor - calculation.expectedMinor : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · statement routed to ${review.recipientName ?? review.recipientId} / Truck ${review.truckUnit ?? 'unresolved'}${historical ? ' · historical routing accepted' : ' · OWNER review required'}`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: historical ? 'HISTORICAL_CROSS_RECIPIENT_RECOVERED' : 'CROSS_RECIPIENT_STRUCTURED_IDENTITY', statementEvidence: statementEvidence([review]) });
           continue;
@@ -945,7 +1027,11 @@ export class FuelDeductionReconciliationService {
         const crossCompanyCandidates = [...new Map([...identityConflicts, ...missingCardRecoveryCandidates].map(line => [line.id, line])).values()];
         const missingCardRecoveryIds = new Set(missingCardRecoveryCandidates.map(line => line.id));
         if (crossCompanyCandidates.length === 1) {
-          const review = crossCompanyCandidates[0], recoveryConfirmed = missingCardRecoveryIds.has(review.id); consume([review]);
+          const review = crossCompanyCandidates[0];
+          // Name/amount corroboration cannot override a confirmed scoped owner binding.
+          const recoveryConfirmed = missingCardRecoveryIds.has(review.id)
+            && (!confirmedOwner || (review.companyId === confirmedOwner.companyId && review.recipientType === 'CONTRACTOR' && review.recipientId === confirmedOwner.providerRecipientId));
+          consume([review]);
           rows.push({ ...base, ...statementAudit([review]), productClassification: isDieselReeferClassificationDifference(pilotProductClassifications, review.productClassifications) ? 'DIESEL_REEFER_DIFFERENCE' : 'SAME', status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: review.amountMinor, differenceMinor: recoveryConfirmed ? review.amountMinor - calculation.expectedMinor : null, observedAmountDeltaMinor: review.amountMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: recoveryConfirmed ? `${policyLabel} · recovery confirmed from exact Truck, recipient, location, geography, product quantity, retail and policy amount; source Company requires OWNER review` : `${policyLabel} · exact recovery evidence is assigned to ${review.companyName} / Truck ${review.truckUnit ?? 'unresolved'}; Company and Truck identity require OWNER review`, pid: review.pid, statementPeriod: `${review.workStart}–${review.workEnd}`, matchMethod: recoveryConfirmed ? 'CROSS_COMPANY_RECOVERY_CONFIRMED' : 'CROSS_COMPANY_IDENTITY_REVIEW', statementEvidence: statementEvidence([review]) });
           continue;
         }
@@ -953,7 +1039,7 @@ export class FuelDeductionReconciliationService {
           rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple cross-Company recoveries share the structured fuel identity', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
           continue;
         }
-        const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientId === assignment.recipientId);
+        const productCandidates = exceptionCandidates.filter(line => line.truckId === event.truckId && line.recipientType === assignment.recipientType && line.recipientId === assignment.recipientId);
         const candidateProductGroups = new Map<string, EvidenceLine[]>();
         for (const line of productCandidates) {
           const key = [line.versionId, line.sourceTimestamp, line.cardLastFour, line.locationNumber].join('|');
@@ -988,7 +1074,7 @@ export class FuelDeductionReconciliationService {
           rows.push({ ...base, ...statementAudit(review), productClassification: 'CONFLICT', status: 'PRODUCT_CLASSIFICATION_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor, differenceMinor: null, observedAmountDeltaMinor: statementMinor - pilotActualMinor, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: `${policyLabel} · Pilot and QuickManage product composition differs`, pid: review[0].pid, statementPeriod: `${review[0].workStart}–${review[0].workEnd}`, matchMethod: 'PRODUCT_CLASSIFICATION_CONFLICT', statementEvidence: statementEvidence(review) });
           continue;
         }
-        if (crossRecipient.length > 1 || productGroups.size > 1 || unresolvedDateEvidence) {
+        if (productGroups.size > 1 || unresolvedDateEvidence) {
           rows.push({ ...base, status: 'NEEDS_REVIEW', recipientId: assignment.recipientId, recipientName: assignment.recipientName, responsibility, expectedMinor: calculation.expectedMinor, statementMinor: BigInt(0), differenceMinor: null, observedAmountDeltaMinor: null, retainedDiscountMinor: calculation.retainedDiscountMinor, policyId: policy?.id ?? null, policyLabel: 'Multiple or incomplete structured fuel candidates require review', matchMethod: 'AMBIGUOUS_STRUCTURED_IDENTITY', statementEvidence: null });
           continue;
         }
@@ -1030,7 +1116,6 @@ export class FuelDeductionReconciliationService {
     // proves that no supported reefer amount was excluded.
     const reeferMinor = BigInt(0);
     const providerCreditMinor = events.length ? await this.database.pilotInvoiceAdjustment.aggregate({ where: { invoice: { operatingGroupId: context.operatingGroupId, status: 'POSTED' } }, _sum: { signedAmountMinor: true } }).then(result => result._sum.signedAmountMinor ?? BigInt(0)) : BigInt(0);
-    const start = (page - 1) * pageSize;
     const totals = (items: FuelReconciliationRow[]) => ({ count: items.length, pilotActualMinor: items.reduce((sum, row) => sum + row.pilotActualMinor, BigInt(0)), expectedMinor: items.reduce((sum, row) => sum + (row.expectedMinor ?? BigInt(0)), BigInt(0)), statementMinor: items.reduce((sum, row) => sum + row.statementMinor, BigInt(0)), differenceMinor: items.reduce((sum, row) => sum + (row.differenceMinor ?? BigInt(0)), BigInt(0)) });
     const byStatus = Object.fromEntries(reconciliationStatuses.map(status => [status, totals(rows.filter(row => row.status === status))]));
     const byCompany = [...new Set(rows.map(row => row.companyId).filter(Boolean))].map(companyId => {
@@ -1148,7 +1233,7 @@ export class FuelDeductionReconciliationService {
       missingQuickManageCoverage,
       coverageMatrix,
     };
-    return { coverage: { start: coverageStart, end: coverageEnd, pilotRanges: pilotCoverageRanges }, completeness, summary: { ...allTotals, statementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, comparableStatementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, outsideCoverageStatementMinor, rawStatementDeductionMinor, rawFuelStatementMinor, unsupportedFuelStatementCount: unsupportedFuelStatementLines.length, unsupportedFuelStatementMinor, comparablePilotMinor: dated.reduce((sum, item) => sum + item.lines.reduce((part, line) => part + line.amountMinor, BigInt(0)), BigInt(0)), reeferExcludedMinor: reeferMinor, providerCreditExcludedMinor: providerCreditMinor, historicalPostedDifferences }, controls: buildFuelReconciliationControls(rows), byStatus, byCompany, rows: filtered.slice(start, start + pageSize), total: filtered.length, page, pageSize };
+    return { coverage: { start: coverageStart, end: coverageEnd, pilotRanges: pilotCoverageRanges }, completeness, summary: { ...allTotals, statementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, comparableStatementMinor: allTotals.statementMinor - outsideCoverageStatementMinor, outsideCoverageStatementMinor, rawStatementDeductionMinor, rawFuelStatementMinor, unsupportedFuelStatementCount: unsupportedFuelStatementLines.length, unsupportedFuelStatementMinor, comparablePilotMinor: dated.reduce((sum, item) => sum + item.lines.reduce((part, line) => part + line.amountMinor, BigInt(0)), BigInt(0)), reeferExcludedMinor: reeferMinor, providerCreditExcludedMinor: providerCreditMinor, historicalPostedDifferences }, controls: buildFuelReconciliationControls(rows), byStatus, byCompany, rows: filtered, total: filtered.length };
   }
 
   async policies(context: FinancialAuthorization) {
