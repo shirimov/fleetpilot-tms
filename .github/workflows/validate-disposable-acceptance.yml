@@ -1,0 +1,65 @@
+name: Disposable acceptance round 7
+on:
+  push:
+    branches: [work/four-stream-qualification7-xbcif3_h]
+permissions:
+  contents: read
+concurrency:
+  group: disposable-acceptance-round7-xbcif3_h
+  cancel-in-progress: false
+jobs:
+  qualification:
+    if: >-
+      github.repository == 'shirimov/fleetpilot-tms' &&
+      github.repository_owner == 'shirimov' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/work/four-stream-qualification7-xbcif3_h' &&
+      github.event.created == true &&
+      github.event.deleted == false &&
+      github.event.forced == false &&
+      github.event.before == '0000000000000000000000000000000000000000' &&
+      github.event.after == github.sha &&
+      github.event.sender.login == 'shirimov' &&
+      github.run_attempt == 1 && github.run_number == 2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # 1+19+3+1 =24 minutes; retain one minute of job overhead.
+      # Host loss/hard cancellation can prevent always(): then UNKNOWN/HOLD,
+      # never a claim that hosted expiration proved pair/tmpfs destruction.
+      - name: One fail-closed synthetic round, tasks then fuel
+        timeout-minutes: 19
+        shell: bash
+        run: |
+          env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" RUNNER_TEMP="$RUNNER_TEMP" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REPOSITORY_OWNER="$GITHUB_REPOSITORY_OWNER" \
+            GITHUB_REF="$GITHUB_REF" GITHUB_SHA="$GITHUB_SHA" GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" bash scripts/ci/disposable-acceptance.sh
+      - name: Independent exact-owned cleanup and absence readback
+        if: always()
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" RUNNER_TEMP="$RUNNER_TEMP" \
+            GITHUB_ACTIONS="$GITHUB_ACTIONS" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REPOSITORY_OWNER="$GITHUB_REPOSITORY_OWNER" \
+            GITHUB_REF="$GITHUB_REF" GITHUB_SHA="$GITHUB_SHA" GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" bash scripts/ci/disposable-acceptance.sh --cleanup-only
+      - name: Retain actual bounded receipts even on failure
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: disposable-round7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification7-${{ github.run_id }}-1/
+          if-no-files-found: error
+          retention-days: 7
